@@ -1,5 +1,8 @@
 # Phase 1: portable native bootstrap
 
+Historical milestone; the current SDL client and validation are described in
+[Phase 2](PHASE_2.md).
+
 Implemented locally on October 13, 2026. Native arm64 validation uses Apple Clang on the M1 Max. Windows/Linux jobs are configured but have not run against a project-owned remote. Retail gameplay remains unvalidated pending original game data.
 
 ## Build scope

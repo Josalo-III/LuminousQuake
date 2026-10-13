@@ -1,11 +1,24 @@
 cmake_minimum_required(VERSION 3.20)
-project(LuminousQuake VERSION 0.1.0 LANGUAGES C)
+project(LuminousQuake VERSION 0.3.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 option(LQ_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(LQ_BUILD_CLIENT "Build the SDL windowed client" ON)
+option(LQ_BUILD_GPU "Build the experimental SDL3 GPU world viewer" OFF)
+option(LQ_GPU_TESTS "Run tests requiring an actual SDL3 GPU device/window system" OFF)
 include(CTest)
+add_library(lq_scene STATIC renderer/scene.c renderer/scene_fixture.c)
+target_include_directories(lq_scene PUBLIC renderer)
+if(NOT WIN32)
+    target_link_libraries(lq_scene PUBLIC m)
+endif()
+if(BUILD_TESTING)
+    add_executable(lq-scene-test tests/renderer_scene.c)
+    target_link_libraries(lq-scene-test PRIVATE lq_scene)
+    add_test(NAME renderer-scene-contract COMMAND lq-scene-test)
+endif()
 
 add_library(quake_core OBJECT
     WinQuake/cl_demo.c
@@ -70,7 +83,7 @@ add_library(quake_core OBJECT
     WinQuake/view.c
     WinQuake/wad.c
     WinQuake/world.c
-    WinQuake/vid_null.c WinQuake/in_null.c WinQuake/snd_null.c WinQuake/cd_null.c
+    WinQuake/cd_null.c
     WinQuake/net_bsd.c platform/net_udp.c platform/diagnostics.c
 )
 target_include_directories(quake_core PUBLIC WinQuake platform)
@@ -79,10 +92,60 @@ if(WIN32)
     target_compile_definitions(quake_core PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS _WIN32_WINNT=0x0601)
 endif()
 
-add_executable(luminousquake platform/sys_portable.c)
-add_executable(luminousquake-server platform/sys_portable.c)
+set(LQ_HEADLESS_BACKENDS WinQuake/vid_null.c WinQuake/in_null.c WinQuake/snd_null.c)
+add_executable(luminousquake-headless platform/sys_portable.c ${LQ_HEADLESS_BACKENDS})
+add_executable(luminousquake-server platform/sys_portable.c ${LQ_HEADLESS_BACKENDS})
 target_compile_definitions(luminousquake-server PRIVATE LQ_DEDICATED=1)
-foreach(target quake_core luminousquake luminousquake-server)
+set(LQ_TARGETS quake_core luminousquake-headless luminousquake-server lq_scene)
+if(BUILD_TESTING)
+    list(APPEND LQ_TARGETS lq-scene-test)
+endif()
+set(LQ_EXECUTABLES luminousquake-headless luminousquake-server)
+if(LQ_BUILD_CLIENT)
+    find_package(SDL2 2.0.18 CONFIG REQUIRED)
+    add_executable(luminousquake platform/sys_portable.c
+        platform/vid_sdl.c platform/in_sdl.c platform/snd_sdl.c platform/demo_sdl.c
+        WinQuake/snd_dma.c WinQuake/snd_mem.c WinQuake/snd_mix.c)
+    target_compile_definitions(luminousquake PRIVATE LQ_SDL=1 SDL_MAIN_HANDLED)
+    target_link_libraries(luminousquake PRIVATE SDL2::SDL2)
+    if(WIN32)
+        add_custom_command(TARGET luminousquake POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:luminousquake>)
+    endif()
+    list(APPEND LQ_TARGETS luminousquake)
+    list(APPEND LQ_EXECUTABLES luminousquake)
+endif()
+if(LQ_BUILD_GPU)
+    find_package(SDL3 3.2 CONFIG REQUIRED)
+    add_executable(luminousquake-gpu platform/sys_portable.c platform/gpu_viewer.c
+        renderer/quake_scene.c renderer/gpu_sdl.c ${LQ_HEADLESS_BACKENDS})
+    target_compile_definitions(luminousquake-gpu PRIVATE LQ_GPU=1 SDL_MAIN_HANDLED)
+    target_link_libraries(luminousquake-gpu PRIVATE lq_scene SDL3::SDL3)
+    if(APPLE)
+        set_property(TARGET luminousquake-gpu APPEND PROPERTY BUILD_RPATH "@loader_path")
+    endif()
+    get_target_property(LQ_SDL3_INCLUDES SDL3::Headers INTERFACE_INCLUDE_DIRECTORIES)
+    find_file(LQ_SDL3_LICENSE LICENSE.txt PATHS
+        "${LQ_SDL3_INCLUDES}/.." "${LQ_SDL3_INCLUDES}/../share/licenses/SDL3" NO_DEFAULT_PATH)
+    if(LQ_SDL3_LICENSE)
+        add_custom_command(TARGET luminousquake-gpu POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${LQ_SDL3_LICENSE}" "$<TARGET_FILE_DIR:luminousquake-gpu>/SDL3-LICENSE.txt")
+    endif()
+    if(WIN32 OR APPLE)
+        add_custom_command(TARGET luminousquake-gpu POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:SDL3::SDL3> $<TARGET_FILE_DIR:luminousquake-gpu>)
+    endif()
+    if(BUILD_TESTING AND LQ_GPU_TESTS)
+        add_test(NAME gpu-render-readback COMMAND luminousquake-gpu --gpu-test)
+        set_tests_properties(gpu-render-readback PROPERTIES TIMEOUT 30)
+    endif()
+    list(APPEND LQ_TARGETS luminousquake-gpu)
+    list(APPEND LQ_EXECUTABLES luminousquake-gpu)
+endif()
+foreach(target IN LISTS LQ_TARGETS)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W3)
     else()
@@ -97,7 +160,7 @@ foreach(target quake_core luminousquake luminousquake-server)
         target_link_options(${target} PRIVATE -fsanitize=address,undefined)
     endif()
 endforeach()
-foreach(target luminousquake luminousquake-server)
+foreach(target IN LISTS LQ_EXECUTABLES)
     target_link_libraries(${target} PRIVATE quake_core)
     if(WIN32)
         target_link_libraries(${target} PRIVATE ws2_32)
@@ -108,11 +171,24 @@ endforeach()
 
 if(BUILD_TESTING)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
-    add_test(NAME udp-loopback COMMAND luminousquake --self-test --test-udp -ip 127.0.0.1)
-    foreach(target luminousquake luminousquake-server)
+    add_test(NAME udp-loopback COMMAND luminousquake-headless --self-test --test-udp -ip 127.0.0.1)
+    foreach(target IN LISTS LQ_EXECUTABLES)
         add_test(NAME ${target}-version COMMAND ${target} --version)
         add_test(NAME ${target}-core COMMAND ${target} --self-test)
-        add_test(NAME ${target}-fixtures COMMAND ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration.py $<TARGET_FILE:${target}>)
+        if(NOT target STREQUAL "luminousquake-gpu")
+            add_test(NAME ${target}-fixtures COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration.py $<TARGET_FILE:${target}>)
+        else()
+            add_test(NAME gpu-scene-import COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/gpu_scene_import.py $<TARGET_FILE:${target}>)
+        endif()
     endforeach()
+    if(LQ_BUILD_CLIENT)
+        add_test(NAME sdl-platform COMMAND luminousquake --platform-test)
+        set_tests_properties(sdl-platform PROPERTIES
+            ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy" TIMEOUT 15)
+        add_test(NAME sdl-unavailable-audio COMMAND luminousquake --platform-test --expect-no-audio)
+        set_tests_properties(sdl-unavailable-audio PROPERTIES
+            ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=nonexistent" TIMEOUT 15)
+    endif()
 endif()

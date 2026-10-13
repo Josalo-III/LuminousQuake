@@ -29,6 +29,8 @@ int LQ_RunDiagnostics(int argc, char **argv)
     COM_InitArgv(argc, argv);
     printf("entityfields=%zu\n", sizeof(entvars_t) / 4 + 1);
     CHECK(memory != NULL);
+    CHECK(Q_ClampedInt(3.5) == 3 && Q_ClampedInt(-3.5) == -3);
+    CHECK(Q_ClampedInt(3e9) == INT_MAX && Q_ClampedInt(-3e9) == INT_MIN);
     COM_InitByteOrder();
     Memory_Init(memory, 32 * 1024 * 1024);
     CHECK(STRUCT_FROM_LINK(&linked.link, struct linked_test, link) == &linked);
@@ -70,6 +72,23 @@ int LQ_RunDiagnostics(int argc, char **argv)
       CHECK(MSG_ReadFloat() == -1 && msg_badread); }
     CHECK((uint32_t)LongSwap((int32_t)0x80010203u) == 0x03020180u);
     CHECK((uint32_t)LongSwap((int32_t)0x03020180u) == 0x80010203u);
+    /* Rerelease metadata must not misalign the following original message. */
+    { byte packet[128]; int saved_state = cls.state;
+      cls.state = ca_disconnected;
+      net_message.data = packet; net_message.maxsize = sizeof(packet); net_message.cursize = 0;
+      MSG_WriteByte(&net_message, svc_achievement);
+      MSG_WriteString(&net_message, "ACH_FIND_SECRET");
+      MSG_WriteByte(&net_message, svc_updatestat);
+      MSG_WriteByte(&net_message, STAT_HEALTH); MSG_WriteLong(&net_message, 101);
+      CL_ParseServerMessage();
+      CHECK(cl.stats[STAT_HEALTH] == 101 && msg_readcount == net_message.cursize);
+      net_message.cursize = 2; packet[0] = svc_achievement; packet[1] = 'X';
+      if (!setjmp(host_abortserver)) {
+          CL_ParseServerMessage(); CHECK(false);
+      }
+      CHECK(msg_badread); cls.state = saved_state;
+      net_message.data = NULL; net_message.cursize = net_message.maxsize = 0;
+    }
     start = Sys_FloatTime(); Sys_Sleep();
     CHECK(Sys_FloatTime() > start);
     { char base[32];

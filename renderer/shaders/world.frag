@@ -1,0 +1,41 @@
+#version 450
+// Palette-indexed sampling preserves Quake's fullbrights and palette shading.
+// Sky/water conventions: GLQuake, Copyright (C) 1996-1997 Id Software, Inc.
+// GPL-2.0-or-later.
+layout(set=2,binding=0) uniform sampler2D indices;
+layout(set=2,binding=1) uniform sampler2D colormap;
+layout(set=2,binding=2) uniform sampler2D lightmap;
+layout(set=3,binding=0,std140) uniform Surface {
+    vec4 light_weights;
+    vec4 parameters; // time, surface flags, reserved, reserved
+    vec4 camera_origin;
+} surface;
+layout(location=0) in vec2 uv;
+layout(location=1) in vec2 light_uv;
+layout(location=2) in vec3 world_position;
+layout(location=0) out vec4 color;
+void main() {
+    int flags = int(surface.parameters.y);
+    vec2 sample_uv = uv;
+    float index_value, grade = 0;
+    if ((flags & 1) != 0) {
+        vec3 direction = world_position - surface.camera_origin.xyz;
+        direction.z *= 3.0;
+        direction *= 378.0 / max(length(direction), 0.001);
+        vec2 back_uv = fract((direction.xy + surface.parameters.x * 8.0) / 128.0);
+        vec2 front_uv = fract((direction.xy + surface.parameters.x * 16.0) / 128.0);
+        float back = texture(indices, vec2(back_uv.x * 0.5 + 0.5, back_uv.y)).r;
+        float front = texture(indices, vec2(front_uv.x * 0.5, front_uv.y)).r;
+        index_value = front > 0.001 ? front : back;
+    } else {
+        if ((flags & 2) != 0)
+            sample_uv += sin(uv.yx * 8.0 + surface.parameters.x) * 0.125;
+        index_value = texture(indices, sample_uv).r;
+        if ((flags & 2) == 0) {
+            float brightness = dot(texture(lightmap, light_uv), surface.light_weights) * 255.0;
+            grade = clamp(floor((255.0 - brightness) * 0.25), 0.0, 63.0);
+        }
+    }
+    float index = floor(index_value * 255.0 + 0.5);
+    color = texture(colormap, vec2((index + 0.5) / 256.0, (grade + 0.5) / 64.0));
+}

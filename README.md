@@ -1,46 +1,139 @@
 # LuminousQuake
 
-A cross-platform Quake engine project exploring dynamic lighting, shadows, enhanced materials, and faithful asset improvements. The starting source is id Software's Quake GPL release. See [the implementation plan](IMPLEMENTATION_PLAN.md) for the intended component selection and sequence.
+A cross-platform Quake engine project exploring dynamic lighting, shadows,
+improved materials, and faithful asset improvements. See the
+[implementation plan](IMPLEMENTATION_PLAN.md).
 
-## Current build: Phase 1
+## GPU world viewer: first Phase 3 milestone
 
-The native C client bootstrap and dedicated-server targets build without SDL, OpenGL, or audio dependencies. They currently use Quake's null video, input, and sound backends. **The client is headless; windowed play and audio output are Phase 2 work.** The dedicated server retains Quake's game and datagram protocols.
+The experimental `luminousquake-gpu` target draws BSP triangles and palette-indexed
+textures/lightmaps through SDL3 GPU. It currently provides a free-flight world
+viewer; actors, moving brush models, effects, UI and gameplay integration remain
+next steps. The playable `luminousquake` target still uses SDL2/software rendering.
+See [Phase 3 scope and validation](docs/PHASE_3.md).
 
-Requirements: a C11 compiler, CMake 3.20+, and Python 3 for the tests. Disable tests with `-DBUILD_TESTING=OFF` to build without Python. Use native arm64 tools on Apple Silicon; the default build follows the toolchain's architecture.
+On Apple Silicon:
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+brew install sdl3
+cmake -S . -B build-gpu -DCMAKE_BUILD_TYPE=Debug -DLQ_BUILD_GPU=ON -DCMAKE_PREFIX_PATH="/opt/homebrew/opt/sdl3;/opt/homebrew/opt/sdl2"
+cmake --build build-gpu --parallel 10
+./build-gpu/luminousquake-gpu -basedir "$PWD/quake-complete/Quake" -map e1m1
+```
+
+WASD flies; E/Q or Space/Control moves vertically; Shift moves faster. Mouse/trackpad
+movement looks around on both axes. F1 releases/recaptures the pointer, F11 changes
+fullscreen, and Escape exits. This viewer has no collision or gameplay simulation.
+For repeatable captures add `--fixed-camera --run-seconds 4 --screenshot /tmp/quake-gpu.bmp`.
+`--scene-info` converts/validates a map without opening a window.
+
+`./build-gpu/luminousquake-gpu --gpu-test` validates GPU geometry, depth, palette
+sampling, resizing and readback without game data. Configure `-DLQ_GPU_TESTS=ON`
+to include that window-system/GPU-dependent check in CTest. Ordinary scene/import
+checks run without a GPU. `-DLQ_BUILD_CLIENT=OFF -DLQ_BUILD_GPU=ON` builds the
+SDL3 viewer with no SDL2 dependency; headless-only builds require neither library.
+
+MSL and Vulkan SPIR-V shaders are embedded; runtime Qt/shader tools are not needed.
+To regenerate them, install `glslang` and `spirv-cross`, then run
+`python3 tools/build_shaders.py`. SDL3 selects Metal on the tested Mac; Vulkan
+shaders support the other initial backend. D3D12 needs a future DXIL shader build.
+
+## Playable software client: Phase 2
+
+The SDL2 client presents Quake's original software renderer and retains the
+original gameplay, QuakeC interpreter and sound mixer. Dynamic lighting upgrades
+and a modern 3D graphics backend are later phases. The headless client and
+dedicated server retain null video/input/audio backends and need no SDL.
+
+Requirements: C11 compiler, CMake 3.20+, SDL2 2.0.18+ for the windowed client,
+and Python 3 for tests (`-DBUILD_TESTING=OFF` removes the Python requirement).
+On Apple Silicon use native arm64 dependencies:
+
+```sh
+brew install sdl2
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=/opt/homebrew/opt/sdl2
 cmake --build build --parallel 10
 ctest --test-dir build --output-on-failure
-./build/luminousquake --version
-./build/luminousquake-server --version
+./build/luminousquake --platform-demo
 ```
 
-On Windows, use a current Visual Studio C11-capable toolchain and add `--config Debug` to the build command and `-C Debug` to CTest. Executables are under `build/Debug/` for that generator. Adjust build parallelism to the machine.
+The asset-free demo supports mouse look, **T** for a generated tone, **F11**
+for fullscreen, **Escape** to exit and the grave key for the console.
+It demonstrates platform handling, not the Quake BSP renderer.
 
-For AddressSanitizer and UndefinedBehaviorSanitizer with Clang or GCC:
+For the local archive, from the repository root:
 
 ```sh
-cmake -S . -B build-sanitize -DCMAKE_BUILD_TYPE=Debug -DLQ_SANITIZERS=ON
+./build/luminousquake -basedir "$PWD/quake-complete/Quake" +map e1m1
+```
+
+`-basedir PATH` expects `PATH/id1/`; original installations typically use
+`pak0.pak` and `pak1.pak`. The local `quake-complete/` archive is ignored by Git
+and has unverified provenance/content. It is a smoke-test sample, not the
+original 1996 compatibility baseline. Extension warnings from its game code
+remain visible. See [Phase 2 notes](docs/PHASE_2.md).
+
+Default controls: WASD movement, mouse look, left mouse attack, Space jump,
+Shift run, number keys for weapons, Escape menu, grave key console, F11
+fullscreen. Existing Quake configuration scripts override these defaults.
+The menu remains the original Quake menu. Its old video-options page is not
+an SDL settings UI; use console commands instead.
+
+Window resizing preserves the software render resolution and aspect ratio.
+`-width 640 -height 480` chooses the internal resolution;
+`-window-width 960 -window-height 720` chooses the initial window.
+`-fullscreen` / `-window` select the initial mode. Console variables
+`vid_width`, `vid_height`, `vid_vsync` apply with `vid_restart`;
+`vid_togglefullscreen` switches modes. Software widths must be divisible by
+8, within 320–1280; heights within 200–1024. These are legacy renderer limits.
+Sound-device failure is nonfatal; `-nosound` explicitly disables audio.
+CD/music output is still absent.
+
+## Headless builds and checks
+
+```sh
+cmake -S . -B build-headless -DLQ_BUILD_CLIENT=OFF
+cmake --build build-headless --parallel 10
+ctest --test-dir build-headless --output-on-failure
+./build-headless/luminousquake-server -basedir PATH +map start
+```
+
+All builds provide `--version`, `--self-test`, and `--check-data -basedir PATH`.
+The last checks required asset presence and returns 2 when files are missing;
+it does not certify compatibility. `-noudp` disables UDP and `-ip ADDRESS`
+selects an IPv4 interface. The loopback test needs socket-binding permission.
+
+On Linux install `libsdl2-dev`. On Windows use a current Visual Studio C11
+compiler and SDL2's VC development package, passing its `cmake` directory as
+`-DSDL2_DIR=...`; use `--config Debug` for builds and `-C Debug` for CTest.
+The DLL is copied beside the client executable. The CI workflow installs SDL
+on all three platforms; Windows/Linux jobs have not yet run for this project.
+
+Sanitizer build:
+
+```sh
+cmake -S . -B build-sanitize -DCMAKE_BUILD_TYPE=Debug -DLQ_SANITIZERS=ON -DCMAKE_PREFIX_PATH=/opt/homebrew/opt/sdl2
 cmake --build build-sanitize --parallel 10
 ctest --test-dir build-sanitize --output-on-failure
+./build-sanitize/luminousquake --platform-test --test-fullscreen
 ```
 
-The UDP test uses local loopback sockets and requires permission to bind them. Fixture tests generate their own data and need no game installation. See [Phase 1 notes](docs/PHASE_1.md) for validation coverage and outstanding limitations.
-
-## Original game data
-
-The source repository does not include retail game assets. Place your original Quake data under `PATH/id1/` and inspect its availability with:
+CTest uses SDL dummy drivers for repeatable platform tests; the last command
+checks the native display/audio devices and fullscreen. Optional content smoke:
 
 ```sh
-./build/luminousquake --check-data -basedir PATH
-./build/luminousquake-server -basedir PATH
+python3 tests/retail_smoke.py ./build-sanitize/luminousquake "$PWD/quake-complete/Quake"
 ```
 
-The diagnostic returns 0 when its required files are present and 2 when they are missing. It does not validate all content or certify a working game. The current server automatically adds `-dedicated`; use normal Quake arguments and commands to choose maps and settings. `-noudp` disables UDP, and `-ip ADDRESS` selects an IPv4 bind/advertised address.
+It links/copies only PAKs into a temporary directory; generated configs, saves,
+demos and screenshots never go into the supplied installation. Interactive
+runs normally save `config.cfg` in their game directory. For bounded captures
+use `--run-seconds 8 --screenshot /tmp/quake.bmp`.
 
 ## Provenance and license
 
-The engine is derived from [id Software's Quake](https://github.com/id-Software/Quake), upstream commit `bf4ac424`. The complete upstream revision and adaptation record are in [SOURCE_PROVENANCE.md](SOURCE_PROVENANCE.md). Original license notices are retained; see [gnu.txt](gnu.txt) and [id Software's release notes](readme.txt). New Phase 1 C code is GPL-2.0-or-later.
-
-ioquake3 and Doom 3/dhewm3 are intended sources for subsequent selective adaptations. No code from those projects has been imported in Phase 1. Game data is separate from the engine source.
+Quake upstream: `bf4ac424`. SDL input/audio selectively adapt ioquake3.
+See [SOURCE_PROVENANCE.md](SOURCE_PROVENANCE.md), [gnu.txt](gnu.txt), and
+[id Software's release notes](readme.txt). Original notices are retained;
+new engine and test code is GPL-2.0-or-later. Game assets are separate and
+are not included in source control.

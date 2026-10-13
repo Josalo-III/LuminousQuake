@@ -13,6 +13,14 @@
 #include <errno.h>
 #include "quakedef.h"
 #include "diagnostics.h"
+#ifdef LQ_SDL
+#include "sdl_backend.h"
+static void PlatformExit(void) { S_Shutdown(); IN_Shutdown(); VID_Shutdown(); SDL_Quit(); }
+#endif
+
+#ifdef LQ_GPU
+#include "gpu_viewer.h"
+#endif
 
 #define MAX_HANDLES 64
 static FILE *sys_handles[MAX_HANDLES];
@@ -148,7 +156,13 @@ char *Sys_ConsoleInput(void)
     else if (used < sizeof(line) - 1) line[used++] = (char)ch;
     return NULL;
 }
-void Sys_SendKeyEvents(void) {}
+void Sys_SendKeyEvents(void)
+{
+#ifdef LQ_SDL
+    LQ_PumpEvents();
+    if (LQ_QuitRequested()) Sys_Quit();
+#endif
+}
 void Sys_LowFPPrecision(void) {}
 void Sys_HighFPPrecision(void) {}
 void Sys_SetFPCW(void) {}
@@ -157,29 +171,54 @@ int main(int argc, char **argv)
 {
     quakeparms_t parms = {0};
     char *engine_argv[MAX_NUM_ARGVS + 1];
-    double previous;
+    double previous, run_start, run_seconds = 0;
+    const char *capture_path = NULL;
     int i, engine_argc = 0;
+#ifdef LQ_SDL
+    atexit(PlatformExit);
+#endif
     for (i = 1; i < argc; ++i) {
+#ifdef LQ_SDL
+        if (!strcmp(argv[i], "--platform-demo")) return LQ_PlatformDemo(argc, argv, false);
+        if (!strcmp(argv[i], "--platform-test")) return LQ_PlatformDemo(argc, argv, true);
+#endif
         if (!strcmp(argv[i], "--version")) {
-            printf("LuminousQuake 0.1.0 (%zu-bit native C, headless Phase 1 %s)\n",
+            printf("LuminousQuake 0.3.0 (%zu-bit native C, %s)\n",
                 sizeof(void *) * CHAR_BIT,
 #ifdef LQ_DEDICATED
-                "server"
+                "dedicated server"
+#elif defined(LQ_GPU)
+                "SDL3 GPU world viewer"
+#elif defined(LQ_SDL)
+                "SDL2 software client"
 #else
-                "client"
+                "headless client"
 #endif
             );
             return 0;
         }
         if (!strcmp(argv[i], "--self-test")) return LQ_RunDiagnostics(argc, argv);
         if (!strcmp(argv[i], "--help")) {
+#ifdef LQ_GPU
+            puts("Usage: luminousquake-gpu -basedir PATH [-map e1m1] [--run-seconds N] [--screenshot PATH]\n"
+                 "       luminousquake-gpu --gpu-test\n"
+                 "Experimental GPU world viewer: WASD fly, E/Q vertical, mouse look, F1 capture, F11 fullscreen, Esc exit.\n"
+                 "This target does not run gameplay, models or QuakeC.");
+#else
             puts("Usage: luminousquake[-server] [--version | --self-test | --check-data]\n"
                  "       [-basedir PATH] [-game MOD] [-dedicated] [Quake arguments]\n"
-                 "Phase 1 uses headless video/input/audio. Windowed operation is Phase 2.\n"
+                 "The SDL client supports --platform-demo (no assets needed) and --platform-test.\n"
+                 "Use --run-seconds N for a bounded smoke run; --screenshot PATH saves a BMP.\n"
                  "Original Quake game data is required for engine startup.");
+#endif
             return 0;
         }
     }
+#ifdef LQ_GPU
+    for (i = 1; i < argc; ++i)
+        if (!strcmp(argv[i], "--check-data") || !strcmp(argv[i], "-dedicated")) break;
+    if (i == argc) return LQ_GPUViewer(argc, argv);
+#endif
     if (argc >= MAX_NUM_ARGVS) Sys_Error("Too many command-line arguments");
     for (i = 0; i < argc; ++i) engine_argv[engine_argc++] = argv[i];
 #ifdef LQ_DEDICATED
@@ -204,16 +243,37 @@ int main(int argc, char **argv)
     if (i && (i + 1 >= com_argc || strlen(com_argv[i + 1]) >= MAX_QPATH))
         Sys_Error("-game needs a mod directory shorter than MAX_QPATH");
     if (COM_CheckParm("--check-data")) return LQ_CheckData(&parms);
-    Sys_Printf("LuminousQuake Phase 1: headless native bootstrap.\n"
+    Sys_Printf("LuminousQuake: native Quake bootstrap.\n"
         "Use -basedir PATH for original Quake data, or --check-data to diagnose it.\n");
     isDedicated = COM_CheckParm("-dedicated") != 0;
     Host_Init(&parms);
     initialized = true;
-    previous = Sys_FloatTime();
+    i = COM_CheckParm("--run-seconds");
+    if (i) {
+        char *end;
+        if (i + 1 >= com_argc) Sys_Error("--run-seconds requires a duration");
+        run_seconds = strtod(com_argv[i + 1], &end);
+        if (*end || !isfinite(run_seconds)) Sys_Error("Invalid --run-seconds duration");
+    }
+    if (i && (run_seconds <= 0 || run_seconds > 3600)) Sys_Error("--run-seconds requires 0 < seconds <= 3600");
+    i = COM_CheckParm("--screenshot");
+    if (i) {
+        if (i + 1 >= com_argc) Sys_Error("--screenshot requires a path");
+        capture_path = com_argv[i + 1];
+    }
+    run_start = previous = Sys_FloatTime();
     for (;;) {
         double now = Sys_FloatTime();
         Host_Frame(now - previous);
         previous = now;
+        if (run_seconds > 0 && now - run_start >= run_seconds) {
+#ifdef LQ_SDL
+            if (capture_path && !LQ_SaveFrame(capture_path)) Sys_Error("Cannot save screenshot");
+#else
+            (void)capture_path;
+#endif
+            Sys_Quit();
+        }
         Sys_Sleep();
     }
 }

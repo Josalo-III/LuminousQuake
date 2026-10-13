@@ -68,10 +68,11 @@ with tempfile.TemporaryDirectory(prefix="luminousquake-test-") as tmp:
     run(root, args, 1, "invalid lump range")
     (id1 / "progs.dat").write_bytes(progs(fields))
     # Execute an actual dedicated Host_Init/Host_Frame and command shutdown.
-    (id1 / "quake.rc").write_text("echo FIXTURE_STARTUP_OK\nquit\n")
+    (id1 / "quake.rc").write_text("echo FIXTURE_STARTUP_OK\ncampaign\ncampaign 7\ncampaign\nquit\n")
     mode = [] if "server" in binary.name else ["-dedicated"]
-    run(root, [*mode, "-noudp", "-basedir", str(root)],
-        contains="FIXTURE_STARTUP_OK")
+    output = run(root, [*mode, "-noudp", "-basedir", str(root)],
+                 contains="FIXTURE_STARTUP_OK")
+    assert '"campaign" is "0"' in output and '"campaign" is "7"' in output, output
     # PAK discovery has to initialize endian helpers even in diagnostics mode.
     payload = b""; directory = b""
     for name in ["gfx.wad", "gfx/palette.lmp", "gfx/colormap.lmp", "progs.dat"]:

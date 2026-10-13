@@ -455,7 +455,7 @@ void D_PolysetScanLeftEdge (int height)
 				d_tfrac &= 0xFFFF;
 			}
 			d_light += d_lightextrastep;
-			d_zi += d_ziextrastep;
+			d_zi = Q_ClampedInt((double)d_zi + d_ziextrastep);
 			errorterm -= erroradjustdown;
 		}
 		else
@@ -474,7 +474,7 @@ void D_PolysetScanLeftEdge (int height)
 				d_tfrac &= 0xFFFF;
 			}
 			d_light += d_lightbasestep;
-			d_zi += d_zibasestep;
+			d_zi = Q_ClampedInt((double)d_zi + d_zibasestep);
 		}
 	} while (--height);
 }
@@ -568,9 +568,9 @@ void D_PolysetCalcGradients (int skinwidth)
 
 	t0 = r_p0[5] - r_p2[5];
 	t1 = r_p1[5] - r_p2[5];
-	r_zistepx = (int)((t1 * p01_minus_p21 - t0 * p11_minus_p21) *
+	r_zistepx = Q_ClampedInt((t1 * p01_minus_p21 - t0 * p11_minus_p21) *
 			xstepdenominv);
-	r_zistepy = (int)((t1 * p00_minus_p20 - t0 * p10_minus_p20) *
+	r_zistepy = Q_ClampedInt((t1 * p00_minus_p20 - t0 * p10_minus_p20) *
 			ystepdenominv);
 
 #if	id386
@@ -655,7 +655,7 @@ void D_PolysetDrawSpans8 (spanpackage_t *pspanpackage)
 					*lpz = lzi >> 16;
 				}
 				lpdest++;
-				lzi += r_zistepx;
+				lzi = Q_ClampedInt((double)lzi + r_zistepx);
 				lpz++;
 				llight += r_lstepx;
 				lptex += a_ststepxwhole;
@@ -822,7 +822,7 @@ void D_RasterizeAliasPolySmooth (void)
 		d_tfracbasestep = (r_tstepy + r_tstepx * ubasestep) & 0xFFFF;
 	#endif
 		d_lightbasestep = r_lstepy + working_lstepx * ubasestep;
-		d_zibasestep = r_zistepy + r_zistepx * ubasestep;
+		d_zibasestep = Q_ClampedInt((double)r_zistepy + (double)r_zistepx * ubasestep);
 
 		d_ptexextrastep = ((r_sstepy + r_sstepx * d_countextrastep) >> 16) +
 				((r_tstepy + r_tstepx * d_countextrastep) >> 16) *
@@ -835,7 +835,7 @@ void D_RasterizeAliasPolySmooth (void)
 		d_tfracextrastep = (r_tstepy + r_tstepx*d_countextrastep) & 0xFFFF;
 	#endif
 		d_lightextrastep = d_lightbasestep + working_lstepx;
-		d_ziextrastep = d_zibasestep + r_zistepx;
+		d_ziextrastep = Q_ClampedInt((double)d_zibasestep + r_zistepx);
 
 		D_PolysetScanLeftEdge (initialleftheight);
 	}
@@ -915,7 +915,7 @@ void D_RasterizeAliasPolySmooth (void)
 			d_tfracbasestep = (r_tstepy + r_tstepx * ubasestep) & 0xFFFF;
 	#endif
 			d_lightbasestep = r_lstepy + working_lstepx * ubasestep;
-			d_zibasestep = r_zistepy + r_zistepx * ubasestep;
+			d_zibasestep = Q_ClampedInt((double)r_zistepy + (double)r_zistepx * ubasestep);
 
 			d_ptexextrastep = ((r_sstepy + r_sstepx * d_countextrastep) >> 16) +
 					((r_tstepy + r_tstepx * d_countextrastep) >> 16) *
@@ -928,7 +928,7 @@ void D_RasterizeAliasPolySmooth (void)
 			d_tfracextrastep = (r_tstepy+r_tstepx*d_countextrastep) & 0xFFFF;
 	#endif
 			d_lightextrastep = d_lightbasestep + working_lstepx;
-			d_ziextrastep = d_zibasestep + r_zistepx;
+			d_ziextrastep = Q_ClampedInt((double)d_zibasestep + r_zistepx);
 
 			D_PolysetScanLeftEdge (height);
 		}

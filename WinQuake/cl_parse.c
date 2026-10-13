@@ -545,7 +545,7 @@ void CL_ParseClientdata (int bits)
 	{	// set flash times
 		Sbar_Changed ();
 		for (j=0 ; j<32 ; j++)
-			if ( (i & (1<<j)) && !(cl.items & (1<<j)))
+			if ( (i & (1U<<j)) && !(cl.items & (1U<<j)))
 				cl.item_gettime[j] = cl.time;
 		cl.items = i;
 	}
@@ -757,15 +757,27 @@ void CL_ParseServerMessage (void)
 			continue;
 		}
 
-		SHOWNET(svc_strings[cmd]);
+		SHOWNET(cmd < (int)(sizeof(svc_strings) / sizeof(svc_strings[0])) ? svc_strings[cmd] : "unknown command");
 	
 	// other commands
 		switch (cmd)
 		{
 		default:
-			Host_Error ("CL_ParseServerMessage: Illegible server message\n");
+			Host_Error ("CL_ParseServerMessage: Illegible server message (command %d at byte %d of %d, %s)\n",
+				cmd, msg_readcount - 1, net_message.cursize,
+				cls.demoplayback ? "demo playback" : "server connection");
 			break;
 			
+        case svc_achievement:
+        {
+            char *achievement = MSG_ReadString();
+            if (msg_badread)
+                Host_Error("CL_ParseServerMessage: truncated achievement notification");
+            /* Consume rerelease metadata without requiring an online service. */
+            Con_DPrintf("Achievement notification: %s\n", achievement);
+            break;
+        }
+
 		case svc_nop:
 //			Con_Printf ("svc_nop\n");
 			break;

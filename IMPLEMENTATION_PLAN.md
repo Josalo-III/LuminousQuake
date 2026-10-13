@@ -1,6 +1,6 @@
 # LuminousQuake implementation plan
 
-Status: Phase 1 implemented and locally validated; cross-platform CI and retail validation pending
+Status: Phases 1–2 implemented; Phase 3 begun with an SDL3 GPU world viewer and renderer-owned scene boundary. Native Metal is locally validated; full GPU gameplay integration, other-platform runtime checks and an authenticated original-data baseline remain pending
 
 Date: October 13, 2026
 
@@ -14,7 +14,7 @@ The repository begins with id Software's Quake source. Modernize it incrementall
 
 | Source | Role |
 | --- | --- |
-| [id Software Quake](https://github.com/id-Software/Quake) | Original behavior, game interfaces, asset formats, and initial engine |
+| [id Software Quake](https://github.com/id-Software/Quake) | Original behavior, game interfaces, asset formats, initial engine, and GLQuake rendering reference |
 | [ioquake3](https://github.com/ioquake/ioq3) | Build and platform infrastructure, input, utilities, renderer boundaries, and selected performance improvements |
 | [id Software Doom 3](https://github.com/id-Software/DOOM-3) | Lighting interactions, materials, shadow generation, and renderer organization |
 | [dhewm3](https://github.com/dhewm/dhewm3) | Maintained adaptations of Doom 3, portable audio/platform examples, and rendering fixes |
@@ -29,7 +29,7 @@ For every imported component, record the upstream commit, original paths, local 
 - Support macOS, Windows, and Linux from the beginning. Native Apple Silicon is the first locally tested target; automated builds on other systems do not establish runtime correctness.
 - Use the available M1 Max hardware for development: native arm64 dependencies, parallel builds, and substantial working sets where useful.
 - Retain original Quake content support. Replacement assets are optional overlays, not a requirement for playing the game.
-- Original retail data will become available after retrieval from storage. Initial development uses synthetic scenes and generated fixtures.
+- An unverified local Quake archive is available for smoke tests. Original disc data remains inaccessible in storage. Generated fixtures and synthetic scenes remain the reproducible test baseline.
 - GtkRadiant has already been ported to Apple Silicon and is available for asset work. Validate its Quake 1 game configuration and compiler workflow separately from the engine.
 - Do not assume compiled retail BSPs include editable map sources. New authored geometry and lighting overrides need their own reproducible workflow.
 - Preserve the original QuakeC `progs.dat` interface. The repository's `qw-qc` directory is QuakeWorld game code; it is not an interchangeable replacement for original single-player game code.
@@ -84,6 +84,8 @@ Implementation: see [Phase 1 notes](docs/PHASE_1.md) and [build instructions](RE
 
 ## Phase 2: platform, window, input, and basic audio output
 
+Implemented; see [Phase 2 validation and limitations](docs/PHASE_2.md).
+
 ### Work
 
 - Adapt ioquake3's SDL platform/window/input approach to Quake's current interfaces.
@@ -100,6 +102,13 @@ Implementation: see [Phase 1 notes](docs/PHASE_1.md) and [build instructions](RE
 - With game data, mouse behavior and frame scheduling are compared against the original baseline.
 
 ## Phase 3: asset access and renderer boundary
+
+Initial slice implemented: [SDL3 GPU world viewer](docs/PHASE_3.md), renderer-owned
+geometry/textures/lightmap data, embedded SPIR-V/MSL shaders and native Metal proof.
+The existing software client remains the playable comparison build. Completing
+this phase requires shared platform migration to SDL3, gameplay scene submissions,
+resource/map transitions and the replacement-asset boundary. The viewer is not
+the completed gameplay renderer.
 
 ### Work
 
@@ -122,7 +131,7 @@ Implementation: see [Phase 1 notes](docs/PHASE_1.md) and [build instructions](RE
 
 ### Work
 
-- Replace immediate-mode drawing incrementally with vertex/index buffers and shaders.
+- Move CPU rasterization and selected GLQuake algorithms to vertex/index buffers and shaders incrementally.
 - Add animation interpolation, material inputs, texture upload/mipmapping, and clear color-space handling.
 - Preserve sky, water, transparency, emissive palette behavior, sprites, and UI during migration.
 - Support optional upscaled textures without changing surface scale, texture alignment, or gameplay dimensions.
@@ -199,7 +208,7 @@ Once retail data is available, establish a playable compatibility baseline befor
 
 Decisions to resolve during implementation:
 
-- Graphics backend/context and shader baseline across the three target platforms.
+- Graphics API decided: SDL3 GPU, with Metal and Vulkan shader formats initially. Add DXIL generation before enabling D3D12; validate Windows/Linux runtime behavior.
 - Exact donor revisions and the scope of each adaptation.
 - Runtime lighting attenuation, ambient treatment, and shadow technique.
 - Material metadata format and replacement-asset precedence.

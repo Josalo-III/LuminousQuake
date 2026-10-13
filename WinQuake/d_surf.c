@@ -139,7 +139,7 @@ surfcache_t     *D_SCAlloc (int width, int size)
 		Sys_Error ("D_SCAlloc: bad cache size %d\n", size);
 	
 	size += offsetof(surfcache_t, data);
-	size = (size + 3) & ~3;
+	size = (size + _Alignof(surfcache_t) - 1) & ~(_Alignof(surfcache_t) - 1);
 	if (size > sc_size)
 		Sys_Error ("D_SCAlloc: %i > cache size",size);
 

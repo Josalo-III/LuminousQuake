@@ -87,3 +87,14 @@ float	anglemod(float a);
 	)										\
 	:										\
 		BoxOnPlaneSide( (emins), (emaxs), (p)))
+
+#include <limits.h>
+
+/* Bound extreme rasterizer gradients before converting to native integers. */
+static inline int Q_ClampedInt(double value)
+{
+    if (value != value) return 0;
+    if (value >= INT_MAX) return INT_MAX;
+    if (value <= INT_MIN) return INT_MIN;
+    return (int)value;
+}

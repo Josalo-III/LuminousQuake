@@ -21,7 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(LQ_PORTABLE)
 #include "winquake.h"
 #endif
 
@@ -123,7 +123,7 @@ void S_SoundInfo_f(void)
     Con_Printf("%5d samplebits\n", shm->samplebits);
     Con_Printf("%5d submission_chunk\n", shm->submission_chunk);
     Con_Printf("%5d speed\n", shm->speed);
-    Con_Printf("0x%x dma buffer\n", shm->buffer);
+    Con_Printf("%p dma buffer\n", (void *)shm->buffer);
 	Con_Printf("%5d total_channels\n", total_channels);
 }
 
@@ -147,7 +147,7 @@ void S_Startup (void)
 
 		if (!rc)
 		{
-#ifndef	_WIN32
+#if !defined(_WIN32) || defined(LQ_PORTABLE)
 			Con_Printf("S_Startup: SNDDMA_Init failed.\n");
 #endif
 			sound_started = 0;
@@ -204,6 +204,8 @@ void S_Init (void)
 	snd_initialized = true;
 
 	S_Startup ();
+	if (!sound_started && !fakedma)
+		return;
 
 	SND_InitScaletable ();
 
@@ -254,13 +256,13 @@ void S_Shutdown(void)
 	if (shm)
 		shm->gamealive = 0;
 
-	shm = 0;
 	sound_started = 0;
 
 	if (!fakedma)
 	{
 		SNDDMA_Shutdown();
 	}
+	shm = 0;
 }
 
 
@@ -560,19 +562,22 @@ void S_ClearBuffer (void)
 {
 	int		clear;
 		
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(LQ_PORTABLE)
 	if (!sound_started || !shm || (!shm->buffer && !pDSBuf))
 #else
 	if (!sound_started || !shm || !shm->buffer)
 #endif
 		return;
 
+#ifdef LQ_SDL
+	SNDDMA_BeginPainting();
+#endif
 	if (shm->samplebits == 8)
 		clear = 0x80;
 	else
 		clear = 0;
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(LQ_PORTABLE)
 	if (pDSBuf)
 	{
 		DWORD	dwSize;
@@ -609,6 +614,9 @@ void S_ClearBuffer (void)
 	{
 		Q_memset(shm->buffer, clear, shm->samples * shm->samplebits/8);
 	}
+#ifdef LQ_SDL
+	SNDDMA_Submit();
+#endif
 }
 
 
@@ -814,6 +822,9 @@ void GetSoundtime(void)
 	static	int		oldsamplepos;
 	int		fullsamples;
 	
+#ifdef LQ_SDL
+	if (!fakedma) { soundtime = SNDDMA_GetSoundtime(); return; }
+#endif
 	fullsamples = shm->samples / shm->channels;
 
 // it is possible to miscount buffers if it has wrapped twice between
@@ -844,7 +855,7 @@ void GetSoundtime(void)
 void S_ExtraUpdate (void)
 {
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(LQ_PORTABLE)
 	IN_Accumulate ();
 #endif
 
@@ -861,6 +872,9 @@ void S_Update_(void)
 	if (!sound_started || (snd_blocked > 0))
 		return;
 
+#ifdef LQ_SDL
+	SNDDMA_BeginPainting();
+#endif
 // Updates DMA time
 	GetSoundtime();
 
@@ -877,7 +891,7 @@ void S_Update_(void)
 	if (endtime - soundtime > samps)
 		endtime = soundtime + samps;
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(LQ_PORTABLE)
 // if the buffer was lost or stopped, restore it and/or restart it
 	{
 		DWORD	dwStatus;

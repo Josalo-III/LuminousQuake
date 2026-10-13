@@ -596,6 +596,21 @@ Called by the system between frames for both key up and key down events
 Should NOT be called during an interrupt!
 ===================
 */
+qboolean key_text_input;
+
+/* SDL text events carry the typed character, independently of key bindings.
+ * The original font/console encoding remains printable ASCII in this phase. */
+void Key_CharEvent(int character)
+{
+	if (character < 32 || character > 126) return;
+	switch (key_dest) {
+	case key_console: Key_Console(character); break;
+	case key_message: Key_Message(character); break;
+	case key_menu: M_Keydown(character); break;
+	case key_game: if (con_forcedup) Key_Console(character); break;
+	}
+}
+
 void Key_Event (int key, qboolean down)
 {
 	char	*kb;
@@ -716,6 +731,9 @@ void Key_Event (int key, qboolean down)
 
 	if (!down)
 		return;		// other systems only care about key down events
+
+	if (key_text_input && key >= 32 && key < 127)
+		return;
 
 	if (shift_down)
 	{

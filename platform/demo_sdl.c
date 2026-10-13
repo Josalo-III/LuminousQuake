@@ -1,0 +1,327 @@
+/* Asset-free platform demonstration and backend integration checks.
+ * New LuminousQuake code, GPL-2.0-or-later. */
+#include "quakedef.h"
+#include "d_local.h"
+#include "sdl_backend.h"
+#include <stdalign.h>
+
+surfcache_t *D_SCAlloc(int width, int size);
+extern byte *draw_chars;
+extern char key_lines[32][256];
+extern int edit_line, key_linepos;
+extern kbutton_t in_forward, in_mlook;
+extern int sound_started, soundtime;
+static byte font[128 * 128];
+static sfx_t demo_sound;
+static float demo_depth[8];
+
+#define VERIFY(condition) do { if (!(condition)) { \
+    fprintf(stderr, "FAIL SDL %s:%d: %s\n", __FILE__, __LINE__, #condition); return 1; \
+} } while (0)
+
+static void Palette(byte *palette)
+{
+    int i;
+    for (i = 0; i < 256; ++i) {
+        palette[i * 3] = palette[i * 3 + 1] = palette[i * 3 + 2] = (byte)i;
+        if (i >= 64 && i < 128) {
+            palette[i * 3] = 8 + (i - 64) * 2;
+            palette[i * 3 + 1] = 20 + (i - 64) * 2;
+            palette[i * 3 + 2] = 40 + (i - 64) * 3;
+        }
+        if (i >= 128 && i < 192) {
+            palette[i * 3] = 80 + (i - 128) * 2;
+            palette[i * 3 + 1] = 35 + (i - 128) * 2;
+            palette[i * 3 + 2] = 12 + (i - 128);
+        }
+    }
+}
+static void Font(void)
+{
+    static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:-./";
+    static const byte glyph[][7] = {
+        {14,17,17,31,17,17,17}, {30,17,17,30,17,17,30}, {14,17,16,16,16,17,14},
+        {30,17,17,17,17,17,30}, {31,16,16,30,16,16,31}, {31,16,16,30,16,16,16},
+        {14,17,16,23,17,17,15}, {17,17,17,31,17,17,17}, {14,4,4,4,4,4,14},
+        {7,2,2,2,18,18,12}, {17,18,20,24,20,18,17}, {16,16,16,16,16,16,31},
+        {17,27,21,21,17,17,17}, {17,25,21,19,17,17,17}, {14,17,17,17,17,17,14},
+        {30,17,17,30,16,16,16}, {14,17,17,17,21,18,13}, {30,17,17,30,20,18,17},
+        {15,16,16,14,1,1,30}, {31,4,4,4,4,4,4}, {17,17,17,17,17,17,14},
+        {17,17,17,17,17,10,4}, {17,17,17,21,21,21,10}, {17,17,10,4,10,17,17},
+        {17,17,10,4,4,4,4}, {31,1,2,4,8,16,31},
+        {14,17,19,21,25,17,14}, {4,12,4,4,4,4,14}, {14,17,1,2,4,8,31},
+        {30,1,1,14,1,1,30}, {2,6,10,18,31,2,2}, {31,16,16,30,1,1,30},
+        {14,16,16,30,17,17,14}, {31,1,2,4,8,8,8}, {14,17,17,14,17,17,14},
+        {14,17,17,15,1,1,14}, {0,4,4,0,4,4,0}, {0,0,0,31,0,0,0},
+        {0,0,0,0,0,4,4}, {1,2,2,4,8,8,16}
+    };
+    size_t i;
+    int x, y, code;
+    for (i = 0; i < sizeof(alphabet) - 1; ++i)
+        for (code = alphabet[i]; code <= alphabet[i] + 128; code += 128)
+            for (y = 0; y < 7; ++y) for (x = 0; x < 5; ++x)
+                if (glyph[i][y] & (1 << (4 - x)))
+                    font[((code >> 4) * 8 + y) * 128 + (code & 15) * 8 + x + 1] = 235;
+    draw_chars = font;
+}
+static void Text(int x, int y, const char *text)
+{
+    char clipped[128];
+    size_t length = strlen(text), limit = (vid.width - x) / 8;
+    if (length > limit) length = limit;
+    if (length >= sizeof(clipped)) length = sizeof(clipped) - 1;
+    memcpy(clipped, text, length); clipped[length] = 0;
+    Draw_String(x, y, clipped);
+}
+static float Edge(float ax, float ay, float bx, float by, float x, float y)
+{ return (x - ax) * (by - ay) - (y - ay) * (bx - ax); }
+static void Triangle(const float *a, const float *b, const float *c, byte color)
+{
+    int x, y, minx = (int)fminf(a[0], fminf(b[0], c[0]));
+    int maxx = (int)fmaxf(a[0], fmaxf(b[0], c[0]));
+    int miny = (int)fminf(a[1], fminf(b[1], c[1]));
+    int maxy = (int)fmaxf(a[1], fmaxf(b[1], c[1]));
+    float orientation = Edge(a[0], a[1], b[0], b[1], c[0], c[1]);
+    if (minx < 0) minx = 0; if (miny < 0) miny = 0;
+    if (maxx >= (int)vid.width) maxx = vid.width - 1;
+    if (maxy >= (int)vid.height) maxy = vid.height - 1;
+    for (y = miny; y <= maxy; ++y) for (x = minx; x <= maxx; ++x)
+        if (Edge(a[0], a[1], b[0], b[1], x + 0.5f, y + 0.5f) * orientation >= 0 &&
+            Edge(b[0], b[1], c[0], c[1], x + 0.5f, y + 0.5f) * orientation >= 0 &&
+            Edge(c[0], c[1], a[0], a[1], x + 0.5f, y + 0.5f) * orientation >= 0)
+            vid.buffer[y * vid.rowbytes + x] = color;
+}
+static void Scene(double elapsed)
+{
+    static const int faces[12][3] = {{0,1,3},{0,3,2},{4,6,7},{4,7,5},
+        {0,4,5},{0,5,1},{2,3,7},{2,7,6},{0,2,6},{0,6,4},{1,5,7},{1,7,3}};
+    float projected[8][2], face_depth[12]; int order[12];
+    float yaw = (float)elapsed * 0.2f + cl.viewangles[YAW] * (float)M_PI / 180;
+    float pitch = 0.35f + cl.viewangles[PITCH] * (float)M_PI / 180;
+    int x, y, i, j;
+    char status[96];
+    for (y = 0; y < (int)vid.height; ++y) {
+        for (x = 0; x < (int)vid.width; ++x) {
+            byte color = (byte)(66 + y * 20 / vid.height);
+            if (y > (int)vid.height * 3 / 5) {
+                float depth = vid.height * 0.6f / (y - vid.height * 0.6f + 1);
+                int tile_x = (int)((x - vid.width * 0.5f) * depth / 55);
+                int tile_y = (int)(depth * 8);
+                color = ((tile_x ^ tile_y) & 1) ? 32 : 43;
+            }
+            vid.buffer[y * vid.rowbytes + x] = color;
+        }
+    }
+    for (i = 0; i < 8; ++i) {
+        float xx = i & 1 ? 1 : -1, yy = i & 2 ? 1 : -1, zz = i & 4 ? 1 : -1;
+        float a = xx * cosf(yaw) + zz * sinf(yaw);
+        float b = zz * cosf(yaw) - xx * sinf(yaw);
+        float vertical = yy * cosf(pitch) - b * sinf(pitch);
+        float depth = b * cosf(pitch) + yy * sinf(pitch) + 5;
+        demo_depth[i] = depth;
+        projected[i][0] = vid.width * 0.5f + a / depth * vid.height * 1.3f;
+        projected[i][1] = vid.height * 0.5f - vertical / depth * vid.height * 1.3f;
+    }
+    for (i = 0; i < 12; ++i) {
+        order[i] = i;
+        face_depth[i] = demo_depth[faces[i][0]] + demo_depth[faces[i][1]] + demo_depth[faces[i][2]];
+    }
+    for (i = 0; i < 12; ++i) for (j = i + 1; j < 12; ++j)
+        if (face_depth[order[i]] < face_depth[order[j]]) { int temp = order[i]; order[i] = order[j]; order[j] = temp; }
+    for (i = 0; i < 12; ++i) {
+        int face = order[i];
+        Triangle(projected[faces[face][0]], projected[faces[face][1]], projected[faces[face][2]],
+            (byte)(130 + face / 2 * 9));
+    }
+    Draw_Fill(0, 0, vid.width, 54, 18);
+    Text(16, 12, "LUMINOUSQUAKE");
+    Text(16, 30, "PHASE 2 / SDL PLATFORM DEMO / GENERATED ASSETS");
+    Draw_Fill(0, vid.height - 58, vid.width, 58, 18);
+    snprintf(status, sizeof(status), "%ux%u FRAMEBUFFER / %s AUDIO / %s",
+        vid.width, vid.height, LQ_AudioReady() ? "SDL" : "NO", LQ_HasFocus() ? "FOCUSED" : "UNFOCUSED");
+    Text(16, vid.height - 46, status);
+    Text(16, vid.height - 28, "MOUSE LOOK / F11 FULLSCREEN / ESC EXIT");
+    if (key_dest == key_console) Text(16, vid.height - 12, key_lines[edit_line]);
+    else Text(16, vid.height - 12, "PRESS T FOR TEST TONE / GRAVE FOR CONSOLE");
+    VID_Update(NULL);
+}
+static void Tone(void)
+{
+    sfxcache_t *cache;
+    int i, samples;
+    if (!sound_started || !shm) return;
+    samples = shm->speed / 2;
+    if (!demo_sound.cache.data) {
+        strcpy(demo_sound.name, "__platform_tone__");
+        cache = Cache_Alloc(&demo_sound.cache, sizeof(*cache) + samples * sizeof(short), "demo tone");
+        cache->length = samples; cache->loopstart = -1; cache->speed = shm->speed;
+        cache->width = 2; cache->stereo = 0;
+        for (i = 0; i < samples; ++i) ((short *)cache->data)[i] =
+            (short)(sinf((float)i * 440 * 2 * (float)M_PI / shm->speed) * 6000);
+    }
+    S_StartSound(cl.viewentity, 0, &demo_sound, vec3_origin, 0.5f, 0);
+}
+static void KeyEvent(SDL_Event *event, Uint32 type, SDL_Scancode scan, SDL_Keycode symbol)
+{
+    memset(event, 0, sizeof(*event)); event->type = type;
+    event->key.windowID = SDL_GetWindowID(LQ_SDLWindow());
+    event->key.keysym.scancode = scan; event->key.keysym.sym = symbol;
+    LQ_HandleEvent(event);
+}
+static int TestPlatform(qboolean no_audio)
+{
+    SDL_Event event;
+    int saved_width = vid.width, saved_height = vid.height;
+    size_t bytes; byte *output;
+    extern qboolean keydown[256];
+    LQ_PumpEvents(); LQ_SetFocus(true);
+    { float old_yaw = cl.viewangles[YAW];
+      SDL_Event motion;
+      memset(&motion, 0, sizeof(motion)); motion.type = SDL_MOUSEMOTION;
+      motion.motion.windowID = SDL_GetWindowID(LQ_SDLWindow());
+      motion.motion.xrel = 100; motion.motion.yrel = -10000;
+      usercmd_t movement = {0};
+      if (SDL_GetRelativeMouseMode()) {
+          VERIFY(SDL_PushEvent(&motion) == 1); LQ_PumpEvents(); IN_Move(&movement);
+      } else {
+          puts("SKIP OS relative capture: driver unavailable; checking Quake mouse-delta math");
+          LQ_TestMouseDelta(100, -10000, &movement);
+      }
+      VERIFY(fabsf(cl.viewangles[YAW] - old_yaw + 100 * sensitivity.value * m_yaw.value) < 0.001f);
+      VERIFY(cl.viewangles[PITCH] == -70); }
+    Key_SetBinding('w', "+forward");
+    KeyEvent(&event, SDL_KEYDOWN, SDL_SCANCODE_W, SDLK_w); Cbuf_Execute();
+    VERIFY(in_forward.state & 1);
+    memset(&event, 0, sizeof(event)); event.type = SDL_WINDOWEVENT;
+    event.window.windowID = SDL_GetWindowID(LQ_SDLWindow());
+    event.window.event = SDL_WINDOWEVENT_FOCUS_LOST;
+    LQ_HandleEvent(&event); Cbuf_Execute();
+    VERIFY(!(in_forward.state & 1)); VERIFY(!keydown['w']); VERIFY(!SDL_GetRelativeMouseMode());
+    event.window.event = SDL_WINDOWEVENT_FOCUS_GAINED; LQ_HandleEvent(&event);
+    key_dest = key_console; LQ_UpdateCapture();
+    KeyEvent(&event, SDL_KEYDOWN, SDL_SCANCODE_A, SDLK_a);
+    memset(&event, 0, sizeof(event)); event.type = SDL_TEXTINPUT;
+    strcpy(event.text.text, "A!"); LQ_HandleEvent(&event);
+    VERIFY(!strcmp(key_lines[edit_line] + 1, "A!"));
+    KeyEvent(&event, SDL_KEYUP, SDL_SCANCODE_A, SDLK_a);
+    KeyEvent(&event, SDL_KEYDOWN, SDL_SCANCODE_LSHIFT, SDLK_LSHIFT);
+    KeyEvent(&event, SDL_KEYDOWN, SDL_SCANCODE_RSHIFT, SDLK_RSHIFT);
+    KeyEvent(&event, SDL_KEYUP, SDL_SCANCODE_LSHIFT, SDLK_LSHIFT);
+    VERIFY(keydown[K_SHIFT]);
+    KeyEvent(&event, SDL_KEYUP, SDL_SCANCODE_RSHIFT, SDLK_RSHIFT); VERIFY(!keydown[K_SHIFT]);
+    key_dest = key_game;
+    SDL_SetWindowSize(LQ_SDLWindow(), 800, 600); LQ_PumpEvents();
+    VERIFY(vid.width == (unsigned)saved_width && vid.height == (unsigned)saved_height);
+    if (COM_CheckParm("--test-fullscreen")) {
+        Cbuf_AddText("vid_togglefullscreen\n"); Cbuf_Execute(); LQ_PumpEvents();
+        VERIFY(SDL_GetWindowFlags(LQ_SDLWindow()) & SDL_WINDOW_FULLSCREEN_DESKTOP);
+        Cbuf_AddText("vid_togglefullscreen\n"); Cbuf_Execute(); LQ_PumpEvents();
+        VERIFY(!(SDL_GetWindowFlags(LQ_SDLWindow()) & SDL_WINDOW_FULLSCREEN_DESKTOP));
+        puts("PASS native fullscreen enter/exit");
+    }
+    memset(vid.buffer, 0, vid.width * vid.height);
+    Draw_Fill(0, 0, vid.width, vid.height, 150); VID_Update(NULL);
+    { SDL_Surface *capture; char path[128];
+      snprintf(path, sizeof(path), "luminousquake-sdl-%u.bmp", SDL_GetTicks());
+      VERIFY(LQ_SaveFrame(path)); capture = SDL_LoadBMP(path); VERIFY(capture != NULL);
+      SDL_Surface *rgba = SDL_ConvertSurfaceFormat(capture, SDL_PIXELFORMAT_ARGB8888, 0);
+      VERIFY(rgba != NULL);
+      VERIFY(((uint32_t *)rgba->pixels)[rgba->w / 2 + rgba->h / 2 * (rgba->pitch / 4)] == d_8to24table[150]);
+      SDL_FreeSurface(rgba); SDL_FreeSurface(capture); remove(path); }
+    VERIFY(d_8to24table[150] == (UINT32_C(0xff000000) | (124u << 16) | (79u << 8) | 34u));
+    { byte palette[768]; Palette(palette); palette[450] = 5; palette[451] = 7; palette[452] = 9;
+      VID_ShiftPalette(palette); VID_Update(NULL);
+      VERIFY(d_8to24table[150] == UINT32_C(0xff050709)); VID_SetPalette(palette); }
+    Cvar_SetValue("vid_width", 800); Cvar_SetValue("vid_height", 600);
+    Cbuf_AddText("vid_restart\n"); Cbuf_Execute();
+    VERIFY(vid.width == 800 && vid.height == 600);
+    VERIFY((uintptr_t)D_SCAlloc(8, 17) % _Alignof(surfcache_t) == 0);
+    VERIFY((uintptr_t)D_SCAlloc(8, 19) % _Alignof(surfcache_t) == 0);
+    if (no_audio) {
+        VERIFY(!LQ_AudioReady());
+        S_Update(vec3_origin, vec3_origin, vec3_origin, vec3_origin);
+    } else {
+        uint64_t before;
+        short *samples;
+        VERIFY(LQ_AudioReady());
+        LQ_AudioFocus(false);
+        SNDDMA_BeginPainting();
+        bytes = (size_t)shm->samples * sizeof(short);
+        output = malloc(bytes + 16); VERIFY(output != NULL);
+        samples = (short *)shm->buffer;
+        for (size_t i = 0; i < bytes / sizeof(short); ++i) samples[i] = 1000;
+        before = LQ_AudioFrames();
+        LQ_AudioConsume(output, (int)bytes + 16);
+        VERIFY(((short *)output)[3] == 1000);
+        for (size_t i = bytes; i < bytes + 16; ++i) VERIFY(output[i] == 0);
+        VERIFY(LQ_AudioFrames() - before == bytes / 4 + 4);
+        VERIFY(SNDDMA_GetDMAPos() >= 0 && SNDDMA_GetDMAPos() < shm->samples);
+        SNDDMA_Submit(); free(output);
+        /* Exercise the real C mixer into the shared audio ring. */
+        { sfx_t sound = {0}; sfxcache_t *cache;
+          strcpy(sound.name, "__mixer_fixture__");
+          cache = Cache_Alloc(&sound.cache, sizeof(*cache) + 64 * sizeof(short), "mixer test");
+          cache->length = 64; cache->loopstart = -1; cache->speed = shm->speed;
+          cache->width = 2; cache->stereo = 0;
+          for (int i = 0; i < 64; ++i) ((short *)cache->data)[i] = i & 1 ? -1000 : 1000;
+          S_ClearBuffer(); memset(channels, 0, sizeof(channels)); total_channels = 1;
+          channels[0].sfx = &sound; channels[0].leftvol = 255; channels[0].rightvol = 128;
+          channels[0].end = 64; paintedtime = 0;
+          SNDDMA_BeginPainting(); S_PaintChannels(32);
+          VERIFY(((short *)shm->buffer)[0] == (((1000 * 255) >> 8) * (int)(volume.value * 256) >> 8));
+          VERIFY(((short *)shm->buffer)[1] == (((1000 * 128) >> 8) * (int)(volume.value * 256) >> 8));
+          SNDDMA_Submit(); channels[0].sfx = NULL; Cache_Free(&sound.cache); }
+        S_Shutdown(); VERIFY(!LQ_AudioReady()); S_Startup(); VERIFY(LQ_AudioReady());
+        LQ_AudioFocus(true); before = LQ_AudioFrames(); SDL_Delay(70);
+        VERIFY(LQ_AudioFrames() > before);
+    }
+    memset(&event, 0, sizeof(event)); event.type = SDL_QUIT;
+    LQ_HandleEvent(&event); VERIFY(LQ_QuitRequested()); LQ_ResetQuit();
+    puts("PASS SDL focus/key releases, text/modifiers, resize, palette, video restart, cache alignment, audio fallback/mixer/ring, quit");
+    return 0;
+}
+int LQ_PlatformDemo(int argc, char **argv, qboolean test)
+{
+    quakeparms_t parms = {0}; byte palette[768];
+    double start, previous, seconds = 0;
+    int result = 0, argument;
+    COM_InitArgv(argc, argv);
+    parms.memsize = 256 * 1024 * 1024; parms.membase = malloc(parms.memsize); parms.basedir = ".";
+    if (!parms.membase) Sys_Error("Cannot allocate demonstration heap");
+    host_parms = parms;
+    Memory_Init(parms.membase, parms.memsize); Cbuf_Init(); Cmd_Init(); COM_Init(".");
+    Key_Init(); CL_Init(); IN_Init(); Font(); Palette(palette);
+    cls.state = ca_connected; key_dest = key_game; LQ_SetDemo(true);
+    VID_Init(palette);
+    SDL_SetWindowTitle(LQ_SDLWindow(), "LuminousQuake / Phase 2 / F11 fullscreen / T tone / Esc exit");
+    Con_Init();
+    S_Init(); S_AmbientOff();
+    Key_SetBinding('`', "toggleconsole"); Key_SetBinding(K_F11, "vid_togglefullscreen");
+    Key_SetBinding('t', "platform_tone"); Cmd_AddCommand("platform_tone", Tone);
+    Cbuf_AddText("+mlook\n"); Cbuf_Execute();
+    if (test) result = TestPlatform(COM_CheckParm("--expect-no-audio") != 0);
+    else {
+        argument = COM_CheckParm("--demo-seconds");
+        if (argument) {
+            char *end;
+            if (argument + 1 >= com_argc) Sys_Error("--demo-seconds needs a duration");
+            seconds = strtod(com_argv[argument + 1], &end);
+            if (*end || seconds <= 0 || seconds > 3600) Sys_Error("Invalid demonstration duration");
+        }
+        start = previous = Sys_FloatTime();
+        while (!LQ_QuitRequested() && (!seconds || Sys_FloatTime() - start < seconds)) {
+            double now = Sys_FloatTime(); usercmd_t movement = {0};
+            host_frametime = now - previous; previous = now;
+            LQ_PumpEvents(); Cbuf_Execute(); IN_Move(&movement);
+            S_Update(vec3_origin, vec3_origin, vec3_origin, vec3_origin);
+            Scene(now - start);
+            SDL_Delay(10);
+        }
+        argument = COM_CheckParm("--screenshot");
+        if (argument && argument + 1 < com_argc && !LQ_SaveFrame(com_argv[argument + 1]))
+            Sys_Error("Cannot save demonstration frame: %s", SDL_GetError());
+    }
+    S_Shutdown(); IN_Shutdown(); VID_Shutdown();
+    LQ_SetDemo(false); SDL_Quit(); free(parms.membase);
+    return result;
+}

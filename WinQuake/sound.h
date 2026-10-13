@@ -175,3 +175,8 @@ void S_AmbientOff (void);
 void S_AmbientOn (void);
 
 #endif
+
+#ifdef LQ_SDL
+void SNDDMA_BeginPainting(void);
+int SNDDMA_GetSoundtime(void);
+#endif

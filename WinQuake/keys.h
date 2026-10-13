@@ -131,3 +131,6 @@ void Key_WriteBindings (FILE *f);
 void Key_SetBinding (int keynum, char *binding);
 void Key_ClearStates (void);
 
+
+extern qboolean key_text_input;
+void Key_CharEvent(int character);

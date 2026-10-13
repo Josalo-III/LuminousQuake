@@ -77,7 +77,7 @@ void R_AddDynamicLights (void)
 
 	for (lnum=0 ; lnum<MAX_DLIGHTS ; lnum++)
 	{
-		if ( !(surf->dlightbits & (1<<lnum) ) )
+		if ( !(surf->dlightbits & (1U<<lnum) ) )
 			continue;		// not lit by this light
 
 		rad = cl_dlights[lnum].radius;
@@ -355,8 +355,8 @@ void R_DrawSurfaceBlock8_mip0 (void)
 		lightleft = r_lightptr[0];
 		lightright = r_lightptr[1];
 		r_lightptr += r_lightwidth;
-		lightleftstep = (r_lightptr[0] - lightleft) >> 4;
-		lightrightstep = (r_lightptr[1] - lightright) >> 4;
+		lightleftstep = ((int)r_lightptr[0] - lightleft) >> 4;
+		lightrightstep = ((int)r_lightptr[1] - lightright) >> 4;
 
 		for (i=0 ; i<16 ; i++)
 		{
@@ -405,8 +405,8 @@ void R_DrawSurfaceBlock8_mip1 (void)
 		lightleft = r_lightptr[0];
 		lightright = r_lightptr[1];
 		r_lightptr += r_lightwidth;
-		lightleftstep = (r_lightptr[0] - lightleft) >> 3;
-		lightrightstep = (r_lightptr[1] - lightright) >> 3;
+		lightleftstep = ((int)r_lightptr[0] - lightleft) >> 3;
+		lightrightstep = ((int)r_lightptr[1] - lightright) >> 3;
 
 		for (i=0 ; i<8 ; i++)
 		{
@@ -455,8 +455,8 @@ void R_DrawSurfaceBlock8_mip2 (void)
 		lightleft = r_lightptr[0];
 		lightright = r_lightptr[1];
 		r_lightptr += r_lightwidth;
-		lightleftstep = (r_lightptr[0] - lightleft) >> 2;
-		lightrightstep = (r_lightptr[1] - lightright) >> 2;
+		lightleftstep = ((int)r_lightptr[0] - lightleft) >> 2;
+		lightrightstep = ((int)r_lightptr[1] - lightright) >> 2;
 
 		for (i=0 ; i<4 ; i++)
 		{
@@ -505,8 +505,8 @@ void R_DrawSurfaceBlock8_mip3 (void)
 		lightleft = r_lightptr[0];
 		lightright = r_lightptr[1];
 		r_lightptr += r_lightwidth;
-		lightleftstep = (r_lightptr[0] - lightleft) >> 1;
-		lightrightstep = (r_lightptr[1] - lightright) >> 1;
+		lightleftstep = ((int)r_lightptr[0] - lightleft) >> 1;
+		lightrightstep = ((int)r_lightptr[1] - lightright) >> 1;
 
 		for (i=0 ; i<2 ; i++)
 		{

@@ -1,3 +1,7 @@
 /build*/
 /CMakeUserPresets.json
 .DS_Store
+
+# Local game assets; never include in source control.
+/quake-complete/
+*.pak

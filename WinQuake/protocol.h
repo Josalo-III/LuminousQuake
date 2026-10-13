@@ -165,3 +165,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define TE_IMPLOSION		14
 #define TE_RAILTRAIL		15
 #endif
+
+// Rerelease notification: a NUL-terminated achievement identifier.
+#define svc_achievement 52
