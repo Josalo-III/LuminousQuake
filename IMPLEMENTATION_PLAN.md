@@ -1,6 +1,7 @@
 # LuminousQuake implementation plan
 
-Status: proposed implementation sequence  
+Status: Phase 1 implemented and locally validated; cross-platform CI and retail validation pending
+
 Date: October 13, 2026
 
 ## Purpose
@@ -62,6 +63,8 @@ For every imported component, record the upstream commit, original paths, local 
 - Original-game comparisons are explicitly marked pending until data is available.
 
 ## Phase 1: portable native build and correctness fixes
+
+Implementation: see [Phase 1 notes](docs/PHASE_1.md) and [build instructions](README.md). The initial client target is a headless bootstrap; SDL window/input and audio remain Phase 2.
 
 ### Work
 

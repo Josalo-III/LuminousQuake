@@ -982,6 +982,25 @@ void ED_LoadFromFile (char *data)
 PR_LoadProgs
 ===============
 */
+static void PR_CheckLump(int offset, int count, size_t element_size)
+{
+	if (offset < (int)sizeof(dprograms_t) || count < 0 ||
+	    (size_t)offset > (size_t)com_filesize ||
+	    (size_t)count > ((size_t)com_filesize - (size_t)offset) / element_size)
+		Sys_Error("progs.dat has an invalid lump range");
+}
+
+static void *PR_Lump(int offset, int count, size_t element_size, size_t alignment)
+{
+	byte *data = (byte *)progs + offset;
+	if ((uintptr_t)data % alignment) {
+		void *aligned = Hunk_AllocName(count * element_size, "progs");
+		memcpy(aligned, data, count * element_size);
+		return aligned;
+	}
+	return data;
+}
+
 void PR_LoadProgs (void)
 {
 	int		i;
@@ -995,6 +1014,8 @@ void PR_LoadProgs (void)
 	progs = (dprograms_t *)COM_LoadHunkFile ("progs.dat");
 	if (!progs)
 		Sys_Error ("PR_LoadProgs: couldn't load progs.dat");
+	if (com_filesize < (int)sizeof(dprograms_t))
+		Sys_Error("progs.dat has a truncated header");
 	Con_DPrintf ("Programs occupy %iK.\n", com_filesize/1024);
 
 	for (i=0 ; i<com_filesize ; i++)
@@ -1009,16 +1030,28 @@ void PR_LoadProgs (void)
 	if (progs->crc != PROGHEADER_CRC)
 		Sys_Error ("progs.dat system vars have been modified, progdefs.h is out of date");
 
-	pr_functions = (dfunction_t *)((byte *)progs + progs->ofs_functions);
-	pr_strings = (char *)progs + progs->ofs_strings;
-	pr_globaldefs = (ddef_t *)((byte *)progs + progs->ofs_globaldefs);
-	pr_fielddefs = (ddef_t *)((byte *)progs + progs->ofs_fielddefs);
-	pr_statements = (dstatement_t *)((byte *)progs + progs->ofs_statements);
+	PR_CheckLump(progs->ofs_statements, progs->numstatements, sizeof(dstatement_t));
+	PR_CheckLump(progs->ofs_globaldefs, progs->numglobaldefs, sizeof(ddef_t));
+	PR_CheckLump(progs->ofs_fielddefs, progs->numfielddefs, sizeof(ddef_t));
+	PR_CheckLump(progs->ofs_functions, progs->numfunctions, sizeof(dfunction_t));
+	PR_CheckLump(progs->ofs_strings, progs->numstrings, 1);
+	PR_CheckLump(progs->ofs_globals, progs->numglobals, sizeof(float));
+	if (progs->entityfields < (int)(sizeof(entvars_t) / 4) ||
+	    progs->entityfields > (INT_MAX - (int)sizeof(edict_t)) / 4)
+		Sys_Error("progs.dat has an invalid entity field count");
 
-	pr_global_struct = (globalvars_t *)((byte *)progs + progs->ofs_globals);
+	pr_functions = PR_Lump(progs->ofs_functions, progs->numfunctions, sizeof(dfunction_t), _Alignof(dfunction_t));
+	pr_strings = (char *)progs + progs->ofs_strings;
+	pr_globaldefs = PR_Lump(progs->ofs_globaldefs, progs->numglobaldefs, sizeof(ddef_t), _Alignof(ddef_t));
+	pr_fielddefs = PR_Lump(progs->ofs_fielddefs, progs->numfielddefs, sizeof(ddef_t), _Alignof(ddef_t));
+	pr_statements = PR_Lump(progs->ofs_statements, progs->numstatements, sizeof(dstatement_t), _Alignof(dstatement_t));
+
+	pr_global_struct = PR_Lump(progs->ofs_globals, progs->numglobals, sizeof(float), _Alignof(globalvars_t));
 	pr_globals = (float *)pr_global_struct;
 	
-	pr_edict_size = progs->entityfields * 4 + sizeof (edict_t) - sizeof(entvars_t);
+	/* VM cells remain 32-bit; native edict headers require aligned strides. */
+	pr_edict_size = progs->entityfields * 4 + offsetof(edict_t, v);
+	pr_edict_size = (pr_edict_size + _Alignof(edict_t) - 1) & ~(_Alignof(edict_t) - 1);
 	
 // byte swap the lumps
 	for (i=0 ; i<progs->numstatements ; i++)

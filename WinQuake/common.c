@@ -139,10 +139,10 @@ void Q_memset (void *dest, int fill, int count)
 {
 	int             i;
 	
-	if ( (((long)dest | count) & 3) == 0)
+	if ( (((uintptr_t)dest | count) & 3) == 0)
 	{
 		count >>= 2;
-		fill = fill | (fill<<8) | (fill<<16) | (fill<<24);
+		fill = (int32_t)((uint32_t)(byte)fill * UINT32_C(0x01010101));
 		for (i=0 ; i<count ; i++)
 			((int *)dest)[i] = fill;
 	}
@@ -155,7 +155,7 @@ void Q_memcpy (void *dest, void *src, int count)
 {
 	int             i;
 	
-	if (( ( (long)dest | (long)src | count) & 3) == 0 )
+	if (( ( (uintptr_t)dest | (uintptr_t)src | count) & 3) == 0 )
 	{
 		count>>=2;
 		for (i=0 ; i<count ; i++)
@@ -464,7 +464,7 @@ int    LongSwap (int l)
 	b3 = (l>>16)&255;
 	b4 = (l>>24)&255;
 
-	return ((int)b1<<24) + ((int)b2<<16) + ((int)b3<<8) + b4;
+	return (int32_t)(((uint32_t)b1<<24) | ((uint32_t)b2<<16) | ((uint32_t)b3<<8) | b4);
 }
 
 int     LongNoSwap (int l)
@@ -664,10 +664,10 @@ int MSG_ReadLong (void)
 		return -1;
 	}
 		
-	c = net_message.data[msg_readcount]
-	+ (net_message.data[msg_readcount+1]<<8)
-	+ (net_message.data[msg_readcount+2]<<16)
-	+ (net_message.data[msg_readcount+3]<<24);
+	c = (int32_t)((uint32_t)net_message.data[msg_readcount]
+	| ((uint32_t)net_message.data[msg_readcount+1]<<8)
+	| ((uint32_t)net_message.data[msg_readcount+2]<<16)
+	| ((uint32_t)net_message.data[msg_readcount+3]<<24));
 	
 	msg_readcount += 4;
 	
@@ -683,6 +683,11 @@ float MSG_ReadFloat (void)
 		int     l;
 	} dat;
 	
+	if (msg_readcount + 4 > net_message.cursize)
+	{
+		msg_badread = true;
+		return -1;
+	}
 	dat.b[0] =      net_message.data[msg_readcount];
 	dat.b[1] =      net_message.data[msg_readcount+1];
 	dat.b[2] =      net_message.data[msg_readcount+2];
@@ -855,24 +860,19 @@ COM_FileBase
 */
 void COM_FileBase (char *in, char *out)
 {
-	char *s, *s2;
-	
-	s = in + strlen(in) - 1;
-	
-	while (s != in && *s != '.')
-		s--;
-	
-	for (s2 = s ; *s2 && *s2 != '/' ; s2--)
-	;
-	
-	if (s-s2 < 2)
-		strcpy (out,"?model?");
-	else
-	{
-		s--;
-		strncpy (out,s2+1, s-s2);
-		out[s-s2] = 0;
-	}
+	const char *start = in, *end, *cursor;
+	size_t length;
+	for (cursor = in; *cursor; ++cursor)
+		if (*cursor == '/' || *cursor == '\\') start = cursor + 1;
+	end = cursor;
+	for (cursor = end; cursor > start; --cursor)
+		if (cursor[-1] == '.') { end = cursor - 1; break; }
+	length = (size_t)(end - start);
+	if (!length) { strcpy(out, "?model?"); return; }
+	/* Existing callers provide 32-byte hunk/model labels. */
+	if (length > 31) length = 31;
+	memcpy(out, start, length);
+	out[length] = 0;
 }
 
 
@@ -1122,12 +1122,12 @@ void COM_InitArgv (int argc, char **argv)
 COM_Init
 ================
 */
-void COM_Init (char *basedir)
+void COM_InitByteOrder(void)
 {
-	byte    swaptest[2] = {1,0};
+	const uint16_t swaptest = 1;
 
 // set the byte swapping variables in a portable manner 
-	if ( *(short *)swaptest == 1)
+	if (*(const byte *)&swaptest == 1)
 	{
 		bigendien = false;
 		BigShort = ShortSwap;
@@ -1148,6 +1148,11 @@ void COM_Init (char *basedir)
 		LittleFloat = FloatSwap;
 	}
 
+}
+
+void COM_Init (char *basedir)
+{
+	COM_InitByteOrder();
 	Cvar_RegisterVariable (&registered);
 	Cvar_RegisterVariable (&cmdline);
 	Cmd_AddCommand ("path", COM_Path_f);

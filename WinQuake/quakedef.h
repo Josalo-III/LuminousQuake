@@ -44,8 +44,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <stdio.h>
 #include <stdlib.h>
 #include <setjmp.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <limits.h>
 
-#if defined(_WIN32) && !defined(WINDED)
+#if defined(_WIN32) && !defined(WINDED) && !defined(LQ_PORTABLE)
 
 #if defined(_M_IX86)
 #define __i386__	1
@@ -61,7 +64,7 @@ void	VID_UnlockBuffer (void);
 
 #endif
 
-#if defined __i386__ // && !defined __sun__
+#if defined(__i386__) && !defined(LQ_PORTABLE)
 #define id386	1
 #else
 #define id386	0
