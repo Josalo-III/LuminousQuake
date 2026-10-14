@@ -6,11 +6,13 @@ improved materials, and faithful asset improvements. See the
 
 ## Classic GPU gameplay: Phase 3 integration checkpoint
 
-The playable `luminousquake` executable now supports **Software** and an interim
-**Classic GPU** mode through Options. Classic GPU draws the BSP world through
-Metal/Vulkan while compositing Quake's software actors, moving brushes, effects
-and UI. The software frame is still computed for retained layers and occlusion;
-this checkpoint makes no performance or exact GLQuake-equivalence claim.
+The playable `luminousquake` executable supports **Software** and **Classic GPU**
+through Options. Classic GPU draws the world, animated models, moving brushes,
+sprites and particles on Metal/Vulkan, with original baked lighting, animated
+textures and Classic dynamic lights. Normal Classic GPU frames skip software
+3D rasterization. The original palette UI is drawn into a scaled canvas and
+submitted with explicit transparency coverage. Exact GLQuake equivalence and
+full-campaign compatibility remain unverified.
 
 From the repository root:
 
@@ -20,11 +22,10 @@ From the repository root:
 
 Use `+lq_renderer 0` for Software. Options saves the choice for the next launch;
 the console command `vid_restart` also applies a change in the current game.
-**Enhanced** remains reserved and currently falls back to Software. Menus,
-console and underwater warp retain a complete software frame in Classic GPU.
-Animated/dynamically lit surfaces are retained in the software layer until their
-GPU implementations are ready. Failed GPU initialization/map uploads fall back
-to Software with a console explanation. See [integration details](docs/PHASE_3.md).
+**Enhanced** remains reserved and currently falls back to Software. Legacy debug
+views use a software frame; failed GPU initialization/map uploads fall back to
+Software with a console explanation. See the current
+[Classic GPU checkpoint](docs/CLASSIC_GPU_CHECKPOINT.md).
 
 ## GPU world viewer: first Phase 3 milestone
 
@@ -107,7 +108,8 @@ Enhanced remains pending. Restart the game or use `vid_restart` to apply the
 saved choice. The experimental GPU viewer remains a separate `luminousquake-gpu`
 executable. Classic GPU describes appearance and can use Metal/Vulkan.
 Options → Video Options selects resolution, horizontal FOV (10–170 degrees),
-fullscreen and vsync. Apply activates the staged settings and saves them in
+fullscreen, vsync, GPU filtering (crisp/smooth) and GPU anti-aliasing (off/2×/4× MSAA).
+Unsupported GPU settings report a fallback. Apply activates the staged settings and saves them in
 the LuminousQuake profile. Resolution presets include 16:9 and 16:10 widescreen.
 The view uses square pixels so widescreen geometry keeps its proportions.
 
@@ -116,6 +118,8 @@ the 3D view retains the selected resolution. Doubling both resolution dimensions
 doubles UI pixel size. The reference is 800×600 with 2× UI pixels;
 640×480 uses 1×, 1600×1200 uses 4×, and 1920×1080 uses 2×.
 Scaling preserves at least a 400×300 logical canvas whenever available.
+Console movement uses elapsed time and a fraction of screen height, preserving
+the 800×600 speed rather than slowing down with resolution.
 
 Rerelease map hints and ending text resolve English localization keys from
 `localization/loc_english.txt` in the game search paths, or from an adjacent
@@ -132,8 +136,8 @@ Applying video settings writes the profile immediately; quitting also saves it.
 `-fullscreen` / `-window` select the initial mode. Console variables
 `vid_width`, `vid_height`, `vid_vsync` apply with `vid_restart`;
 `vid_togglefullscreen` switches modes. Software widths must be divisible by
-8, within 320–1920; heights within 200–1440. Widths beyond this need an upgrade
-to the software rasterizer's fixed-point edge representation.
+8, within 320–3840; heights within 200–2400. The portable C rasterizer uses
+13.19 fixed-point edges to retain subpixel precision at these widths.
 Sound-device failure is nonfatal; `-nosound` explicitly disables audio.
 CD/music output is still absent.
 

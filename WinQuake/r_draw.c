@@ -212,8 +212,8 @@ void R_EmitEdge (mvertex_t *pv0, mvertex_t *pv1)
 		u = r_u1 + ((float)v - r_v1) * u_step;
 	}
 
-	edge->u_step = Q_ClampedInt((double)u_step * 0x100000);
-	edge->u = u*0x100000 + 0xFFFFF;
+	edge->u_step = Q_ClampedInt((double)u_step * EDGE_ONE);
+	edge->u = Q_ClampedInt((double)u*EDGE_ONE + EDGE_FRACTION);
 
 // we need to do this to avoid stepping off the edges if a very nearly
 // horizontal edge is less than epsilon above a scan, and numeric error causes

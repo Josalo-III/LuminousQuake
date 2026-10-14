@@ -51,6 +51,63 @@ static int PixelTest(int expected, char *error, size_t size)
         upper_left[0], upper_left[1], upper_left[2]);
     free(pixels); return good;
 }
+static int CenterColor(int red, int blue, char *error, size_t size)
+{
+    uint8_t *pixels; uint32_t width, height;
+    if (!LQ_GPUReadPixels(gpu, &pixels, &width, &height, error, size)) return 0;
+    const uint8_t *p = pixels+(width/2+height/2*width)*4;
+    int good = abs((int)p[0]-red) <= 1 && p[1] == 0 && abs((int)p[2]-blue) <= 1;
+    if (!good) snprintf(error, size, "frame color: got %u,%u,%u expected %d,0,%d", p[0],p[1],p[2],red,blue);
+    free(pixels); return good;
+}
+static int FrameTest(lq_view *view, char *error, size_t size)
+{
+    lq_scene fixture = {0}; int good = 0;
+    if (!LQ_SceneFixture(&fixture)) return 0;
+    lq_vertex vertices[3]; memcpy(vertices, fixture.vertices, sizeof(vertices));
+    uint32_t indices[] = {0,1,2}; uint8_t blue = 202, masked = 255, checker[] = {201,202,202,201};
+    lq_material material = {.indices={1,1,1,&blue},.resource_id=42};
+    lq_draw draw = {0,3,0,LQ_SURFACE_MODEL,{255,255,255,255}};
+    lq_frame frame = {vertices,indices,&draw,&material,3,3,1,1};
+    for (int i = 0; i < 3; ++i) { vertices[i].position[0] = 32; vertices[i].shade = 31; }
+    if (!LQ_GPUFrame(gpu,&frame,error,size)) goto done;
+    /* Mutating the CPU frame after submission cannot change GPU geometry. */
+    vertices[0].position[0] = 8192;
+    if (!LQ_GPURender(gpu,view,640,480,error,size) || !CenterColor(0,127,error,size)) goto done;
+    vertices[0].position[0] = 32;
+    for (int i = 0; i < 3; ++i) vertices[i].position[0] = 256;
+    if (!LQ_GPUFrame(gpu,&frame,error,size) || !LQ_GPURender(gpu,view,640,480,error,size) ||
+        !CenterColor(127,0,error,size)) goto done; /* world occludes far actor */
+    draw.flags |= LQ_SURFACE_WEAPON;
+    if (!LQ_GPUFrame(gpu,&frame,error,size) || !LQ_GPURender(gpu,view,640,480,error,size) ||
+        !CenterColor(0,127,error,size)) goto done; /* weapon depth range */
+    for (int i = 0; i < 3; ++i) vertices[i].position[0] = 32;
+    draw.flags = LQ_SURFACE_MODEL|LQ_SURFACE_MASKED;
+    material.indices.pixels = &masked; material.resource_id = 43;
+    if (!LQ_GPUFrame(gpu,&frame,error,size) || !LQ_GPURender(gpu,view,640,480,error,size) ||
+        !CenterColor(127,0,error,size)) goto done; /* palette 255 transparent */
+    material.indices = (lq_image){2,2,1,checker}; material.resource_id = 44;
+    draw.flags = LQ_SURFACE_MODEL;
+    int aa4 = LQ_GPUSamplesSupported(gpu,4) ? 4 : 0;
+    if (!aa4) puts("SKIP 4x MSAA: backend unsupported; checking smooth filtering without MSAA");
+    if (!LQ_GPUOptions(gpu,1,aa4,1,error,size) || !LQ_GPUFrame(gpu,&frame,error,size) ||
+        !LQ_GPURender(gpu,view,640,480,error,size) || !CenterColor(64,64,error,size)) goto done;
+    int aa2 = LQ_GPUSamplesSupported(gpu,2) ? 2 : 0;
+    if (!aa2) puts("SKIP 2x MSAA: backend unsupported");
+    if (!LQ_GPUOptions(gpu,0,aa2,1,error,size) || !LQ_GPURender(gpu,view,640,480,error,size) ||
+        !CenterColor(127,0,error,size)) goto done;
+    frame.draw_count = 0;
+    if (!LQ_GPUFrame(gpu,&frame,error,size) || !LQ_GPUOptions(gpu,0,0,1,error,size)) goto done;
+    fixture.draws[0].light_bits = 1;
+    view->world_draws = fixture.draws; view->world_draw_count = 2;
+    view->dynamic_lights[0][0] = 64; view->dynamic_lights[0][3] = 128;
+    if (!LQ_GPURender(gpu,view,640,480,error,size) || !CenterColor(255,0,error,size)) goto done;
+    good = 1;
+done:
+    view->world_draws = NULL; view->world_draw_count = 0;
+    memset(view->dynamic_lights,0,sizeof(view->dynamic_lights)); LQ_SceneFree(&fixture);
+    return good;
+}
 static void Move(lq_view *view, float seconds)
 {
     const bool *keys = SDL_GetKeyboardState(NULL);
@@ -155,6 +212,7 @@ int LQ_GPUViewer(int argc, char **argv)
         }
         if (!OverlayTest(&view, error, sizeof(error))) goto done;
         if (!ViewportTest(&view, error, sizeof(error))) goto done;
+        if (!FrameTest(&view, error, sizeof(error))) goto done;
         if (!LQ_GPURender(gpu, &view, 640, 480, error, sizeof(error))) goto done;
         if (capture && !SaveFrame(capture, error, sizeof(error))) goto done;
         puts("PASS SDL3 GPU geometry, depth/orientation, palette/lightstyles, overlay alpha, viewport, scene replacement, resize, readback and detached ownership");

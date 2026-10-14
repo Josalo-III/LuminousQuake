@@ -29,6 +29,15 @@ int LQ_RunDiagnostics(int argc, char **argv)
     struct qsockaddr addr, other;
     COM_InitArgv(argc, argv);
     printf("entityfields=%zu\n", sizeof(entvars_t) / 4 + 1);
+    { extern float SCR_ConsoleAdvance(float, float, float, double, int);
+      for (int height = 300; height <= 2400; height *= 2) {
+          float current = 0;
+          for (int tick = 0; tick < 4; ++tick) current = SCR_ConsoleAdvance(current,height/2,300,0.25,height);
+          CHECK(current == height/2);
+          CHECK(SCR_ConsoleAdvance(current,0,300,0.5,height) == height/4);
+          CHECK(SCR_ConsoleAdvance(current,0,300,2,height) == 0);
+      }
+    }
     { char fixture[] = "// comment\nmap_jump_across = \"Jump across\\nnow\"\nempty = \"\"\nbroken = unquoted\n";
       LQ_LocalizationParse(fixture);
       CHECK(!strcmp(LQ_Localize("$map_jump_across"), "Jump across\nnow"));

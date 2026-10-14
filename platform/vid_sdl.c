@@ -25,11 +25,25 @@ static cvar_t vid_width = {"vid_width", "640", true};
 static cvar_t vid_height = {"vid_height", "480", true};
 static cvar_t vid_fullscreen = {"vid_fullscreen", "0", true};
 static cvar_t vid_vsync = {"vid_vsync", "0", true};
+static cvar_t gpu_filter = {"gpu_filter", "0", true};
+static cvar_t gpu_msaa = {"gpu_msaa", "0", true};
 void M_Print(int x, int y, char *text);
 void M_DrawCharacter(int x, int y, int character);
 void M_Menu_Options_f(void);
 static void VideoMenuDraw(void);
 static void VideoMenuKey(int key);
+static void GPUOptions(void)
+{
+    if (!gpu) return;
+    char error[256];
+    int samples = (int)gpu_msaa.value;
+    if (samples != 0 && samples != 2 && samples != 4) { samples = 0; Cvar_SetValue("gpu_msaa", 0); }
+    if (!LQ_GPUOptions(gpu, gpu_filter.value != 0, samples, vid_vsync.value != 0, error, sizeof(error))) {
+        Con_Printf("%s; using no MSAA with VSync.\n", error);
+        Cvar_SetValue("gpu_msaa", 0); Cvar_SetValue("vid_vsync", 1);
+        if (!LQ_GPUOptions(gpu, gpu_filter.value != 0, 0, 1, error, sizeof(error))) LQ_FallbackRenderer(error);
+    }
+}
 void Host_WriteConfiguration(void);
 
 SDL_Window *LQ_SDLWindow(void) { return window; }
@@ -100,6 +114,10 @@ static void Framebuffer(int width, int height)
     SDL_DestroyTexture(texture);
     vid.buffer = vid.conbuffer = buffer;
     d_pzbuffer = zbuffer; pixels = converted; surface_cache = cache; texture = next;
+    if (vid.height) {
+        scr_con_current *= (float)height/vid.height;
+        scr_conlines *= (float)height/vid.height;
+    }
     vid.width = vid.conwidth = vid.rowbytes = vid.conrowbytes = width;
     vid.height = vid.conheight = height;
     vid.maxwarpwidth = WARP_WIDTH; vid.maxwarpheight = WARP_HEIGHT;
@@ -148,6 +166,7 @@ static void Restart(void)
     LQ_ApplyRenderer();
     Fullscreen();
     Framebuffer((int)vid_width.value, (int)vid_height.value);
+    GPUOptions();
     if (renderer && !SDL_SetRenderVSync(renderer, vid_vsync.value != 0))
         Con_Printf("VSync setting unavailable: %s\n", SDL_GetError());
     LQ_UpdateCapture();
@@ -184,12 +203,13 @@ void LQ_ApplyRenderer(void)
         startup_video_applied = true;
     }
     if (Cvar_VariableValue("lq_renderer") == 1) {
-        if (gpu) return;
+        if (gpu) { GPUOptions(); return; }
         SDL_DestroyTexture(texture); texture = NULL;
         SDL_DestroyRenderer(renderer); renderer = NULL;
         gpu = LQ_GPUCreate(window, 0, error, sizeof(error));
         if (!gpu) { LQ_FallbackRenderer(error); return; }
-        Con_Printf("Classic GPU world enabled; software actors, brushes, effects and UI.\n");
+        GPUOptions();
+        Con_Printf("Classic GPU enabled: GPU world, actors, brushes and effects.\n");
     } else {
         if (gpu) LQ_FallbackRenderer("Software selected");
         if (Cvar_VariableValue("lq_renderer") == 2)
@@ -205,6 +225,7 @@ void VID_Init(unsigned char *palette)
     if (!cvars_registered) {
         Cvar_RegisterVariable(&vid_width); Cvar_RegisterVariable(&vid_height);
         Cvar_RegisterVariable(&vid_fullscreen); Cvar_RegisterVariable(&vid_vsync);
+        Cvar_RegisterVariable(&gpu_filter); Cvar_RegisterVariable(&gpu_msaa);
         Cmd_AddCommand("vid_restart", Restart);
         Cmd_AddCommand("vid_togglefullscreen", ToggleFullscreen);
         vid_menudrawfn = VideoMenuDraw;
@@ -328,9 +349,12 @@ static const int resolutions[][2] = {
     {960, 540}, {960, 600}, {1024, 576}, {1024, 768},
     {1280, 720}, {1280, 800}, {1280, 960}, {1280, 1024},
     {1440, 900}, {1600, 900}, {1600, 1200}, {1680, 1050},
-    {1920, 1080}, {1920, 1200}, {1920, 1440}
+    {1920, 1080}, {1920, 1200}, {1920, 1440},
+    {2048, 1152}, {2560, 1440}, {2560, 1600}, {2880, 1800},
+    {3200, 1800}, {3840, 2160}, {3840, 2400}
 };
 static int video_cursor, video_choice, video_fullscreen, video_vsync;
+static int video_filter, video_msaa;
 static float video_fov;
 static qboolean video_menu_active;
 static void VideoMenuInit(void)
@@ -340,6 +364,8 @@ static void VideoMenuInit(void)
     for (int i = 0; i < (int)(sizeof(resolutions) / sizeof(resolutions[0])); ++i)
         if (vid_width.value == resolutions[i][0] && vid_height.value == resolutions[i][1]) video_choice = i;
     video_fullscreen = vid_fullscreen.value != 0; video_vsync = vid_vsync.value != 0;
+    video_filter = gpu_filter.value != 0;
+    video_msaa = gpu_msaa.value == 4 ? 2 : gpu_msaa.value == 2 ? 1 : 0;
     video_fov = Cvar_VariableValue("fov");
     if (!isfinite(video_fov) || video_fov < 10 || video_fov > 170) video_fov = 90;
     video_menu_active = true;
@@ -347,25 +373,26 @@ static void VideoMenuInit(void)
 static void VideoMenuDraw(void)
 {
     VideoMenuInit();
-    M_Print(88, 32, "VIDEO OPTIONS");
-    M_Print(32, 64, "Resolution");
-    M_Print(168, 64, va("%d x %d", resolutions[video_choice][0], resolutions[video_choice][1]));
-    M_Print(32, 48, "Left/right: cycle resolutions");
-    M_Print(32, 80, "Horizontal FOV"); M_Print(168, 80, va("%.0f deg", video_fov));
-    M_Print(32, 96, "Fullscreen"); M_Print(168, 96, video_fullscreen ? "on" : "off");
-    M_Print(32, 112, "VSync"); M_Print(168, 112, video_vsync ? "on" : "off");
-    M_Print(32, 128, "Apply changes");
-    M_DrawCharacter(16, 64 + video_cursor * 16, 12 + ((int)(realtime * 4) & 1));
-    M_Print(32, 152, va("Current: %.0f x %.0f", vid_width.value, vid_height.value));
-    M_Print(32, 168, "UI size scales automatically.");
-    M_Print(32, 184, "Escape returns to Options.");
+    M_Print(88, 16, "VIDEO OPTIONS");
+    M_Print(32, 40, "Resolution");
+    M_Print(168, 40, va("%d x %d", resolutions[video_choice][0], resolutions[video_choice][1]));
+    M_Print(32, 56, "Horizontal FOV"); M_Print(168, 56, va("%.0f deg", video_fov));
+    M_Print(32, 72, "Fullscreen"); M_Print(168, 72, video_fullscreen ? "on" : "off");
+    M_Print(32, 88, "VSync"); M_Print(168, 88, video_vsync ? "on" : "off");
+    M_Print(32, 104, "GPU filtering"); M_Print(168, 104, video_filter ? "smooth" : "crisp");
+    M_Print(32, 120, "GPU anti-alias"); M_Print(168, 120, video_msaa == 2 ? "4x MSAA" : video_msaa == 1 ? "2x MSAA" : "off");
+    M_Print(32, 136, "Apply changes");
+    M_DrawCharacter(16, 40 + video_cursor * 16, 12 + ((int)(realtime * 4) & 1));
+    M_Print(32, 160, va("Current: %u x %u", vid.width* (LQ_UIActive() ? LQ_UIScale() : 1), vid.height* (LQ_UIActive() ? LQ_UIScale() : 1)));
+    M_Print(32, 176, "Left/right changes; Apply saves.");
+    M_Print(32, 192, "Escape returns to Options.");
 }
 static void VideoMenuKey(int key)
 {
     VideoMenuInit();
     if (key == K_ESCAPE) { video_menu_active = false; M_Menu_Options_f(); return; }
-    if (key == K_UPARROW) { video_cursor = (video_cursor + 4) % 5; return; }
-    if (key == K_DOWNARROW) { video_cursor = (video_cursor + 1) % 5; return; }
+    if (key == K_UPARROW) { video_cursor = (video_cursor + 6) % 7; return; }
+    if (key == K_DOWNARROW) { video_cursor = (video_cursor + 1) % 7; return; }
     if (key != K_LEFTARROW && key != K_RIGHTARROW && key != K_ENTER) return;
     if (video_cursor == 0) {
         int count = sizeof(resolutions) / sizeof(resolutions[0]);
@@ -376,11 +403,15 @@ static void VideoMenuKey(int key)
         if (video_fov > 170) video_fov = 170;
     } else if (video_cursor == 2) video_fullscreen = !video_fullscreen;
     else if (video_cursor == 3) video_vsync = !video_vsync;
+    else if (video_cursor == 4) video_filter = !video_filter;
+    else if (video_cursor == 5) video_msaa = (video_msaa + (key == K_LEFTARROW ? 2 : 1)) % 3;
     else if (key == K_ENTER) {
         Cvar_SetValue("vid_width", resolutions[video_choice][0]);
         Cvar_SetValue("vid_height", resolutions[video_choice][1]);
         Cvar_SetValue("fov", video_fov);
         Cvar_SetValue("vid_fullscreen", video_fullscreen); Cvar_SetValue("vid_vsync", video_vsync);
+        Cvar_SetValue("gpu_filter", video_filter); Cvar_SetValue("gpu_msaa", video_msaa == 2 ? 4 : video_msaa == 1 ? 2 : 0);
         Cbuf_AddText("vid_restart\n");
+        video_menu_active = false;
     }
 }

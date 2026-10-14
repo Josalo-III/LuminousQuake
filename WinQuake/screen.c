@@ -451,8 +451,21 @@ void SCR_DrawLoading (void)
 SCR_SetUpToDrawConsole
 ==================
 */
+float SCR_ConsoleAdvance(float current, float target, float speed, double elapsed, int height)
+{
+	if (!isfinite(elapsed) || elapsed <= 0 || !isfinite(speed) || speed <= 0 || height <= 0) return current;
+	double step = speed*elapsed*height/600.0;
+	if (current < target) return (float)fmin(target, current+step);
+	return (float)fmax(target, current-step);
+}
+
 void SCR_SetUpToDrawConsole (void)
 {
+#ifdef LQ_PORTABLE
+	static double console_time;
+	double elapsed = realtime-console_time;
+	console_time = realtime;
+#endif
 	Con_CheckResize ();
 	
 	if (scr_drawloading)
@@ -471,6 +484,9 @@ void SCR_SetUpToDrawConsole (void)
 	else
 		scr_conlines = 0;				// none visible
 	
+#ifdef LQ_PORTABLE
+	scr_con_current = SCR_ConsoleAdvance(scr_con_current, scr_conlines, scr_conspeed.value, elapsed, vid.height);
+#else
 	if (scr_conlines < scr_con_current)
 	{
 		scr_con_current -= scr_conspeed.value*host_frametime;
@@ -484,6 +500,7 @@ void SCR_SetUpToDrawConsole (void)
 		if (scr_conlines < scr_con_current)
 			scr_con_current = scr_conlines;
 	}
+#endif
 
 	if (clearconsole++ < vid.numpages)
 	{

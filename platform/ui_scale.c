@@ -64,7 +64,7 @@ void LQ_UIEnd(void)
     for (unsigned y = 0; y < height; ++y) for (unsigned x = 0; x < width; ++x) {
         size_t i = (size_t)y * width + x;
         if (canvas[i] == background[i] && y >= console_height &&
-            y < height - hud_height && key_dest != key_menu) continue;
+            y < height - hud_height && key_dest != key_menu && !LQ_RenderUIPainted(x*scale, y*scale)) continue;
         for (int row = 0; row < scale; ++row)
             memset(vid.buffer + (size_t)(y * scale + row) * vid.rowbytes + x * scale, canvas[i], scale);
     }

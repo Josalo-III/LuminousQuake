@@ -1,6 +1,11 @@
 # LuminousQuake implementation plan
 
-Status: Phases 1–2 implemented; Phase 3 has a standalone GPU viewer and an interim Classic GPU gameplay bridge alongside Software. Next priority is drop-in installation support and a double-clickable Mac app (Phase 3A). Native Metal is locally validated; fully GPU actors/effects/UI, other-platform runtime checks and an authenticated original-data baseline remain pending.
+Status: Phases 1–2 implemented. Classic GPU now submits world, models, moving
+brushes, sprites and particles to the GPU, alongside the Software comparison
+mode. A Finder-launchable Mac app and isolated profile writes are implemented.
+See [Classic GPU checkpoint](docs/CLASSIC_GPU_CHECKPOINT.md). General CPU jobs,
+broader content/platform validation, remaining Phase 3A delivery checks and
+Enhanced rendering remain pending.
 
 Updated: October 14, 2026
 
@@ -115,10 +120,11 @@ Initial slice implemented: [SDL3 GPU world viewer](docs/PHASE_3.md), renderer-ow
 geometry/textures/lightmap data, embedded SPIR-V/MSL shaders and native Metal proof.
 The software client remains the playable comparison build and its shared
 platform layer has migrated to SDL3. Renderer choice and map/restart lifecycle
-are integrated through a mixed GPU-world/CPU-layer bridge. Completing this phase
-requires explicit GPU actor/brush/effect/UI submissions,
-completion of resource/map transitions and optional asset lookup. The viewer is not
-the completed gameplay renderer.
+are integrated. Explicit GPU world/actor/brush/sprite/particle submissions and
+scaled UI coverage have replaced the normal mixed-rendering bridge. Map changes,
+save/load, demos and renderer switching have native smoke coverage. Broader
+compatibility and optional asset lookup remain open; the viewer is a separate
+diagnostic tool.
 
 ### Work
 

@@ -39,7 +39,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 // !!! if this is changed, it must be changed in r_shared.h too !!!
 #ifdef LQ_PORTABLE
-#define MAXHEIGHT 1440
+#define MAXHEIGHT 2400
 #else
 #define MAXHEIGHT 1024
 #endif

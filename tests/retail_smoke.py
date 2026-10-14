@@ -17,6 +17,9 @@ parser.add_argument('--capture', type=Path, help='Keep the verified frame at thi
 parser.add_argument('--width', type=int, default=640)
 parser.add_argument('--height', type=int, default=480)
 parser.add_argument('--fov', type=int, default=90)
+parser.add_argument('--smooth', action='store_true')
+parser.add_argument('--msaa', type=int, choices=(0,2,4), default=0)
+parser.add_argument('--run-seconds', type=int, help='Override the bounded smoke duration')
 args = parser.parse_args()
 executable = args.executable.resolve()
 packs = sorted((args.basedir.resolve() / 'id1').glob('pak*.pak'))
@@ -34,7 +37,9 @@ with tempfile.TemporaryDirectory(prefix='lqr-') as directory:
         except OSError:
             shutil.copyfile(pack, game / pack.name)
     classic = args.renderer == 'classic'
+    duration = args.run_seconds or (20 if classic else 8)
     commands = (f'vid_width {args.width}\nvid_height {args.height}\nfov {args.fov}\n' +
+                f'gpu_filter {int(args.smooth)}\ngpu_msaa {args.msaa}\n' +
                 'lq_renderer ' + ('1' if classic else '0') + '\n' +
                 'record lq_smoke e1m1\n' + 'wait\n' * 80 +
                 '+forward\n+attack\n' + 'wait\n' * 40 +
@@ -48,10 +53,12 @@ with tempfile.TemporaryDirectory(prefix='lqr-') as directory:
     (game / 'config.cfg').write_text('echo CLASSIC_CONFIG_SHOULD_NOT_LOAD\n', encoding='ascii')
     before = {p.name: p.read_bytes() for p in game.iterdir() if not p.is_symlink()}
     result = subprocess.run([str(executable), '-basedir', str(root), '-userdir', str(user), '-noudp',
-                             '--run-seconds', '20' if classic else '8', '--screenshot', str(root / 'frame.bmp')],
+                             '--run-seconds', str(duration), '--screenshot', str(root / 'frame.bmp')],
                             cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, timeout=40)
+                            text=True, timeout=duration+15)
     log = result.stdout
+    if args.capture and (root / 'frame.bmp').exists():
+        shutil.copyfile(root / 'frame.bmp', args.capture.resolve())
     expected = ('recording to ', 'Completed demo', 'Saving game to ',
                 'Loading game from ', 'Playing demo from lq_smoke.dem.')
     failures = ('runtime error:', 'ERROR:', 'AddressSanitizer', 'Host_Error:', 'CLASSIC_CONFIG_SHOULD_NOT_LOAD',
@@ -71,8 +78,6 @@ with tempfile.TemporaryDirectory(prefix='lqr-') as directory:
     if not good:
         print(log)
         raise SystemExit('FAIL content smoke; inspect the log above')
-    if args.capture:
-        shutil.copyfile(root / 'frame.bmp', args.capture.resolve())
     # Restart with no installation script overriding the saved profile.
     (game / 'autoexec.cfg').unlink()
     restart = subprocess.run([str(executable), '-basedir', str(root), '-userdir', str(user),

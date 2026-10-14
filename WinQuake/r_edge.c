@@ -383,7 +383,7 @@ continue_search:
 
 newtop:
 	// emit a span (obscures current top)
-		iu = edge->u >> 20;
+		iu = edge->u >> EDGE_SHIFT;
 
 		if (iu > surf2->last_u)
 		{
@@ -429,7 +429,7 @@ void R_TrailingEdge (surf_t *surf, edge_t *edge)
 		if (surf == surfaces[1].next)
 		{
 		// emit a span (current top going away)
-			iu = edge->u >> 20;
+			iu = edge->u >> EDGE_SHIFT;
 			if (iu > surf->last_u)
 			{
 				span = span_p++;
@@ -487,7 +487,7 @@ void R_LeadingEdge (edge_t *edge)
 			if (surf->insubmodel && (surf->key == surf2->key))
 			{
 			// must be two bmodels in the same leaf; sort on 1/z
-				fu = (float)(edge->u - 0xFFFFF) * (1.0 / 0x100000);
+				fu = (float)(edge->u - EDGE_FRACTION) * (1.0 / EDGE_ONE);
 				newzi = surf->d_ziorigin + fv*surf->d_zistepv +
 						fu*surf->d_zistepu;
 				newzibottom = newzi * 0.99;
@@ -525,7 +525,7 @@ continue_search:
 					goto continue_search;
 
 			// must be two bmodels in the same leaf; sort on 1/z
-				fu = (float)(edge->u - 0xFFFFF) * (1.0 / 0x100000);
+				fu = (float)(edge->u - EDGE_FRACTION) * (1.0 / EDGE_ONE);
 				newzi = surf->d_ziorigin + fv*surf->d_zistepv +
 						fu*surf->d_zistepu;
 				newzibottom = newzi * 0.99;
@@ -554,7 +554,7 @@ continue_search:
 
 newtop:
 		// emit a span (obscures current top)
-			iu = edge->u >> 20;
+			iu = edge->u >> EDGE_SHIFT;
 
 			if (iu > surf2->last_u)
 			{
@@ -675,16 +675,16 @@ void R_ScanEdges (void)
 
 // clear active edges to just the background edges around the whole screen
 // FIXME: most of this only needs to be set up once
-	edge_head.u = r_refdef.vrect.x << 20;
-	edge_head_u_shift20 = edge_head.u >> 20;
+	edge_head.u = r_refdef.vrect.x << EDGE_SHIFT;
+	edge_head_u_shift20 = edge_head.u >> EDGE_SHIFT;
 	edge_head.u_step = 0;
 	edge_head.prev = NULL;
 	edge_head.next = &edge_tail;
 	edge_head.surfs[0] = 0;
 	edge_head.surfs[1] = 1;
 	
-	edge_tail.u = (r_refdef.vrectright << 20) + 0xFFFFF;
-	edge_tail_u_shift20 = edge_tail.u >> 20;
+	edge_tail.u = (r_refdef.vrectright << EDGE_SHIFT) + EDGE_FRACTION;
+	edge_tail_u_shift20 = edge_tail.u >> EDGE_SHIFT;
 	edge_tail.u_step = 0;
 	edge_tail.prev = &edge_head;
 	edge_tail.next = &edge_aftertail;

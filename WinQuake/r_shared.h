@@ -31,13 +31,17 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 										//  polygon (while processing)
 // !!! if this is changed, it must be changed in d_ifacea.h too !!!
 #ifdef LQ_PORTABLE
-/* Keep width below 2048: signed raster edges use 12.20 fixed point. */
-#define MAXHEIGHT 1440
-#define MAXWIDTH 1920
+/* Portable C uses 13.19 edges, retaining subpixel precision at 4K widths. */
+#define MAXHEIGHT 2400
+#define MAXWIDTH 3840
+#define EDGE_SHIFT 19
 #else
 #define MAXHEIGHT 1024
 #define MAXWIDTH 1280
+#define EDGE_SHIFT 20
 #endif
+#define EDGE_ONE (1 << EDGE_SHIFT)
+#define EDGE_FRACTION (EDGE_ONE - 1)
 #define MAXDIMENSION	((MAXHEIGHT > MAXWIDTH) ? MAXHEIGHT : MAXWIDTH)
 
 #define SIN_BUFFER_SIZE	(MAXDIMENSION+CYCLE)

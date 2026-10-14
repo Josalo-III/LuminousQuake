@@ -112,8 +112,8 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
       if (lighting_bytes < 0 || lighting_bytes > bytes) return Failure(s, error, size, "Invalid map lighting range"); }
     world = argc ? Mod_ForName(path, false) : cl.worldmodel;
     if (!world || world->type != mod_brush) return Failure(s, error, size, "Cannot load brush map");
-    for (int i = 0; i < world->nummodelsurfaces; ++i) {
-        msurface_t *f = world->surfaces + world->firstmodelsurface + i;
+    for (int i = 0; i < world->numsurfaces; ++i) {
+        msurface_t *f = world->surfaces + i;
         if (f->numedges < 3 || f->numedges > 65535) return Failure(s, error, size, "Invalid BSP polygon size");
         vertices += f->numedges; indices += (f->numedges - 2) * 3;
     }
@@ -121,15 +121,15 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
         return Failure(s, error, size, "Map exceeds GPU buffer limits");
     s->vertices = calloc((size_t)vertices, sizeof(*s->vertices));
     s->indices = calloc((size_t)indices, sizeof(*s->indices));
-    s->draws = calloc(world->nummodelsurfaces, sizeof(*s->draws));
+    s->draws = calloc(world->numsurfaces, sizeof(*s->draws));
     s->materials = calloc(world->numtextures + 1, sizeof(*s->materials));
     texture_sources = calloc(world->numtextures + 1, sizeof(*texture_sources));
     if (!s->vertices || !s->indices || !s->draws || !s->materials || !texture_sources) {
         free(texture_sources); return Failure(s, error, size, "Cannot allocate scene geometry");
     }
 #define FAIL(message) do { free(texture_sources); return Failure(s, error, size, message); } while (0)
-    for (int i = 0; i < world->nummodelsurfaces; ++i) {
-        msurface_t *f = world->surfaces + world->firstmodelsurface + i;
+    for (int i = 0; i < world->numsurfaces; ++i) {
+        msurface_t *f = world->surfaces + i;
         texture_t *texture = f->texinfo->texture;
         uint32_t material = 0, base = s->vertex_count;
         lq_draw *draw = &s->draws[s->draw_count++];
@@ -194,6 +194,23 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
             s->indices[s->index_count++] = base + j;
             s->indices[s->index_count++] = base + j + 1;
         }
+    }
+    /* Upload every texture frame once, including animation frames which are
+     * not directly referenced by a BSP face in its initial state. */
+    for (int i = 0; i < world->numtextures; ++i) {
+        texture_t *texture = world->textures[i];
+        if (!texture) continue;
+        uint32_t material = 0;
+        while (material < s->material_count && texture_sources[material] != texture) ++material;
+        if (material < s->material_count) continue;
+        if (!texture->width || !texture->height || texture->width > 8192 || texture->height > 8192 ||
+            s->material_count >= (uint32_t)world->numtextures+1) FAIL("Invalid animation texture");
+        lq_material *m = &s->materials[s->material_count++];
+        texture_sources[material] = texture;
+        m->indices = (lq_image){texture->width, texture->height, 1, malloc((size_t)texture->width*texture->height)};
+        if (!m->indices.pixels) FAIL("Cannot allocate animated texture");
+        memcpy(m->indices.pixels, (byte *)texture+texture->offsets[0], (size_t)texture->width*texture->height);
+        memcpy(m->name, texture->name, 16); m->name[16] = 0;
     }
     free(texture_sources); Spawn(world, s);
     if (!LQ_SceneCheck(s, error, size)) { LQ_SceneFree(s); return 0; }

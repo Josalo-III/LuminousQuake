@@ -7,15 +7,25 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stddef.h>
+#include <math.h>
 struct lq_gpu {
     SDL_Window *window;
     SDL_GPUDevice *device;
     SDL_GPUGraphicsPipeline *pipeline, *overlay_pipeline;
+    SDL_GPUGraphicsPipeline *multisample[2];
+    SDL_GPUTexture *multisample_color;
+    int smooth, samples;
     SDL_GPUSampler *repeat, *point, *linear;
     SDL_GPUBuffer *vertices, *indices;
     SDL_GPUTexture **textures, *colormap, *lightmap, *color, *depth, *overlay;
     uint32_t texture_count, draw_count, width, height;
     lq_draw *draws;
+    SDL_GPUBuffer *frame_vertices, *frame_indices;
+    SDL_GPUTransferBuffer *frame_transfer;
+    SDL_GPUTexture *frame_textures[4096];
+    lq_draw *frame_draws;
+    uint32_t frame_vertex_bytes, frame_index_bytes, frame_transfer_bytes;
+    uint32_t frame_draw_count, frame_draw_capacity;
     int claimed;
 };
 static int Error(char *error, size_t size, const char *what)
@@ -54,7 +64,8 @@ lq_gpu *LQ_GPUCreate(SDL_Window *window, int debug, char *error, size_t size)
     SDL_GPUVertexAttribute attributes[] = {
         {0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(lq_vertex, position)},
         {1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, offsetof(lq_vertex, uv)},
-        {2, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, offsetof(lq_vertex, light_uv)}
+        {2, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, offsetof(lq_vertex, light_uv)},
+        {3, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT, offsetof(lq_vertex, shade)}
     };
     if (!g) { SDL_SetError("out of memory"); Error(error, size, "GPU allocation"); return NULL; }
     g->window = window;
@@ -67,7 +78,7 @@ lq_gpu *LQ_GPUCreate(SDL_Window *window, int debug, char *error, size_t size)
     vertex = Shader(g, 0, 0); fragment = Shader(g, 1, 0);
     if (!vertex || !fragment) goto failed;
     info.vertex_shader = vertex; info.fragment_shader = fragment;
-    info.vertex_input_state = (SDL_GPUVertexInputState){&buffer, 1, attributes, 3};
+    info.vertex_input_state = (SDL_GPUVertexInputState){&buffer, 1, attributes, 4};
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
     info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
@@ -78,6 +89,14 @@ lq_gpu *LQ_GPUCreate(SDL_Window *window, int debug, char *error, size_t size)
     color.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
     info.target_info = (SDL_GPUGraphicsPipelineTargetInfo){&color, 1, SDL_GPU_TEXTUREFORMAT_D32_FLOAT, true, 0, 0, 0};
     g->pipeline = SDL_CreateGPUGraphicsPipeline(g->device, &info);
+    for (int i = 0; i < 2; ++i) {
+        SDL_GPUSampleCount samples = i ? SDL_GPU_SAMPLECOUNT_4 : SDL_GPU_SAMPLECOUNT_2;
+        if (SDL_GPUTextureSupportsSampleCount(g->device, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, samples) &&
+            SDL_GPUTextureSupportsSampleCount(g->device, SDL_GPU_TEXTUREFORMAT_D32_FLOAT, samples)) {
+            info.multisample_state.sample_count = samples;
+            g->multisample[i] = SDL_CreateGPUGraphicsPipeline(g->device, &info);
+        }
+    }
     SDL_ReleaseGPUShader(g->device, vertex); SDL_ReleaseGPUShader(g->device, fragment);
     vertex = fragment = NULL;
     vertex = Shader(g, 0, 1); fragment = Shader(g, 1, 1);
@@ -119,6 +138,24 @@ static SDL_GPUTexture *Texture(lq_gpu *g, uint32_t w, uint32_t h, SDL_GPUTexture
     info.sample_count = SDL_GPU_SAMPLECOUNT_1;
     return SDL_CreateGPUTexture(g->device, &info);
 }
+int LQ_GPUOptions(lq_gpu *g, int smooth, int samples, int vsync, char *error, size_t size)
+{
+    if ((samples != 0 && samples != 2 && samples != 4) ||
+        (samples && !g->multisample[samples == 4])) {
+        SDL_SetError("requested anti-aliasing is unsupported"); return Error(error, size, "GPU options");
+    }
+    SDL_GPUPresentMode mode = vsync ? SDL_GPU_PRESENTMODE_VSYNC : SDL_GPU_PRESENTMODE_IMMEDIATE;
+    if (!SDL_WindowSupportsGPUPresentMode(g->device, g->window, mode)) {
+        SDL_SetError("requested presentation mode is unsupported"); return Error(error, size, "GPU options");
+    }
+    if (!SDL_SetGPUSwapchainParameters(g->device, g->window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, mode))
+        return Error(error, size, "GPU options");
+    g->smooth = smooth != 0;
+    if (g->samples != samples) { g->samples = samples; g->width = 0; }
+    return 1;
+}
+int LQ_GPUSamplesSupported(lq_gpu *g, int samples)
+{ return samples == 0 || (samples == 2 && g->multisample[0]) || (samples == 4 && g->multisample[1]); }
 static SDL_GPUTransferBuffer *Transfer(lq_gpu *g, uint32_t bytes, SDL_GPUTransferBufferUsage usage, const void *data)
 {
     SDL_GPUTransferBufferCreateInfo info = {usage, bytes, 0};
@@ -192,6 +229,11 @@ int LQ_GPUColormap(lq_gpu *g, const lq_image *image, char *error, size_t size)
 }
 static void ReleaseScene(lq_gpu *g)
 {
+    for (unsigned i = 0; i < 4096; ++i) {
+        if (g->frame_textures[i]) SDL_ReleaseGPUTexture(g->device, g->frame_textures[i]);
+        g->frame_textures[i] = NULL;
+    }
+    g->frame_draw_count = 0;
     if (g->vertices) SDL_ReleaseGPUBuffer(g->device, g->vertices);
     if (g->indices) SDL_ReleaseGPUBuffer(g->device, g->indices);
     for (uint32_t i = 0; i < g->texture_count; ++i)
@@ -201,6 +243,91 @@ static void ReleaseScene(lq_gpu *g)
     free(g->textures); free(g->draws);
     g->textures = NULL; g->draws = NULL; g->vertices = g->indices = NULL;
     g->colormap = g->lightmap = NULL; g->texture_count = g->draw_count = 0;
+}
+static int FrameBuffer(lq_gpu *g, SDL_GPUBuffer **buffer, uint32_t *capacity,
+                       uint32_t bytes, SDL_GPUBufferUsageFlags usage)
+{
+    if (*capacity >= bytes) return 1;
+    uint32_t count = 16384;
+    while (count < bytes) count *= 2;
+    SDL_GPUBufferCreateInfo info = {usage, count, 0};
+    SDL_GPUBuffer *next = SDL_CreateGPUBuffer(g->device, &info);
+    if (!next) return 0;
+    if (*buffer) SDL_ReleaseGPUBuffer(g->device, *buffer);
+    *buffer = next; *capacity = count; return 1;
+}
+int LQ_GPUFrame(lq_gpu *g, const lq_frame *f, char *error, size_t size)
+{
+    g->frame_draw_count = 0;
+    if (!f || !f->draw_count) return 1;
+    if (!f->vertices || !f->indices || !f->draws || !f->materials ||
+        !f->vertex_count || f->vertex_count > 2000000 || !f->index_count ||
+        f->index_count > 6000000 || f->draw_count > 65536 || f->material_count > 4096) {
+        SDL_SetError("invalid frame geometry"); return Error(error, size, "GPU frame");
+    }
+    for (uint32_t i = 0; i < f->index_count; ++i) if (f->indices[i] >= f->vertex_count) {
+        SDL_SetError("frame index outside vertices"); return Error(error, size, "GPU frame");
+    }
+    for (uint32_t i = 0; i < f->vertex_count; ++i) {
+        const lq_vertex *v = &f->vertices[i];
+        if (!isfinite(v->shade) || !isfinite(v->position[0]) || !isfinite(v->position[1]) ||
+            !isfinite(v->position[2]) || !isfinite(v->uv[0]) || !isfinite(v->uv[1]) ||
+            !isfinite(v->light_uv[0]) || !isfinite(v->light_uv[1])) {
+            SDL_SetError("nonfinite frame vertex"); return Error(error,size,"GPU frame");
+        }
+    }
+    for (uint32_t i = 0; i < f->material_count; ++i) {
+        const lq_material *m = &f->materials[i];
+        if (!m->resource_id || m->resource_id >= 4096 || !m->indices.pixels ||
+            !m->indices.width || !m->indices.height || m->indices.width > 8192 ||
+            m->indices.height > 8192 || m->indices.channels != 1) {
+            SDL_SetError("invalid frame material"); return Error(error, size, "GPU frame");
+        }
+        if (!g->frame_textures[m->resource_id]) {
+            g->frame_textures[m->resource_id] = UploadImage(g, &m->indices);
+            if (!g->frame_textures[m->resource_id]) return Error(error, size, "GPU frame texture");
+        }
+    }
+    if (g->frame_draw_capacity < f->draw_count) {
+        lq_draw *next = realloc(g->frame_draws, f->draw_count * sizeof(*next));
+        if (!next) { SDL_SetError("out of memory"); return Error(error, size, "GPU frame draws"); }
+        g->frame_draws = next; g->frame_draw_capacity = f->draw_count;
+    }
+    for (uint32_t i = 0; i < f->draw_count; ++i) {
+        lq_draw d = f->draws[i];
+        if (d.flags & ~(LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_MODEL|LQ_SURFACE_MASKED|LQ_SURFACE_WEAPON) ||
+            d.material >= f->material_count || d.first_index > f->index_count ||
+            d.index_count > f->index_count - d.first_index || !d.index_count || d.index_count % 3) {
+            SDL_SetError("invalid frame triangle range"); return Error(error, size, "GPU frame draws");
+        }
+        d.material = f->materials[d.material].resource_id; g->frame_draws[i] = d;
+    }
+    uint32_t vb = f->vertex_count * sizeof(lq_vertex), ib = f->index_count * sizeof(uint32_t);
+    if (!FrameBuffer(g, &g->frame_vertices, &g->frame_vertex_bytes, vb, SDL_GPU_BUFFERUSAGE_VERTEX) ||
+        !FrameBuffer(g, &g->frame_indices, &g->frame_index_bytes, ib, SDL_GPU_BUFFERUSAGE_INDEX))
+        return Error(error, size, "GPU frame buffers");
+    if (g->frame_transfer_bytes < vb+ib) {
+        SDL_GPUTransferBufferCreateInfo info = {SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, vb+ib, 0};
+        SDL_GPUTransferBuffer *next = SDL_CreateGPUTransferBuffer(g->device, &info);
+        if (!next) return Error(error, size, "GPU frame transfer");
+        if (g->frame_transfer) SDL_ReleaseGPUTransferBuffer(g->device, g->frame_transfer);
+        g->frame_transfer = next; g->frame_transfer_bytes = vb+ib;
+    }
+    uint8_t *mapped = SDL_MapGPUTransferBuffer(g->device, g->frame_transfer, true);
+    if (!mapped) return Error(error, size, "GPU frame map");
+    memcpy(mapped, f->vertices, vb); memcpy(mapped+vb, f->indices, ib);
+    SDL_UnmapGPUTransferBuffer(g->device, g->frame_transfer);
+    SDL_GPUCommandBuffer *command = SDL_AcquireGPUCommandBuffer(g->device);
+    if (!command) return Error(error, size, "GPU frame command");
+    SDL_GPUCopyPass *pass = SDL_BeginGPUCopyPass(command);
+    SDL_GPUTransferBufferLocation source = {g->frame_transfer, 0};
+    SDL_GPUBufferRegion destination = {g->frame_vertices, 0, vb};
+    SDL_UploadToGPUBuffer(pass, &source, &destination, true);
+    source.offset = vb; destination = (SDL_GPUBufferRegion){g->frame_indices, 0, ib};
+    SDL_UploadToGPUBuffer(pass, &source, &destination, true);
+    SDL_EndGPUCopyPass(pass);
+    if (!SDL_SubmitGPUCommandBuffer(command)) return Error(error, size, "GPU frame submit");
+    g->frame_draw_count = f->draw_count; return 1;
 }
 int LQ_GPUUpload(lq_gpu *g, const lq_scene *s, char *error, size_t size)
 {
@@ -229,14 +356,25 @@ static int Targets(lq_gpu *g, uint32_t width, uint32_t height)
     if (g->width == width && g->height == height) return 1;
     SDL_GPUTexture *color = Texture(g, width, height, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
         SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
-    SDL_GPUTexture *depth = Texture(g, width, height, SDL_GPU_TEXTUREFORMAT_D32_FLOAT,
-        SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET);
-    if (!color || !depth) {
+    SDL_GPUSampleCount samples = g->samples == 4 ? SDL_GPU_SAMPLECOUNT_4 : g->samples == 2 ? SDL_GPU_SAMPLECOUNT_2 : SDL_GPU_SAMPLECOUNT_1;
+    SDL_GPUTextureCreateInfo info = {0};
+    info.type = SDL_GPU_TEXTURETYPE_2D; info.width = width; info.height = height;
+    info.layer_count_or_depth = info.num_levels = 1; info.sample_count = samples;
+    info.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT; info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+    SDL_GPUTexture *depth = SDL_CreateGPUTexture(g->device, &info), *multisample = NULL;
+    if (g->samples) {
+        info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM; info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+        multisample = SDL_CreateGPUTexture(g->device, &info);
+    }
+    if (!color || !depth || (g->samples && !multisample)) {
+        if (multisample) SDL_ReleaseGPUTexture(g->device, multisample);
         if (color) SDL_ReleaseGPUTexture(g->device, color);
         if (depth) SDL_ReleaseGPUTexture(g->device, depth); return 0;
     }
     if (g->color) SDL_ReleaseGPUTexture(g->device, g->color);
     if (g->depth) SDL_ReleaseGPUTexture(g->device, g->depth);
+    if (g->multisample_color) SDL_ReleaseGPUTexture(g->device, g->multisample_color);
+    g->multisample_color = multisample;
     g->color = color; g->depth = depth; g->width = width; g->height = height; return 1;
 }
 int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, char *error, size_t size)
@@ -255,13 +393,14 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
     }
     SDL_GPUColorTargetInfo color = {0};
     SDL_GPUDepthStencilTargetInfo depth = {0};
-    color.texture = g->color; color.clear_color = (SDL_FColor){0.02f, 0.02f, 0.025f, 1};
+    color.texture = g->samples ? g->multisample_color : g->color; color.clear_color = (SDL_FColor){0.02f, 0.02f, 0.025f, 1};
     color.load_op = SDL_GPU_LOADOP_CLEAR; color.store_op = SDL_GPU_STOREOP_STORE;
+    if (g->samples) { color.resolve_texture = g->color; color.store_op = SDL_GPU_STOREOP_RESOLVE; }
     depth.texture = g->depth; depth.clear_depth = 1; depth.load_op = SDL_GPU_LOADOP_CLEAR;
     depth.store_op = SDL_GPU_STOREOP_DONT_CARE; depth.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
     depth.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
     SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(command, &color, 1, &depth);
-    SDL_BindGPUGraphicsPipeline(pass, g->pipeline);
+    SDL_BindGPUGraphicsPipeline(pass, g->samples ? g->multisample[g->samples == 4] : g->pipeline);
     SDL_GPUBufferBinding vertex = {g->vertices, 0}, index = {g->indices, 0};
     SDL_BindGPUVertexBuffers(pass, 0, &vertex, 1); SDL_BindGPUIndexBuffer(pass, &index, SDL_GPU_INDEXELEMENTSIZE_32BIT);
     uint32_t vw = v->viewport[2] ? v->viewport[2] : width;
@@ -273,11 +412,18 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
     }
     SDL_GPUViewport viewport = {(float)v->viewport[0], (float)v->viewport[1], (float)vw, (float)vh, 0, 1};
     SDL_SetGPUViewport(pass, &viewport);
-    LQ_ViewMatrix(v, (float)vw / vh, matrix);
+    lq_view camera = *v;
+    float aspect = (float)vw / vh;
+    if (v->water_warp) { camera.horizontal_fov *= 1+sinf(v->time*1.5f)*0.01f; aspect *= 1+cosf(v->time*1.7f)*0.01f; }
+    LQ_ViewMatrix(&camera, aspect, matrix);
     SDL_PushGPUVertexUniformData(command, 0, matrix, sizeof(matrix));
     for (uint32_t i = 0; i < g->draw_count; ++i) {
-        const lq_draw *d = &g->draws[i];
-        struct { float lights[4], parameters[4], camera[4]; } uniforms = {0};
+        const lq_draw *d = v->world_draws && v->world_draw_count == g->draw_count ? &v->world_draws[i] : &g->draws[i];
+        if (!d->index_count) continue;
+        if (d->material >= g->texture_count) continue;
+        struct { float lights[4], parameters[4], camera[4], dynamic[32][4]; uint32_t bits[4]; } uniforms = {0};
+        memcpy(uniforms.dynamic, v->dynamic_lights, sizeof(uniforms.dynamic)); uniforms.bits[0] = d->light_bits;
+        uniforms.parameters[2] = g->smooth;
         for (int j = 0; j < 4; ++j) uniforms.lights[j] = d->styles[j] == 255 ? 0 : v->lightstyles[d->styles[j]];
         uniforms.parameters[0] = v->time; uniforms.parameters[1] = (float)d->flags;
         memcpy(uniforms.camera, v->origin, sizeof(v->origin));
@@ -288,8 +434,32 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
         SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
         SDL_DrawGPUIndexedPrimitives(pass, d->index_count, 1, d->first_index, 0, 0);
     }
+    if (g->frame_draw_count) {
+        vertex = (SDL_GPUBufferBinding){g->frame_vertices, 0};
+        index = (SDL_GPUBufferBinding){g->frame_indices, 0};
+        SDL_BindGPUVertexBuffers(pass, 0, &vertex, 1);
+        SDL_BindGPUIndexBuffer(pass, &index, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+        for (uint32_t i = 0; i < g->frame_draw_count; ++i) {
+            const lq_draw *d = &g->frame_draws[i];
+            viewport.max_depth = d->flags & LQ_SURFACE_WEAPON ? 0.3f : 1.0f;
+            SDL_SetGPUViewport(pass, &viewport);
+            struct { float lights[4], parameters[4], camera[4], dynamic[32][4]; uint32_t bits[4]; } uniforms = {0};
+            memcpy(uniforms.dynamic, v->dynamic_lights, sizeof(uniforms.dynamic)); uniforms.bits[0] = d->light_bits;
+            uniforms.parameters[2] = g->smooth;
+            for (int j = 0; j < 4; ++j) uniforms.lights[j] = d->styles[j] == 255 ? 0 : v->lightstyles[d->styles[j]];
+            uniforms.parameters[0] = v->time; uniforms.parameters[1] = d->flags;
+            memcpy(uniforms.camera, v->origin, sizeof(v->origin));
+            SDL_GPUTextureSamplerBinding samplers[] = {
+                {g->frame_textures[d->material], g->repeat}, {g->colormap, g->point}, {g->lightmap, g->linear}
+            };
+            SDL_BindGPUFragmentSamplers(pass, 0, samplers, 3);
+            SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
+            SDL_DrawGPUIndexedPrimitives(pass, d->index_count, 1, d->first_index, 0, 0);
+        }
+    }
     SDL_EndGPURenderPass(pass);
     if (g->overlay) {
+        color.texture = g->color; color.resolve_texture = NULL; color.store_op = SDL_GPU_STOREOP_STORE;
         color.load_op = SDL_GPU_LOADOP_LOAD;
         pass = SDL_BeginGPURenderPass(command, &color, 1, NULL);
         SDL_BindGPUGraphicsPipeline(pass, g->overlay_pipeline);
@@ -349,8 +519,13 @@ void LQ_GPUDestroy(lq_gpu *g)
     if (!g) return;
     if (g->device) {
         SDL_WaitForGPUIdle(g->device); ReleaseScene(g);
+        if (g->frame_vertices) SDL_ReleaseGPUBuffer(g->device, g->frame_vertices);
+        if (g->frame_indices) SDL_ReleaseGPUBuffer(g->device, g->frame_indices);
+        if (g->frame_transfer) SDL_ReleaseGPUTransferBuffer(g->device, g->frame_transfer);
         if (g->color) SDL_ReleaseGPUTexture(g->device, g->color);
         if (g->depth) SDL_ReleaseGPUTexture(g->device, g->depth);
+        if (g->multisample_color) SDL_ReleaseGPUTexture(g->device, g->multisample_color);
+        for (int i = 0; i < 2; ++i) if (g->multisample[i]) SDL_ReleaseGPUGraphicsPipeline(g->device, g->multisample[i]);
         if (g->pipeline) SDL_ReleaseGPUGraphicsPipeline(g->device, g->pipeline);
         if (g->overlay_pipeline) SDL_ReleaseGPUGraphicsPipeline(g->device, g->overlay_pipeline);
         if (g->overlay) SDL_ReleaseGPUTexture(g->device, g->overlay);
@@ -360,5 +535,5 @@ void LQ_GPUDestroy(lq_gpu *g)
         if (g->claimed) SDL_ReleaseWindowFromGPUDevice(g->device, g->window);
         SDL_DestroyGPUDevice(g->device);
     }
-    free(g);
+    free(g->frame_draws); free(g);
 }

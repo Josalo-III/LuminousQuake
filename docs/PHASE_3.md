@@ -1,5 +1,9 @@
 # Phase 3, first slice: native GPU world rendering
 
+This document records earlier milestones. The current GPU gameplay path and
+validation are described in [Classic GPU checkpoint](CLASSIC_GPU_CHECKPOINT.md);
+its normal 3D rendering now supersedes the mixed software/GPU bridge below.
+
 October 13, 2026. `luminousquake-gpu` is an experimental SDL3 GPU world viewer.
 E1M1's BSP triangles are transformed, depth-tested, textured and shaded on Metal
 on the M1 Max. This is the first renderer-boundary milestone, not the completed

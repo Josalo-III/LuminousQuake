@@ -104,10 +104,10 @@ if(BUILD_TESTING)
 endif()
 set(LQ_EXECUTABLES luminousquake-headless luminousquake-server)
 if(LQ_BUILD_CLIENT)
-    find_package(SDL3 3.2 CONFIG REQUIRED)
+    find_package(SDL3 3.4 CONFIG REQUIRED)
     add_executable(luminousquake platform/sys_portable.c
         platform/vid_sdl.c platform/in_sdl.c platform/snd_sdl.c platform/demo_sdl.c
-        platform/render_bridge.c platform/ui_scale.c renderer/quake_scene.c renderer/gpu_sdl.c
+        platform/render_bridge.c platform/ui_scale.c platform/gpu_entities.c renderer/quake_scene.c renderer/gpu_sdl.c
         WinQuake/snd_dma.c WinQuake/snd_mem.c WinQuake/snd_mix.c)
     target_compile_definitions(luminousquake PRIVATE LQ_SDL=1 SDL_MAIN_HANDLED)
     target_link_libraries(luminousquake PRIVATE SDL3::SDL3 lq_scene)
@@ -147,7 +147,7 @@ if(LQ_BUILD_CLIENT)
     list(APPEND LQ_EXECUTABLES luminousquake)
 endif()
 if(LQ_BUILD_GPU)
-    find_package(SDL3 3.2 CONFIG REQUIRED)
+    find_package(SDL3 3.4 CONFIG REQUIRED)
     add_executable(luminousquake-gpu platform/sys_portable.c platform/gpu_viewer.c
         renderer/quake_scene.c renderer/gpu_sdl.c ${LQ_HEADLESS_BACKENDS})
     target_compile_definitions(luminousquake-gpu PRIVATE LQ_GPU=1 SDL_MAIN_HANDLED)

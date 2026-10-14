@@ -299,14 +299,19 @@ static int TestPlatform(qboolean no_audio)
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW);
     VERIFY(Cvar_VariableValue("fov") == 90);
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_DOWNARROW);
+    vid_menukeyfn(K_RIGHTARROW); /* smooth filtering, staged */
+    vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); /* 2x MSAA */
+    VERIFY(Cvar_VariableValue("gpu_filter") == 0 && Cvar_VariableValue("gpu_msaa") == 0);
+    vid_menukeyfn(K_DOWNARROW);
     vid_menukeyfn(K_ENTER); Cbuf_Execute();
     VERIFY(vid.width == 960 && vid.height == 540);
     VERIFY(Cvar_FindVar("vid_width")->archive && Cvar_FindVar("vid_height")->archive);
     VERIFY(Cvar_VariableValue("fov") == 95 && Cvar_FindVar("fov")->archive);
+    VERIFY(Cvar_VariableValue("gpu_filter") == 1 && Cvar_VariableValue("gpu_msaa") == 2);
     /* Reach 1080p through the same selector used by the player. */
-    for (int i = 0; i < 4; ++i) vid_menukeyfn(K_UPARROW);
+    for (int i = 0; i < 6; ++i) vid_menukeyfn(K_UPARROW);
     for (int i = 0; i < 12; ++i) vid_menukeyfn(K_RIGHTARROW);
-    for (int i = 0; i < 4; ++i) vid_menukeyfn(K_DOWNARROW);
+    for (int i = 0; i < 6; ++i) vid_menukeyfn(K_DOWNARROW);
     vid_menukeyfn(K_ENTER); Cbuf_Execute();
     VERIFY(vid.width == 1920 && vid.height == 1080);
     Cvar_SetValue("vid_width", 640); Cvar_SetValue("vid_height", 480);

@@ -21,6 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "d_local.h"
+#include "render_bridge.h"
 
 
 /*
@@ -54,6 +55,9 @@ D_DrawParticle
 */
 void D_DrawParticle (particle_t *pparticle)
 {
+#ifdef LQ_PORTABLE
+	if (LQ_RenderGPUParticle(pparticle->org, (int)pparticle->color)) return;
+#endif
 	vec3_t	local, transformed;
 	float	zi;
 	byte	*pdest;

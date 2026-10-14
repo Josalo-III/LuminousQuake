@@ -1,13 +1,14 @@
-/* Temporary CPU actor/UI bridge for the playable GPU world. GPL-2.0-or-later. */
+/* Classic GPU frame adaptation and scaled UI coverage. GPL-2.0-or-later. */
 #ifndef LQ_RENDER_BRIDGE_H
 #define LQ_RENDER_BRIDGE_H
 void LQ_RenderBegin(void);
 void LQ_RenderAfterCommands(void);
 int LQ_RenderBridgeActive(void);
 void LQ_RenderMapChanged(void);
-void LQ_RenderWorldDone(void);
-void LQ_RenderSceneDone(void);
-void LQ_RenderSurface(int x, int y, int count, int preserve);
+int LQ_RenderGPUView(void);
+int LQ_RenderGPUParticle(const float origin[3], int color);
+void LQ_RenderUIRegion(int x, int y, int width, int height, const unsigned char *pixels, int stride, int transparent);
+int LQ_RenderUIPainted(int x, int y);
 void LQ_UIBegin(void);
 void LQ_UIEnd(void);
 int LQ_UIScale(void);

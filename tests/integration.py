@@ -12,6 +12,8 @@ binary = pathlib.Path(sys.argv[1]).resolve()
 
 
 def run(root, args, expected=0, contains=None):
+    if '-basedir' not in args:
+        args = ['-basedir', str(root), *args]
     result = subprocess.run([str(binary), '-userdir', str(root / 'user'), *args], cwd=root, capture_output=True,
                             text=True, timeout=10)
     output = result.stdout + result.stderr

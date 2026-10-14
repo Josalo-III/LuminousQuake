@@ -22,6 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // vid buffer
 
 #include "quakedef.h"
+#include "render_bridge.h"
 
 typedef struct {
 	vrect_t	rect;
@@ -164,6 +165,7 @@ void Draw_Character (int x, int y, int num)
 	}
 	else
 		drawline = 8;
+	LQ_RenderUIRegion(x, y, 8, drawline, source, 128, 0);
 
 
 	if (r_pixbytes == 1)
@@ -288,6 +290,7 @@ Draw_Pic
 */
 void Draw_Pic (int x, int y, qpic_t *pic)
 {
+	LQ_RenderUIRegion(x, y, pic->width, pic->height, NULL, 0, -1);
 	byte			*dest, *source;
 	unsigned short	*pusdest;
 	int				v, u;
@@ -339,6 +342,7 @@ Draw_TransPic
 */
 void Draw_TransPic (int x, int y, qpic_t *pic)
 {
+	LQ_RenderUIRegion(x, y, pic->width, pic->height, pic->data, pic->width, TRANSPARENT_COLOR);
 	byte	*dest, *source, tbyte;
 	unsigned short	*pusdest;
 	int				v, u;
@@ -426,6 +430,7 @@ Draw_TransPicTranslate
 */
 void Draw_TransPicTranslate (int x, int y, qpic_t *pic, byte *translation)
 {
+	LQ_RenderUIRegion(x, y, pic->width, pic->height, pic->data, pic->width, TRANSPARENT_COLOR);
 	byte	*dest, *source, tbyte;
 	unsigned short	*pusdest;
 	int				v, u;
@@ -538,6 +543,7 @@ Draw_ConsoleBackground
 */
 void Draw_ConsoleBackground (int lines)
 {
+	LQ_RenderUIRegion(0, 0, vid.width, lines, NULL, 0, -1);
 	int				x, y, v;
 	byte			*src, *dest;
 	unsigned short	*pusdest;
@@ -739,6 +745,7 @@ refresh window.
 */
 void Draw_TileClear (int x, int y, int w, int h)
 {
+	LQ_RenderUIRegion(x, y, w, h, NULL, 0, -1);
 	int				width, height, tileoffsetx, tileoffsety;
 	byte			*psrc;
 	vrect_t			vr;
@@ -811,6 +818,7 @@ Fills a box of pixels with a single color
 */
 void Draw_Fill (int x, int y, int w, int h, int c)
 {
+	LQ_RenderUIRegion(x, y, w, h, NULL, 0, -1);
 	byte			*dest;
 	unsigned short	*pusdest;
 	unsigned		uc;

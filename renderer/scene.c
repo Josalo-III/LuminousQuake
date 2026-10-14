@@ -37,6 +37,7 @@ int LQ_SceneCheck(const lq_scene *s, char *error, size_t size)
         for (int j = 0; j < 3; ++j) REQUIRE(isfinite(v->position[j]), "nonfinite position");
         for (int j = 0; j < 2; ++j)
             REQUIRE(isfinite(v->uv[j]) && isfinite(v->light_uv[j]), "nonfinite texture coordinate");
+        REQUIRE(isfinite(v->shade), "nonfinite vertex shading");
     }
     for (uint32_t i = 0; i < s->index_count; ++i)
         REQUIRE(s->indices[i] < s->vertex_count, "index outside vertex array");
