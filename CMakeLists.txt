@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(LuminousQuake VERSION 0.3.0 LANGUAGES C)
+find_package(ZLIB REQUIRED)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -84,9 +85,10 @@ add_library(quake_core OBJECT
     WinQuake/wad.c
     WinQuake/world.c
     WinQuake/cd_null.c
-    WinQuake/net_bsd.c platform/net_udp.c platform/diagnostics.c platform/user_paths.c
+    WinQuake/net_bsd.c platform/net_udp.c platform/diagnostics.c platform/user_paths.c platform/localization.c
 )
 target_include_directories(quake_core PUBLIC WinQuake platform)
+target_link_libraries(quake_core PUBLIC ZLIB::ZLIB)
 target_compile_definitions(quake_core PUBLIC LQ_PORTABLE=1)
 if(WIN32)
     target_compile_definitions(quake_core PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS _WIN32_WINNT=0x0601)

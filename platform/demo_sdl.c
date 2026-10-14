@@ -211,6 +211,7 @@ static int TestPlatform(qboolean no_audio)
     VERIFY(!(in_forward.state & 1)); VERIFY(!keydown['w']); VERIFY(!SDL_GetWindowRelativeMouseMode(LQ_SDLWindow()));
     event.type = SDL_EVENT_WINDOW_FOCUS_GAINED; LQ_HandleEvent(&event);
     key_dest = key_console; LQ_UpdateCapture();
+    VERIFY(SDL_TextInputActive(LQ_SDLWindow()));
     KeyEvent(&event, SDL_EVENT_KEY_DOWN, SDL_SCANCODE_A, SDLK_A);
     memset(&event, 0, sizeof(event)); event.type = SDL_EVENT_TEXT_INPUT;
     event.text.text = "A!"; LQ_HandleEvent(&event);
@@ -222,6 +223,7 @@ static int TestPlatform(qboolean no_audio)
     VERIFY(keydown[K_SHIFT]);
     KeyEvent(&event, SDL_EVENT_KEY_UP, SDL_SCANCODE_RSHIFT, SDLK_RSHIFT); VERIFY(!keydown[K_SHIFT]);
     key_dest = key_game;
+    LQ_UpdateCapture(); VERIFY(!SDL_TextInputActive(LQ_SDLWindow()));
     SDL_SetWindowSize(LQ_SDLWindow(), 800, 600); LQ_PumpEvents();
     VERIFY(vid.width == (unsigned)saved_width && vid.height == (unsigned)saved_height);
     if (COM_CheckParm("--test-fullscreen")) {
@@ -298,22 +300,32 @@ static int TestPlatform(qboolean no_audio)
     VERIFY(Cvar_VariableValue("fov") == 90);
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_DOWNARROW);
     vid_menukeyfn(K_ENTER); Cbuf_Execute();
-    VERIFY(vid.width == 1024 && vid.height == 768);
+    VERIFY(vid.width == 960 && vid.height == 540);
     VERIFY(Cvar_FindVar("vid_width")->archive && Cvar_FindVar("vid_height")->archive);
     VERIFY(Cvar_VariableValue("fov") == 95 && Cvar_FindVar("fov")->archive);
+    /* Reach 1080p through the same selector used by the player. */
+    for (int i = 0; i < 4; ++i) vid_menukeyfn(K_UPARROW);
+    for (int i = 0; i < 12; ++i) vid_menukeyfn(K_RIGHTARROW);
+    for (int i = 0; i < 4; ++i) vid_menukeyfn(K_DOWNARROW);
+    vid_menukeyfn(K_ENTER); Cbuf_Execute();
+    VERIFY(vid.width == 1920 && vid.height == 1080);
     Cvar_SetValue("vid_width", 640); Cvar_SetValue("vid_height", 480);
     Cbuf_AddText("vid_restart\n"); Cbuf_Execute();
+    VERIFY(LQ_UIScale() == 1);
+    Cvar_SetValue("vid_width", 800); Cvar_SetValue("vid_height", 600);
+    Cbuf_AddText("vid_restart\n"); Cbuf_Execute();
     memset(vid.buffer, 1, vid.width * vid.height);
-    LQ_UIBegin(); VERIFY(LQ_UIScale() == 2 && vid.width == 320);
+    LQ_UIBegin(); VERIFY(LQ_UIScale() == 2 && vid.width == 400);
     Draw_Fill(3, 5, 1, 1, 150); LQ_UIEnd();
     VERIFY(vid.buffer[10 * vid.rowbytes + 6] == 150 && vid.buffer[11 * vid.rowbytes + 7] == 150);
     VERIFY(vid.buffer[10 * vid.rowbytes + 8] == 1);
-    Cvar_SetValue("vid_width", 1280); Cvar_SetValue("vid_height", 960);
+    Cvar_SetValue("vid_width", 1600); Cvar_SetValue("vid_height", 1200);
     Cbuf_AddText("vid_restart\n"); Cbuf_Execute();
-    LQ_UIBegin(); VERIFY(LQ_UIScale() == 4 && vid.width == 320); LQ_UIEnd();
-    Cvar_SetValue("vid_height", 720); Cbuf_AddText("vid_restart\n"); Cbuf_Execute();
-    VERIFY(vid.aspect == 1 && vid.width == 1280 && vid.height == 720);
-    LQ_UIBegin(); VERIFY(vid.width >= 320 && vid.height >= 200); LQ_UIEnd();
+    LQ_UIBegin(); VERIFY(LQ_UIScale() == 4 && vid.width == 400); LQ_UIEnd();
+    Cvar_SetValue("vid_width", 1920); Cvar_SetValue("vid_height", 1080);
+    Cbuf_AddText("vid_restart\n"); Cbuf_Execute();
+    VERIFY(vid.aspect == 1 && vid.width == 1920 && vid.height == 1080);
+    LQ_UIBegin(); VERIFY(LQ_UIScale() == 2 && vid.width == 960 && vid.height == 540); LQ_UIEnd();
     puts("PASS video menu stages, applies and archives resolution");
     LQ_HandleEvent(&event); VERIFY(LQ_QuitRequested()); LQ_ResetQuit();
     puts("PASS SDL focus/key releases, text/modifiers, resize, palette, video restart, cache alignment, audio fallback/mixer/ring, quit");

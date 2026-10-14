@@ -79,6 +79,12 @@ void IN_ClearStates(void)
 void LQ_UpdateCapture(void)
 {
     SDL_Window *window = LQ_SDLWindow();
+    if (window) {
+        qboolean text_wanted = initialized && focused &&
+            (key_dest == key_console || key_dest == key_message || key_dest == key_menu);
+        if (text_wanted && !SDL_TextInputActive(window)) SDL_StartTextInput(window);
+        else if (!text_wanted && SDL_TextInputActive(window)) SDL_StopTextInput(window);
+    }
     qboolean wanted = initialized && window && focused && in_mouse.value && !in_nograb.value &&
         !COM_CheckParm("-nomouse") && key_dest == key_game && !cl.paused &&
         (demo_active || (cls.state == ca_connected && !con_forcedup));

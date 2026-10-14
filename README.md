@@ -67,7 +67,7 @@ original gameplay, QuakeC interpreter and sound mixer. Dynamic lighting upgrades
 and a modern 3D graphics backend are later phases. The headless client and
 dedicated server retain null video/input/audio backends and need no SDL.
 
-Requirements: C11 compiler, CMake 3.20+, SDL3 3.2+ for the windowed client,
+Requirements: C11 compiler, CMake 3.20+, zlib development files, SDL3 3.4+ for the windowed client,
 and Python 3 for tests (`-DBUILD_TESTING=OFF` removes the Python requirement).
 On Apple Silicon use native arm64 dependencies:
 
@@ -113,16 +113,27 @@ The view uses square pixels so widescreen geometry keeps its proportions.
 
 Menus, console, HUD and crosshair automatically scale in powers of two while
 the 3D view retains the selected resolution. Doubling both resolution dimensions
-doubles UI pixel size; the scale also keeps at least a 320×200 logical canvas.
-For example, 640×480 uses 2× UI, 1280×960 uses 4×, and 1280×720 uses 2×.
+doubles UI pixel size. The reference is 800×600 with 2× UI pixels;
+640×480 uses 1×, 1600×1200 uses 4×, and 1920×1080 uses 2×.
+Scaling preserves at least a 400×300 logical canvas whenever available.
 
-Window resizing preserves the software render resolution and aspect ratio.
+Rerelease map hints and ending text resolve English localization keys from
+`localization/loc_english.txt` in the game search paths, or from an adjacent
+`QuakeEX.kpf` in the installation root. Original literal messages pass through.
+The engine reads this optional game data without modifying or bundling it.
+
+Applying settings sizes the window to the render aspect ratio. Manual window
+resizing preserves render resolution and letterboxes if the proportions differ.
+Fullscreen uses the display's aspect ratio, adapting render height at the
+selected width within the renderer limits, so the view fills the screen.
+Applying video settings writes the profile immediately; quitting also saves it.
 `-width 640 -height 480` chooses the internal resolution;
 `-window-width 960 -window-height 720` chooses the initial window.
 `-fullscreen` / `-window` select the initial mode. Console variables
 `vid_width`, `vid_height`, `vid_vsync` apply with `vid_restart`;
 `vid_togglefullscreen` switches modes. Software widths must be divisible by
-8, within 320–1280; heights within 200–1024. These are legacy renderer limits.
+8, within 320–1920; heights within 200–1440. Widths beyond this need an upgrade
+to the software rasterizer's fixed-point edge representation.
 Sound-device failure is nonfatal; `-nosound` explicitly disables audio.
 CD/music output is still absent.
 

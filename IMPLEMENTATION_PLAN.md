@@ -49,6 +49,9 @@ For every imported component, record the upstream commit, original paths, local 
 5. Preserve simulation behavior when improving clocks, input delivery, and presentation pacing.
 6. Preserve three renderer choices: Software, Classic GPU with original baked-lighting appearance, and Enhanced with runtime lighting/material techniques. Classic GPU describes appearance and can use Metal/Vulkan. All three share gameplay and original-content support; unavailable choices must be clearly identified.
 7. Measure performance before adopting optimizations. Record correctness and scene-level results alongside timing.
+8. Use a bounded worker pool for independent engine work. Keep QuakeC, gameplay,
+   network state and legacy allocators under their existing owner; workers receive
+   owned snapshots and write to disjoint outputs. Preserve a single-thread fallback.
 
 ## Phase 0: inventory and compatibility baseline
 
@@ -175,6 +178,59 @@ This is the next implementation milestone, before expanding renderer features.
 - Once data is available, representative original levels, models, and effects remain recognizable and operational.
 - Replacement assets can be disabled and missing replacements fall back to originals.
 - Record CPU/GPU timing and memory use on named scenes; make no unsupported performance claims.
+
+## Phase 4A: CPU jobs and measured parallelism
+
+Multithreading is an explicit engine requirement, introduced alongside the GPU
+migration and before the costlier Enhanced lighting work. It is planned here;
+the general worker pool is not yet implemented. SDL audio already runs through
+its callback path, which is not evidence that rendering or simulation is parallel.
+
+### Work and order
+
+1. Add CPU stage timings for simulation, scene preparation, software rendering,
+   UI/compositing, uploads and presentation waits. Measure GPU time separately
+   where supported; CPU submission duration is not GPU execution duration.
+2. Introduce a persistent, bounded, cross-platform worker pool with range jobs,
+   completion barriers, orderly shutdown and a single-thread mode. Avoid creating
+   threads per frame. Size it from available CPUs, initially reserving two CPU
+   slots and capping at eight workers; compare smaller counts on the M1 Max rather
+   than assuming its ten cores provide equal throughput. Allow an override for
+   testing and slower machines. Use portable threading primitives; keep Apple
+   scheduling refinements optional.
+3. Prove the pool on palette-to-RGBA conversion into disjoint framebuffer rows,
+   with the palette/input buffers fixed until completion. This has a clear serial
+   reference and serves the software baseline as well as interim GPU compositing.
+   Dispatch only above a measured size threshold. Remove temporary GPU compositor
+   jobs when explicit GPU actor/effect/UI submissions replace that bridge.
+4. Move CPU-side texture conversion and mip preparation into jobs using owned
+   asset buffers. Workers do not call the Quake hunk/cache allocators or mutate
+   model state. The render owner commits completed resources and performs GPU
+   uploads. Bound queued work and memory; discard obsolete results by map/resource
+   generation and drain dependent jobs before freeing their inputs.
+5. After explicit render snapshots exist, parallelize visibility/draw preparation
+   and, for Enhanced mode, light influence and shadow-caster preparation. Merge
+   results in a stable order. Keep GPU submission and window operations on their
+   designated owner initially. Move particles only when ownership is similarly
+   explicit.
+
+Removing the duplicate full software world render from Classic GPU remains a
+priority. Threading that duplicate work would conceal a larger architectural
+cost. Do not parallelize the original global-state rasterizer, QuakeC VM or
+gameplay simulation without a separate compatibility and ownership design.
+
+### Exit criteria
+
+- Generated fixtures produce identical CPU conversion output in serial and
+  parallel modes, including odd job counts, small inputs and palette changes.
+- Map changes, video restart and quit drain/cancel jobs without stale accesses,
+  deadlocks or resource leaks; race checking covers the isolated worker code.
+- Named scenes are compared at 800×600, 1920×1080 and the supported maximum,
+  recording median and tail frame times, stage costs, worker counts and memory.
+  Retain each optimization only when measured benefits justify its overhead.
+- Gameplay, demos, save/load, UI and original-content compatibility remain
+  unchanged. Windows/Linux build coverage and actual runtime validation are
+  reported separately from native arm64 results.
 
 ## Phase 5: dynamic lighting, shadows, and atmosphere
 

@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 import shutil
 import subprocess
+import re
 import tempfile
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -72,5 +73,20 @@ with tempfile.TemporaryDirectory(prefix='lqr-') as directory:
         raise SystemExit('FAIL content smoke; inspect the log above')
     if args.capture:
         shutil.copyfile(root / 'frame.bmp', args.capture.resolve())
+    # Restart with no installation script overriding the saved profile.
+    (game / 'autoexec.cfg').unlink()
+    restart = subprocess.run([str(executable), '-basedir', str(root), '-userdir', str(user),
+                              '-noudp', '-nosound', '--run-seconds', '1',
+                              '--screenshot', str(root / 'restart.bmp')], cwd=root,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=15)
+    frame = root / 'restart.bmp'
+    if restart.returncode != 0 or not frame.exists():
+        print(restart.stdout)
+        raise SystemExit('FAIL saved video settings relaunch')
+    modes = re.findall(r'Software framebuffer: (\d+)x(\d+)', restart.stdout)
+    if not modes or tuple(map(int, modes[-1])) != (args.width, args.height):
+        print(restart.stdout)
+        raise SystemExit(f'FAIL saved resolution: got {modes}')
+    print('PASS saved resolution across a fresh process launch')
     print('PASS content smoke: movement/attack command sequence, save/load, demo record/playback, frame capture')
     print('Unverified content remains a sample; this is not full gameplay or original-data validation.')

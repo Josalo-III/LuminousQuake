@@ -14,7 +14,7 @@ int LQ_UIScale(void)
 {
     if (active) return scale;
     int factor = 1;
-    while (vid.width / (factor * 2) >= 320 && vid.height / (factor * 2) >= 200) factor *= 2;
+    while (vid.width / (factor * 2) >= 400 && vid.height / (factor * 2) >= 300) factor *= 2;
     return factor;
 }
 int LQ_UIActive(void) { return active; }
@@ -26,8 +26,7 @@ void LQ_UIShutdown(void)
 void LQ_UIBegin(void)
 {
     if (active) return;
-    scale = 1;
-    while (vid.width / (scale * 2) >= 320 && vid.height / (scale * 2) >= 200) scale *= 2;
+    scale = LQ_UIScale();
     if (scale == 1) return;
     saved = vid;
     unsigned width = vid.width / scale, height = vid.height / scale;

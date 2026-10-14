@@ -20,6 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // common.c -- misc functions used in client and server
 
 #include "quakedef.h"
+#include "localization.h"
 #ifdef LQ_PORTABLE
 #include "user_paths.h"
 #endif
@@ -1849,6 +1850,7 @@ void COM_InitFilesystem (void)
 		proghack = true;
 #ifdef LQ_PORTABLE
 	LQ_InitUserDirectory(com_gamedir);
+	LQ_LocalizationInit(basedir);
 #endif
 }
 

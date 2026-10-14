@@ -6,6 +6,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import zipfile
 
 binary = pathlib.Path(sys.argv[1]).resolve()
 
@@ -67,6 +68,17 @@ with tempfile.TemporaryDirectory(prefix="luminousquake-test-") as tmp:
     (id1 / "progs.dat").write_bytes(data)
     run(root, args, 1, "invalid lump range")
     (id1 / "progs.dat").write_bytes(progs(fields))
+    # Exercise bounded KPF extraction, loose-file precedence, and bad archives.
+    with zipfile.ZipFile(root / "QuakeEX.kpf", "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("localization/loc_english.txt",
+                         'map_jump_across = "Fixture jump across\\nnow"\n')
+    run(root, [*args, "--test-localization"], contains="PASS installation localization lookup")
+    (root / "QuakeEX.kpf").write_bytes(b"invalid zip")
+    (id1 / "localization").mkdir()
+    (id1 / "localization/loc_english.txt").write_text(
+        'map_jump_across = "Fixture jump across\\nnow"\n')
+    run(root, [*args, "--test-localization"], contains="PASS installation localization lookup")
+    (id1 / "localization/loc_english.txt").unlink()
     # Execute an actual dedicated Host_Init/Host_Frame and command shutdown.
     (id1 / "quake.rc").write_text("echo FIXTURE_STARTUP_OK\ncampaign\ncampaign 7\ncampaign\nquit\n")
     mode = [] if "server" in binary.name else ["-dedicated"]

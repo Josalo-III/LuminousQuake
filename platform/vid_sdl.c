@@ -30,6 +30,7 @@ void M_DrawCharacter(int x, int y, int character);
 void M_Menu_Options_f(void);
 static void VideoMenuDraw(void);
 static void VideoMenuKey(int key);
+void Host_WriteConfiguration(void);
 
 SDL_Window *LQ_SDLWindow(void) { return window; }
 SDL_Renderer *LQ_SDLRenderer(void) { return renderer; }
@@ -58,6 +59,23 @@ static void Framebuffer(int width, int height)
     SDL_Texture *next;
     if (width < 320 || width > MAXWIDTH || height < 200 || height > MAXHEIGHT || (width & 7))
         Sys_Error("Software resolution must be 320..%d by 200..%d, with width divisible by 8", MAXWIDTH, MAXHEIGHT);
+    if (window && (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN)) {
+        int output_width, output_height;
+        SDL_GetWindowSizeInPixels(window, &output_width, &output_height);
+        if (output_width > 0 && output_height > 0) {
+            height = (int)lround((double)width * output_height / output_width);
+            if (height > MAXHEIGHT) {
+                height = MAXHEIGHT;
+                width = ((int)((double)height * output_width / output_height)) & ~7;
+            }
+            if (height < 200 || width < 320) Sys_Error("Unsupported display aspect ratio");
+        }
+    } else if (window) {
+        float aspect = (float)width / height;
+        int window_width, window_height;
+        SDL_GetWindowSize(window, &window_width, &window_height);
+        SDL_SetWindowSize(window, window_width, (int)lround(window_width / aspect));
+    }
     count = (size_t)width * height;
     cache_size = D_SurfaceCacheForRes(width, height);
     if (cache_size < 1024 || cache_size > 128 * 1024 * 1024)
@@ -117,7 +135,7 @@ static void Fullscreen(void)
 static void ToggleFullscreen(void)
 {
     Cvar_SetValue("vid_fullscreen", !vid_fullscreen.value);
-    Fullscreen();
+    Cbuf_AddText("vid_restart\n");
 }
 static void Restart(void)
 {
@@ -128,11 +146,12 @@ static void Restart(void)
         Sys_Error("Invalid vid_width/vid_height for software renderer");
     backend_applied = false;
     LQ_ApplyRenderer();
-    Framebuffer((int)vid_width.value, (int)vid_height.value);
     Fullscreen();
+    Framebuffer((int)vid_width.value, (int)vid_height.value);
     if (renderer && !SDL_SetRenderVSync(renderer, vid_vsync.value != 0))
         Con_Printf("VSync setting unavailable: %s\n", SDL_GetError());
     LQ_UpdateCapture();
+    Host_WriteConfiguration();
 }
 void LQ_FallbackRenderer(const char *reason)
 {
@@ -157,10 +176,10 @@ void LQ_ApplyRenderer(void)
         int width = ArgumentDimension("-width", (int)vid_width.value, 320, MAXWIDTH);
         int height = ArgumentDimension("-height", (int)vid_height.value, 200, MAXHEIGHT);
         Cvar_SetValue("vid_width", width); Cvar_SetValue("vid_height", height);
-        if (vid.width != (unsigned)width || vid.height != (unsigned)height) Framebuffer(width, height);
         if (COM_CheckParm("-fullscreen")) Cvar_SetValue("vid_fullscreen", 1);
         else if (COM_CheckParm("-window")) Cvar_SetValue("vid_fullscreen", 0);
         Fullscreen();
+        Framebuffer(width, height);
         if (renderer) SDL_SetRenderVSync(renderer, vid_vsync.value != 0);
         startup_video_applied = true;
     }
@@ -199,6 +218,7 @@ void VID_Init(unsigned char *palette)
     if (COM_CheckParm("-fullscreen")) Cvar_SetValue("vid_fullscreen", 1);
     if (COM_CheckParm("-window")) Cvar_SetValue("vid_fullscreen", 0);
     SDL_SetMainReady();
+    SDL_SetHint(SDL_HINT_MAC_PRESS_AND_HOLD, "0");
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) Sys_Error("SDL video initialization failed: %s", SDL_GetError());
     flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (vid_fullscreen.value) flags |= SDL_WINDOW_FULLSCREEN;
@@ -222,7 +242,6 @@ void VID_Init(unsigned char *palette)
     SDL_PumpEvents();
 #endif
     LQ_SetFocus((SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0);
-    SDL_StartTextInput(window);
 }
 void VID_Update(vrect_t *rects)
 {
@@ -304,10 +323,12 @@ void D_EndDirectRect(int x, int y, int width, int height)
 void VID_HandlePause(qboolean pause) { (void)pause; LQ_UpdateCapture(); }
 
 static const int resolutions[][2] = {
-    {320, 240}, {400, 300}, {512, 384}, {640, 480}, {800, 600},
-    {1024, 768}, {1280, 960}, {1280, 1024},
-    {640, 360}, {960, 540}, {1024, 576}, {1280, 720},
-    {640, 400}, {960, 600}, {1280, 800}
+    {320, 240}, {400, 300}, {512, 384},
+    {640, 360}, {640, 400}, {640, 480}, {800, 600},
+    {960, 540}, {960, 600}, {1024, 576}, {1024, 768},
+    {1280, 720}, {1280, 800}, {1280, 960}, {1280, 1024},
+    {1440, 900}, {1600, 900}, {1600, 1200}, {1680, 1050},
+    {1920, 1080}, {1920, 1200}, {1920, 1440}
 };
 static int video_cursor, video_choice, video_fullscreen, video_vsync;
 static float video_fov;
@@ -315,7 +336,7 @@ static qboolean video_menu_active;
 static void VideoMenuInit(void)
 {
     if (video_menu_active) return;
-    video_choice = 3;
+    video_choice = 5;
     for (int i = 0; i < (int)(sizeof(resolutions) / sizeof(resolutions[0])); ++i)
         if (vid_width.value == resolutions[i][0] && vid_height.value == resolutions[i][1]) video_choice = i;
     video_fullscreen = vid_fullscreen.value != 0; video_vsync = vid_vsync.value != 0;
@@ -329,6 +350,7 @@ static void VideoMenuDraw(void)
     M_Print(88, 32, "VIDEO OPTIONS");
     M_Print(32, 64, "Resolution");
     M_Print(168, 64, va("%d x %d", resolutions[video_choice][0], resolutions[video_choice][1]));
+    M_Print(32, 48, "Left/right: cycle resolutions");
     M_Print(32, 80, "Horizontal FOV"); M_Print(168, 80, va("%.0f deg", video_fov));
     M_Print(32, 96, "Fullscreen"); M_Print(168, 96, video_fullscreen ? "on" : "off");
     M_Print(32, 112, "VSync"); M_Print(168, 112, video_vsync ? "on" : "off");

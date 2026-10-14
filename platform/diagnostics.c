@@ -1,5 +1,6 @@
 /* Native portability checks, independent of retail assets. GPL-2.0-or-later. */
 #include "quakedef.h"
+#include "localization.h"
 #include "diagnostics.h"
 #include "net_udp.h"
 #include <stdalign.h>
@@ -28,6 +29,13 @@ int LQ_RunDiagnostics(int argc, char **argv)
     struct qsockaddr addr, other;
     COM_InitArgv(argc, argv);
     printf("entityfields=%zu\n", sizeof(entvars_t) / 4 + 1);
+    { char fixture[] = "// comment\nmap_jump_across = \"Jump across\\nnow\"\nempty = \"\"\nbroken = unquoted\n";
+      LQ_LocalizationParse(fixture);
+      CHECK(!strcmp(LQ_Localize("$map_jump_across"), "Jump across\nnow"));
+      CHECK(!strcmp(LQ_Localize("$empty"), ""));
+      CHECK(!strcmp(LQ_Localize("$missing"), "$missing"));
+      CHECK(!strcmp(LQ_Localize("Original text"), "Original text"));
+      LQ_LocalizationParse(""); }
     CHECK(memory != NULL);
     CHECK(Q_ClampedInt(3.5) == 3 && Q_ClampedInt(-3.5) == -3);
     CHECK(Q_ClampedInt(3e9) == INT_MAX && Q_ClampedInt(-3e9) == INT_MIN);
@@ -120,6 +128,18 @@ int LQ_RunDiagnostics(int argc, char **argv)
         extern int pr_depth;
         host_parms.basedir = ".";
         Cbuf_Init(); Cmd_Init(); COM_Init(".");
+        if (COM_CheckParm("--test-localization")) {
+            extern char scr_centerstring[];
+            CHECK(!strcmp(LQ_Localize("$map_jump_across"), "Fixture jump across\nnow"));
+            byte packet[64];
+            net_message.data = packet; net_message.maxsize = sizeof(packet); net_message.cursize = 0;
+            MSG_WriteByte(&net_message, svc_centerprint);
+            MSG_WriteString(&net_message, "$map_jump_across");
+            CL_ParseServerMessage();
+            CHECK(!strcmp(scr_centerstring, "Fixture jump across\nnow"));
+            net_message.data = NULL; net_message.cursize = net_message.maxsize = 0;
+            puts("PASS installation localization lookup");
+        }
         PR_LoadProgs();
         CHECK(pr_edict_size % alignof(edict_t) == 0);
         sv.max_edicts = sv.num_edicts = 3;

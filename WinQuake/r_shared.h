@@ -30,8 +30,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define MAXWORKINGVERTS	(MAXVERTS+4)	// max points in an intermediate
 										//  polygon (while processing)
 // !!! if this is changed, it must be changed in d_ifacea.h too !!!
-#define	MAXHEIGHT		1024
-#define	MAXWIDTH		1280
+#ifdef LQ_PORTABLE
+/* Keep width below 2048: signed raster edges use 12.20 fixed point. */
+#define MAXHEIGHT 1440
+#define MAXWIDTH 1920
+#else
+#define MAXHEIGHT 1024
+#define MAXWIDTH 1280
+#endif
 #define MAXDIMENSION	((MAXHEIGHT > MAXWIDTH) ? MAXHEIGHT : MAXWIDTH)
 
 #define SIN_BUFFER_SIZE	(MAXDIMENSION+CYCLE)
