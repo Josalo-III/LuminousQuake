@@ -8,3 +8,8 @@ void LQ_RenderWorldDone(void) {}
 void LQ_RenderSceneDone(void) {}
 void LQ_RenderSurface(int x, int y, int count, int preserve)
 { (void)x; (void)y; (void)count; (void)preserve; }
+void LQ_UIBegin(void) {}
+void LQ_UIEnd(void) {}
+int LQ_UIScale(void) { return 1; }
+int LQ_UIActive(void) { return 0; }
+void LQ_UIShutdown(void) {}

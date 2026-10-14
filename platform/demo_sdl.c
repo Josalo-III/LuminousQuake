@@ -3,6 +3,8 @@
 #include "quakedef.h"
 #include "d_local.h"
 #include "sdl_backend.h"
+#include "render_bridge.h"
+extern cvar_t scr_fov;
 #include <stdalign.h>
 
 surfcache_t *D_SCAlloc(int width, int size);
@@ -292,10 +294,26 @@ static int TestPlatform(qboolean no_audio)
     int old_width = vid.width, old_height = vid.height;
     vid_menukeyfn(K_RIGHTARROW);
     VERIFY(vid.width == (unsigned)old_width && vid.height == (unsigned)old_height);
+    vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW);
+    VERIFY(Cvar_VariableValue("fov") == 90);
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_DOWNARROW);
     vid_menukeyfn(K_ENTER); Cbuf_Execute();
     VERIFY(vid.width == 1024 && vid.height == 768);
     VERIFY(Cvar_FindVar("vid_width")->archive && Cvar_FindVar("vid_height")->archive);
+    VERIFY(Cvar_VariableValue("fov") == 95 && Cvar_FindVar("fov")->archive);
+    Cvar_SetValue("vid_width", 640); Cvar_SetValue("vid_height", 480);
+    Cbuf_AddText("vid_restart\n"); Cbuf_Execute();
+    memset(vid.buffer, 1, vid.width * vid.height);
+    LQ_UIBegin(); VERIFY(LQ_UIScale() == 2 && vid.width == 320);
+    Draw_Fill(3, 5, 1, 1, 150); LQ_UIEnd();
+    VERIFY(vid.buffer[10 * vid.rowbytes + 6] == 150 && vid.buffer[11 * vid.rowbytes + 7] == 150);
+    VERIFY(vid.buffer[10 * vid.rowbytes + 8] == 1);
+    Cvar_SetValue("vid_width", 1280); Cvar_SetValue("vid_height", 960);
+    Cbuf_AddText("vid_restart\n"); Cbuf_Execute();
+    LQ_UIBegin(); VERIFY(LQ_UIScale() == 4 && vid.width == 320); LQ_UIEnd();
+    Cvar_SetValue("vid_height", 720); Cbuf_AddText("vid_restart\n"); Cbuf_Execute();
+    VERIFY(vid.aspect == 1 && vid.width == 1280 && vid.height == 720);
+    LQ_UIBegin(); VERIFY(vid.width >= 320 && vid.height >= 200); LQ_UIEnd();
     puts("PASS video menu stages, applies and archives resolution");
     LQ_HandleEvent(&event); VERIFY(LQ_QuitRequested()); LQ_ResetQuit();
     puts("PASS SDL focus/key releases, text/modifiers, resize, palette, video restart, cache alignment, audio fallback/mixer/ring, quit");
@@ -312,6 +330,7 @@ int LQ_PlatformDemo(int argc, char **argv, qboolean test)
     host_parms = parms;
     Memory_Init(parms.membase, parms.memsize); Cbuf_Init(); Cmd_Init(); COM_Init(".");
     Key_Init(); CL_Init(); IN_Init(); Font(); Palette(palette);
+    Cvar_RegisterVariable(&scr_fov);
     cls.state = ca_connected; key_dest = key_game; LQ_SetDemo(true);
     VID_Init(palette);
     SDL_SetWindowTitle(LQ_SDLWindow(), "LuminousQuake / Phase 2 / F11 fullscreen / T tone / Esc exit");

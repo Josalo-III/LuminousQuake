@@ -20,6 +20,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // console.c
 
 #include "quakedef.h"
+#ifdef LQ_PORTABLE
+#include "render_bridge.h"
+#endif
 
 int 		con_linewidth;
 
@@ -148,7 +151,11 @@ void Con_CheckResize (void)
 	int		i, j, width, oldwidth, oldtotallines, numlines, numchars;
 	char	tbuf[CON_TEXTSIZE];
 
+#ifdef LQ_PORTABLE
+	width = ((vid.width / (LQ_UIActive() ? 1 : LQ_UIScale())) >> 3) - 2;
+#else
 	width = (vid.width >> 3) - 2;
+#endif
 
 	if (width == con_linewidth)
 		return;

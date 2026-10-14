@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "r_local.h"
 #ifdef LQ_PORTABLE
 #include "render_bridge.h"
+extern cvar_t crosshair, cl_crossx, cl_crossy;
 #endif
 
 // only the refresh window will be updated unless these variables are flagged 
@@ -34,7 +35,7 @@ float		scr_conlines;		// lines of console to display
 
 float		oldscreensize, oldfov;
 cvar_t		scr_viewsize = {"viewsize","100", true};
-cvar_t		scr_fov = {"fov","90"};	// 10 - 170
+cvar_t		scr_fov = {"fov","90",true};	// horizontal degrees, 10 - 170
 cvar_t		scr_conspeed = {"scr_conspeed","300"};
 cvar_t		scr_centertime = {"scr_centertime","2"};
 cvar_t		scr_showram = {"showram","1"};
@@ -260,6 +261,10 @@ static void SCR_CalcRefdef (void)
 		sb_lines = 24;		// no inventory
 	else
 		sb_lines = 24+16+8;
+
+#ifdef LQ_PORTABLE
+	sb_lines *= LQ_UIScale();
+#endif
 
 // these calculations mirror those in R_Init() for r_refdef, but take no
 // account of water warping
@@ -902,6 +907,14 @@ void SCR_UpdateScreen (void)
 
 	D_EnableBackBufferAccess ();	// of all overlay stuff if drawing directly
 
+#ifdef LQ_PORTABLE
+	LQ_UIBegin();
+	if (!con_forcedup && crosshair.value) {
+		int scale = LQ_UIScale();
+		Draw_Character(scr_vrect.x / scale + scr_vrect.width / (2 * scale) + cl_crossx.value,
+		               scr_vrect.y / scale + scr_vrect.height / (2 * scale) + cl_crossy.value, '+');
+	}
+#endif
 	if (scr_drawdialog)
 	{
 		Sbar_Draw ();
@@ -941,6 +954,9 @@ void SCR_UpdateScreen (void)
 
 	D_DisableBackBufferAccess ();	// for adapters that can't stay mapped in
 									//  for linear writes all the time
+#ifdef LQ_PORTABLE
+	LQ_UIEnd();
+#endif
 	if (pconupdate)
 	{
 		D_UpdateRects (pconupdate);

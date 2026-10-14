@@ -13,6 +13,9 @@ parser.add_argument('executable', type=Path)
 parser.add_argument('basedir', type=Path)
 parser.add_argument('--renderer', choices=('software', 'classic'), default='software')
 parser.add_argument('--capture', type=Path, help='Keep the verified frame at this explicit path')
+parser.add_argument('--width', type=int, default=640)
+parser.add_argument('--height', type=int, default=480)
+parser.add_argument('--fov', type=int, default=90)
 args = parser.parse_args()
 executable = args.executable.resolve()
 packs = sorted((args.basedir.resolve() / 'id1').glob('pak*.pak'))
@@ -30,7 +33,8 @@ with tempfile.TemporaryDirectory(prefix='lqr-') as directory:
         except OSError:
             shutil.copyfile(pack, game / pack.name)
     classic = args.renderer == 'classic'
-    commands = ('lq_renderer ' + ('1' if classic else '0') + '\n' +
+    commands = (f'vid_width {args.width}\nvid_height {args.height}\nfov {args.fov}\n' +
+                'lq_renderer ' + ('1' if classic else '0') + '\n' +
                 'record lq_smoke e1m1\n' + 'wait\n' * 80 +
                 '+forward\n+attack\n' + 'wait\n' * 40 +
                 '-forward\n-attack\nstop\nsave lq_smoke\nload lq_smoke\n' +

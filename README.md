@@ -106,8 +106,15 @@ Classic GPU is now available as the mixed rendering checkpoint described above;
 Enhanced remains pending. Restart the game or use `vid_restart` to apply the
 saved choice. The experimental GPU viewer remains a separate `luminousquake-gpu`
 executable. Classic GPU describes appearance and can use Metal/Vulkan.
-The old video-options page
-is not an SDL settings UI; use console commands instead.
+Options → Video Options selects resolution, horizontal FOV (10–170 degrees),
+fullscreen and vsync. Apply activates the staged settings and saves them in
+the LuminousQuake profile. Resolution presets include 16:9 and 16:10 widescreen.
+The view uses square pixels so widescreen geometry keeps its proportions.
+
+Menus, console, HUD and crosshair automatically scale in powers of two while
+the 3D view retains the selected resolution. Doubling both resolution dimensions
+doubles UI pixel size; the scale also keeps at least a 320×200 logical canvas.
+For example, 640×480 uses 2× UI, 1280×960 uses 4×, and 1280×720 uses 2×.
 
 Window resizing preserves the software render resolution and aspect ratio.
 `-width 640 -height 480` chooses the internal resolution;

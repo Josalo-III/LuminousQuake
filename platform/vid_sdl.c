@@ -4,6 +4,7 @@
 #include "d_local.h"
 #include "sdl_backend.h"
 #include "gpu_sdl.h"
+#include "render_bridge.h"
 
 viddef_t vid;
 unsigned short d_8to16table[256];
@@ -84,7 +85,7 @@ static void Framebuffer(int width, int height)
     vid.width = vid.conwidth = vid.rowbytes = vid.conrowbytes = width;
     vid.height = vid.conheight = height;
     vid.maxwarpwidth = WARP_WIDTH; vid.maxwarpheight = WARP_HEIGHT;
-    vid.aspect = (float)height / width * (320.0f / 240.0f);
+    vid.aspect = 1.0f; /* SDL presents square pixels at every aspect ratio. */
     vid.numpages = 1; vid.recalc_refdef = true;
     vid.colormap = host_colormap;
     vid.fullbright = host_colormap ? 256 - LittleLong(*((int *)host_colormap + 2048)) : 256;
@@ -227,6 +228,7 @@ void VID_Update(vrect_t *rects)
 {
     size_t i, count = (size_t)vid.width * vid.height;
     (void)rects;
+    if (LQ_UIActive()) return; /* Present only after the full-resolution canvas is restored. */
     if (gpu && LQ_RenderBridgePresent()) return;
     if (!renderer) return;
     for (i = 0; i < count; ++i) pixels[i] = d_8to24table[vid.buffer[i]];
@@ -261,6 +263,7 @@ void VID_Shutdown(void)
 {
     if (!window && !renderer) return;
     LQ_RenderBridgeShutdown(); LQ_GPUDestroy(gpu); gpu = NULL;
+    LQ_UIShutdown();
     backend_applied = false;
     startup_video_applied = false;
     IN_ClearStates();
@@ -302,9 +305,12 @@ void VID_HandlePause(qboolean pause) { (void)pause; LQ_UpdateCapture(); }
 
 static const int resolutions[][2] = {
     {320, 240}, {400, 300}, {512, 384}, {640, 480}, {800, 600},
-    {1024, 768}, {1280, 960}, {1280, 1024}
+    {1024, 768}, {1280, 960}, {1280, 1024},
+    {640, 360}, {960, 540}, {1024, 576}, {1280, 720},
+    {640, 400}, {960, 600}, {1280, 800}
 };
 static int video_cursor, video_choice, video_fullscreen, video_vsync;
+static float video_fov;
 static qboolean video_menu_active;
 static void VideoMenuInit(void)
 {
@@ -313,6 +319,8 @@ static void VideoMenuInit(void)
     for (int i = 0; i < (int)(sizeof(resolutions) / sizeof(resolutions[0])); ++i)
         if (vid_width.value == resolutions[i][0] && vid_height.value == resolutions[i][1]) video_choice = i;
     video_fullscreen = vid_fullscreen.value != 0; video_vsync = vid_vsync.value != 0;
+    video_fov = Cvar_VariableValue("fov");
+    if (!isfinite(video_fov) || video_fov < 10 || video_fov > 170) video_fov = 90;
     video_menu_active = true;
 }
 static void VideoMenuDraw(void)
@@ -321,29 +329,35 @@ static void VideoMenuDraw(void)
     M_Print(88, 32, "VIDEO OPTIONS");
     M_Print(32, 64, "Resolution");
     M_Print(168, 64, va("%d x %d", resolutions[video_choice][0], resolutions[video_choice][1]));
-    M_Print(32, 80, "Fullscreen"); M_Print(168, 80, video_fullscreen ? "on" : "off");
-    M_Print(32, 96, "VSync"); M_Print(168, 96, video_vsync ? "on" : "off");
-    M_Print(32, 112, "Apply changes");
+    M_Print(32, 80, "Horizontal FOV"); M_Print(168, 80, va("%.0f deg", video_fov));
+    M_Print(32, 96, "Fullscreen"); M_Print(168, 96, video_fullscreen ? "on" : "off");
+    M_Print(32, 112, "VSync"); M_Print(168, 112, video_vsync ? "on" : "off");
+    M_Print(32, 128, "Apply changes");
     M_DrawCharacter(16, 64 + video_cursor * 16, 12 + ((int)(realtime * 4) & 1));
-    M_Print(32, 144, va("Current: %u x %u", vid.width, vid.height));
-    M_Print(32, 160, "Resize the window freely.");
-    M_Print(32, 176, "Escape returns to Options.");
+    M_Print(32, 152, va("Current: %.0f x %.0f", vid_width.value, vid_height.value));
+    M_Print(32, 168, "UI size scales automatically.");
+    M_Print(32, 184, "Escape returns to Options.");
 }
 static void VideoMenuKey(int key)
 {
     VideoMenuInit();
     if (key == K_ESCAPE) { video_menu_active = false; M_Menu_Options_f(); return; }
-    if (key == K_UPARROW) { video_cursor = (video_cursor + 3) % 4; return; }
-    if (key == K_DOWNARROW) { video_cursor = (video_cursor + 1) % 4; return; }
+    if (key == K_UPARROW) { video_cursor = (video_cursor + 4) % 5; return; }
+    if (key == K_DOWNARROW) { video_cursor = (video_cursor + 1) % 5; return; }
     if (key != K_LEFTARROW && key != K_RIGHTARROW && key != K_ENTER) return;
     if (video_cursor == 0) {
         int count = sizeof(resolutions) / sizeof(resolutions[0]);
         video_choice = (video_choice + (key == K_LEFTARROW ? -1 : 1) + count) % count;
-    } else if (video_cursor == 1) video_fullscreen = !video_fullscreen;
-    else if (video_cursor == 2) video_vsync = !video_vsync;
+    } else if (video_cursor == 1) {
+        video_fov += key == K_LEFTARROW ? -5 : 5;
+        if (video_fov < 10) video_fov = 10;
+        if (video_fov > 170) video_fov = 170;
+    } else if (video_cursor == 2) video_fullscreen = !video_fullscreen;
+    else if (video_cursor == 3) video_vsync = !video_vsync;
     else if (key == K_ENTER) {
         Cvar_SetValue("vid_width", resolutions[video_choice][0]);
         Cvar_SetValue("vid_height", resolutions[video_choice][1]);
+        Cvar_SetValue("fov", video_fov);
         Cvar_SetValue("vid_fullscreen", video_fullscreen); Cvar_SetValue("vid_vsync", video_vsync);
         Cbuf_AddText("vid_restart\n");
     }
