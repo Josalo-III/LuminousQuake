@@ -295,6 +295,13 @@ void Cmd_Exec_f (void)
 	f = (char *)COM_LoadHunkFile (Cmd_Argv(1));
 	if (!f)
 	{
+#ifdef LQ_PORTABLE
+		if (!Q_strcasecmp(Cmd_Argv(1), "autoexec.cfg"))
+		{
+			Con_Printf ("Optional autoexec.cfg not found; continuing with current settings.\n");
+			return;
+		}
+#endif
 		Con_Printf ("couldn't exec %s\n",Cmd_Argv(1));
 		return;
 	}
@@ -645,7 +652,17 @@ void	Cmd_ExecuteString (char *text, cmd_source_t src)
 	
 // check cvars
 	if (!Cvar_Command ())
+	{
+#ifdef LQ_PORTABLE
+		/* Recognize the rerelease request without claiming font support. */
+		if (!Q_strcasecmp(Cmd_Argv(0), "scr_usekfont"))
+		{
+			Con_Printf ("Rerelease font selection is unsupported; using Quake bitmap font.\n");
+			return;
+		}
+#endif
 		Con_Printf ("Unknown command \"%s\"\n", Cmd_Argv(0));
+	}
 	
 }
 

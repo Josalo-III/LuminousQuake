@@ -58,12 +58,22 @@ void Mod_Init (void)
 ===============
 Mod_Extradata
 
-Caches the data if needed
+Returns sprite hunk data or caches alias data if needed.
 ===============
 */
 void *Mod_Extradata (model_t *mod)
 {
 	void	*r;
+
+	/* Sprite loaders store hunk allocations in cache.data, without a cache
+	 * header. Cache_Check is valid only for cache-managed alias models. */
+	if (mod->type == mod_sprite)
+	{
+		Mod_LoadModel (mod, true);
+		if (!mod->cache.data)
+			Sys_Error ("Mod_Extradata: missing sprite data");
+		return mod->cache.data;
+	}
 	
 	r = Cache_Check (&mod->cache);
 	if (r)

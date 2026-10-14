@@ -1,18 +1,25 @@
 # LuminousQuake implementation plan
 
-Status: Phases 1–2 implemented. Classic GPU now submits world, models, moving
+Status: Classic GPU feature implementation checkpoint reached, October 14, 2026.
+Phases 1–2 are implemented. Classic GPU now submits world, models, moving
 brushes, sprites and particles to the GPU, alongside the Software comparison
 mode. A Finder-launchable Mac app and isolated profile writes are implemented.
 See [Classic GPU checkpoint](docs/CLASSIC_GPU_CHECKPOINT.md). General CPU jobs,
 broader content/platform validation, remaining Phase 3A delivery checks and
 Enhanced rendering remain pending.
 
+Classic GPU texture filtering now includes saved mipmap and anisotropy options.
+See the [texture-filtering checkpoint](docs/CLASSIC_GPU_CHECKPOINT.md) for the
+palette-aware approach, validation and limitations. Rerelease fog and broader
+campaign/platform validation remain separate follow-up work.
+
 Immediate compatibility priority: resilience when users select rerelease data;
 see [rerelease QuakeC comparison](docs/RERELEASE_COMPARISON.md).
 The installed program requires numeric builtins 79/80 which are not implemented;
 short gameplay smoke passes do not establish complete rerelease compatibility.
-Finish parameterized printing/gib fixes, implement and test ending/local-sound
-services, and add a load-time capability audit before claiming campaign support
+Parameterized printing/gib fixes are implemented with generated regression
+coverage; broader gameplay validation remains pending. Implement and test
+ending/local-sound services and add a load-time capability audit before claiming campaign support
 or rebuilding installed game code from the newer sources.
 
 Updated: October 14, 2026

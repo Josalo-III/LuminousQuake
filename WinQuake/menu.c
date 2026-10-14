@@ -1044,9 +1044,9 @@ again:
 /* OPTIONS MENU */
 
 #ifdef _WIN32
-#define	OPTIONS_ITEMS	15
+#define	OPTIONS_ITEMS	16
 #else
-#define	OPTIONS_ITEMS	14
+#define	OPTIONS_ITEMS	15
 #endif
 
 #define	SLIDER_RANGE	10
@@ -1066,7 +1066,7 @@ void M_Menu_Options_f (void)
 	m_entersound = true;
 
 #ifdef _WIN32
-	if ((options_cursor == 14) && (modestate != MS_WINDOWED))
+	if ((options_cursor == 15) && (modestate != MS_WINDOWED))
 	{
 		options_cursor = 0;
 	}
@@ -1142,20 +1142,26 @@ void M_AdjustSliders (int dir)
 		Cvar_SetValue ("m_pitch", -m_pitch.value);
 		break;
 
-	case 10:	// lookspring
+	case 10:	// persistent mouselook; +mlook remains available as a held binding
+		Cvar_SetValue ("freelook", !freelook.value);
+		if (!freelook.value && !(in_mlook.state & 1) && lookspring.value)
+			V_StartPitchDrift ();
+		break;
+
+	case 11:	// lookspring
 		Cvar_SetValue ("lookspring", !lookspring.value);
 		break;
 
-	case 11:	// lookstrafe
+	case 12:	// lookstrafe
 		Cvar_SetValue ("lookstrafe", !lookstrafe.value);
 		break;
 
-	case 12:	// renderer preference (applies when the renderer is restarted)
+	case 13:	// renderer preference (applies when the renderer is restarted)
 		Cvar_SetValue ("lq_renderer", (M_RendererChoice () + dir + 3) % 3);
 		break;
 
 #ifdef _WIN32
-	case 14:	// _windowed_mouse
+	case 15:	// _windowed_mouse
 		Cvar_SetValue ("_windowed_mouse", !_windowed_mouse.value);
 		break;
 #endif
@@ -1231,38 +1237,41 @@ void M_Options_Draw (void)
 	M_Print (16, 104, "          Invert Mouse");
 	M_DrawCheckbox (220, 104, m_pitch.value < 0);
 
-	M_Print (16, 112, "            Lookspring");
-	M_DrawCheckbox (220, 112, lookspring.value);
+	M_Print (16, 112, "             Mouselook");
+	M_DrawCheckbox (220, 112, freelook.value);
 
-	M_Print (16, 120, "            Lookstrafe");
-	M_DrawCheckbox (220, 120, lookstrafe.value);
+	M_Print (16, 120, "            Lookspring");
+	M_DrawCheckbox (220, 120, lookspring.value);
 
-	M_Print (16, 128, "              Renderer");
+	M_Print (16, 128, "            Lookstrafe");
+	M_DrawCheckbox (220, 128, lookstrafe.value);
+
+	M_Print (16, 136, "              Renderer");
 	if (M_RendererChoice () == 2)
-		M_Print (220, 128, "Enhanced");
+		M_Print (220, 136, "Enhanced");
 	else if (M_RendererChoice () == 1)
-		M_Print (220, 128, "Classic GPU");
+		M_Print (220, 136, "Classic GPU");
 	else
-		M_Print (220, 128, "Software");
-	if (options_cursor == 12)
+		M_Print (220, 136, "Software");
+	if (options_cursor == 13)
 	{
 		if (M_RendererChoice () == 0)
 			M_Print (16, 160, "Software gameplay is available.");
 		else if (M_RendererChoice () == 1)
-			M_Print (16, 160, "Classic GPU world; CPU actors/UI.");
+			M_Print (16, 160, "Classic GPU world, actors/effects.");
 		else
 			M_Print (16, 160, "Enhanced integration pending.");
 		M_Print (16, 168, "Restart or use vid_restart to apply.");
 	}
 
 	if (vid_menudrawfn)
-		M_Print (16, 136, "         Video Options");
+		M_Print (16, 144, "         Video Options");
 
 #ifdef _WIN32
 	if (modestate == MS_WINDOWED)
 	{
-		M_Print (16, 144, "             Use Mouse");
-		M_DrawCheckbox (220, 144, _windowed_mouse.value);
+		M_Print (16, 152, "             Use Mouse");
+		M_DrawCheckbox (220, 152, _windowed_mouse.value);
 	}
 #endif
 
@@ -1293,7 +1302,7 @@ void M_Options_Key (int k)
 		case 2:
 			Cbuf_AddText ("exec default.cfg\n");
 			break;
-		case 13:
+		case 14:
 			M_Menu_Video_f ();
 			break;
 		default:
@@ -1325,19 +1334,19 @@ void M_Options_Key (int k)
 		break;
 	}
 
-	if (options_cursor == 13 && vid_menudrawfn == NULL)
+	if (options_cursor == 14 && vid_menudrawfn == NULL)
 	{
 		if (k == K_UPARROW)
-			options_cursor = 12;
+			options_cursor = 13;
 		else
 			options_cursor = 0;
 	}
 
 #ifdef _WIN32
-	if ((options_cursor == 14) && (modestate != MS_WINDOWED))
+	if ((options_cursor == 15) && (modestate != MS_WINDOWED))
 	{
 		if (k == K_UPARROW)
-			options_cursor = 13;
+			options_cursor = 14;
 		else
 			options_cursor = 0;
 	}

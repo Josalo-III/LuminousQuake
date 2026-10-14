@@ -202,6 +202,23 @@ static int TestPlatform(qboolean no_audio)
       }
       VERIFY(fabsf(cl.viewangles[YAW] - old_yaw + 100 * sensitivity.value * m_yaw.value) < 0.001f);
       VERIFY(cl.viewangles[PITCH] == -70); }
+    {
+        usercmd_t movement = {0};
+        VERIFY(freelook.archive && freelook.value == 1);
+        Cvar_SetValue("freelook", 0);
+        cl.viewangles[PITCH] = 0;
+        LQ_TestMouseDelta(0, 20, &movement);
+        VERIFY(cl.viewangles[PITCH] == 0 && movement.forwardmove != 0);
+        Cmd_ExecuteString("+mlook", src_command);
+        LQ_TestMouseDelta(0, 20, &movement);
+        VERIFY(cl.viewangles[PITCH] != 0);
+        Cmd_ExecuteString("-mlook", src_command);
+        cl.viewangles[PITCH] = 0;
+        Cvar_SetValue("freelook", 1);
+        LQ_TestMouseDelta(0, 20, &movement);
+        VERIFY(cl.viewangles[PITCH] != 0 && !(in_mlook.state & 1));
+        puts("PASS saved mouselook preference and held +mlook override");
+    }
     Key_SetBinding('w', "+forward");
     KeyEvent(&event, SDL_EVENT_KEY_DOWN, SDL_SCANCODE_W, SDLK_W); Cbuf_Execute();
     VERIFY(in_forward.state & 1);
@@ -302,16 +319,21 @@ static int TestPlatform(qboolean no_audio)
     vid_menukeyfn(K_RIGHTARROW); /* smooth filtering, staged */
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); /* 2x MSAA */
     VERIFY(Cvar_VariableValue("gpu_filter") == 0 && Cvar_VariableValue("gpu_msaa") == 0);
+    vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); vid_menukeyfn(K_RIGHTARROW); /* trilinear */
+    vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_LEFTARROW); /* 16x anisotropy */
+    VERIFY(Cvar_VariableValue("gpu_mipmaps") == 0 && Cvar_VariableValue("gpu_anisotropy") == 1);
     vid_menukeyfn(K_DOWNARROW);
     vid_menukeyfn(K_ENTER); Cbuf_Execute();
     VERIFY(vid.width == 960 && vid.height == 540);
     VERIFY(Cvar_FindVar("vid_width")->archive && Cvar_FindVar("vid_height")->archive);
     VERIFY(Cvar_VariableValue("fov") == 95 && Cvar_FindVar("fov")->archive);
     VERIFY(Cvar_VariableValue("gpu_filter") == 1 && Cvar_VariableValue("gpu_msaa") == 2);
+    VERIFY(Cvar_VariableValue("gpu_mipmaps") == 2 && Cvar_FindVar("gpu_mipmaps")->archive);
+    VERIFY(Cvar_VariableValue("gpu_anisotropy") == 16 && Cvar_FindVar("gpu_anisotropy")->archive);
     /* Reach 1080p through the same selector used by the player. */
-    for (int i = 0; i < 6; ++i) vid_menukeyfn(K_UPARROW);
+    for (int i = 0; i < 8; ++i) vid_menukeyfn(K_UPARROW);
     for (int i = 0; i < 12; ++i) vid_menukeyfn(K_RIGHTARROW);
-    for (int i = 0; i < 6; ++i) vid_menukeyfn(K_DOWNARROW);
+    for (int i = 0; i < 8; ++i) vid_menukeyfn(K_DOWNARROW);
     vid_menukeyfn(K_ENTER); Cbuf_Execute();
     VERIFY(vid.width == 1920 && vid.height == 1080);
     Cvar_SetValue("vid_width", 640); Cvar_SetValue("vid_height", 480);
@@ -355,7 +377,7 @@ int LQ_PlatformDemo(int argc, char **argv, qboolean test)
     S_Init(); S_AmbientOff();
     Key_SetBinding('`', "toggleconsole"); Key_SetBinding(K_F11, "vid_togglefullscreen");
     Key_SetBinding('t', "platform_tone"); Cmd_AddCommand("platform_tone", Tone);
-    Cbuf_AddText("+mlook\n"); Cbuf_Execute();
+    Cbuf_Execute();
     if (test) result = TestPlatform(COM_CheckParm("--expect-no-audio") != 0);
     else {
         argument = COM_CheckParm("--demo-seconds");

@@ -26,6 +26,8 @@ static cvar_t vid_height = {"vid_height", "480", true};
 static cvar_t vid_fullscreen = {"vid_fullscreen", "0", true};
 static cvar_t vid_vsync = {"vid_vsync", "0", true};
 static cvar_t gpu_filter = {"gpu_filter", "0", true};
+static cvar_t gpu_mipmaps = {"gpu_mipmaps", "0", true};
+static cvar_t gpu_anisotropy = {"gpu_anisotropy", "1", true};
 static cvar_t gpu_msaa = {"gpu_msaa", "0", true};
 void M_Print(int x, int y, char *text);
 void M_DrawCharacter(int x, int y, int character);
@@ -36,6 +38,13 @@ static void GPUOptions(void)
 {
     if (!gpu) return;
     char error[256];
+    int mips = gpu_mipmaps.value == 2 ? 2 : gpu_mipmaps.value == 1 ? 1 : 0;
+    int aniso = gpu_anisotropy.value == 16 ? 16 : gpu_anisotropy.value == 8 ? 8 :
+        gpu_anisotropy.value == 4 ? 4 : gpu_anisotropy.value == 2 ? 2 : 1;
+    Cvar_SetValue("gpu_mipmaps", mips); Cvar_SetValue("gpu_anisotropy", aniso);
+    if (!LQ_GPUTextureOptions(gpu, mips, aniso, error, sizeof(error))) {
+        LQ_FallbackRenderer(error); return;
+    }
     int samples = (int)gpu_msaa.value;
     if (samples != 0 && samples != 2 && samples != 4) { samples = 0; Cvar_SetValue("gpu_msaa", 0); }
     if (!LQ_GPUOptions(gpu, gpu_filter.value != 0, samples, vid_vsync.value != 0, error, sizeof(error))) {
@@ -226,6 +235,7 @@ void VID_Init(unsigned char *palette)
         Cvar_RegisterVariable(&vid_width); Cvar_RegisterVariable(&vid_height);
         Cvar_RegisterVariable(&vid_fullscreen); Cvar_RegisterVariable(&vid_vsync);
         Cvar_RegisterVariable(&gpu_filter); Cvar_RegisterVariable(&gpu_msaa);
+        Cvar_RegisterVariable(&gpu_mipmaps); Cvar_RegisterVariable(&gpu_anisotropy);
         Cmd_AddCommand("vid_restart", Restart);
         Cmd_AddCommand("vid_togglefullscreen", ToggleFullscreen);
         vid_menudrawfn = VideoMenuDraw;
@@ -354,7 +364,8 @@ static const int resolutions[][2] = {
     {3200, 1800}, {3840, 2160}, {3840, 2400}
 };
 static int video_cursor, video_choice, video_fullscreen, video_vsync;
-static int video_filter, video_msaa;
+static int video_filter, video_msaa, video_mipmaps, video_anisotropy;
+static const int anisotropy_levels[] = {1,2,4,8,16};
 static float video_fov;
 static qboolean video_menu_active;
 static void VideoMenuInit(void)
@@ -365,6 +376,9 @@ static void VideoMenuInit(void)
         if (vid_width.value == resolutions[i][0] && vid_height.value == resolutions[i][1]) video_choice = i;
     video_fullscreen = vid_fullscreen.value != 0; video_vsync = vid_vsync.value != 0;
     video_filter = gpu_filter.value != 0;
+    video_mipmaps = gpu_mipmaps.value == 2 ? 2 : gpu_mipmaps.value == 1 ? 1 : 0;
+    video_anisotropy = 0;
+    for (int i = 0; i < 5; ++i) if (gpu_anisotropy.value == anisotropy_levels[i]) video_anisotropy = i;
     video_msaa = gpu_msaa.value == 4 ? 2 : gpu_msaa.value == 2 ? 1 : 0;
     video_fov = Cvar_VariableValue("fov");
     if (!isfinite(video_fov) || video_fov < 10 || video_fov > 170) video_fov = 90;
@@ -374,25 +388,28 @@ static void VideoMenuDraw(void)
 {
     VideoMenuInit();
     M_Print(88, 16, "VIDEO OPTIONS");
-    M_Print(32, 40, "Resolution");
-    M_Print(168, 40, va("%d x %d", resolutions[video_choice][0], resolutions[video_choice][1]));
-    M_Print(32, 56, "Horizontal FOV"); M_Print(168, 56, va("%.0f deg", video_fov));
-    M_Print(32, 72, "Fullscreen"); M_Print(168, 72, video_fullscreen ? "on" : "off");
-    M_Print(32, 88, "VSync"); M_Print(168, 88, video_vsync ? "on" : "off");
-    M_Print(32, 104, "GPU filtering"); M_Print(168, 104, video_filter ? "smooth" : "crisp");
-    M_Print(32, 120, "GPU anti-alias"); M_Print(168, 120, video_msaa == 2 ? "4x MSAA" : video_msaa == 1 ? "2x MSAA" : "off");
-    M_Print(32, 136, "Apply changes");
-    M_DrawCharacter(16, 40 + video_cursor * 16, 12 + ((int)(realtime * 4) & 1));
-    M_Print(32, 160, va("Current: %u x %u", vid.width* (LQ_UIActive() ? LQ_UIScale() : 1), vid.height* (LQ_UIActive() ? LQ_UIScale() : 1)));
-    M_Print(32, 176, "Left/right changes; Apply saves.");
-    M_Print(32, 192, "Escape returns to Options.");
+    M_Print(32, 32, "Resolution");
+    M_Print(168, 32, va("%d x %d", resolutions[video_choice][0], resolutions[video_choice][1]));
+    M_Print(32, 46, "Horizontal FOV"); M_Print(168, 46, va("%.0f deg", video_fov));
+    M_Print(32, 60, "Fullscreen"); M_Print(168, 60, video_fullscreen ? "on" : "off");
+    M_Print(32, 74, "VSync"); M_Print(168, 74, video_vsync ? "on" : "off");
+    M_Print(32, 88, "GPU filtering"); M_Print(168, 88, video_filter ? "smooth" : "crisp");
+    M_Print(32, 102, "GPU anti-alias"); M_Print(168, 102, video_msaa == 2 ? "4x MSAA" : video_msaa == 1 ? "2x MSAA" : "off");
+    M_Print(32, 116, "GPU mipmaps"); M_Print(168, 116, video_mipmaps == 2 ? "trilinear" : video_mipmaps == 1 ? "nearest level" : "off");
+    M_Print(32, 130, "GPU anisotropy"); M_Print(168, 130, video_anisotropy ? va("%dx", anisotropy_levels[video_anisotropy]) : "off");
+    M_Print(32, 144, "Apply changes");
+    M_DrawCharacter(16, 32 + video_cursor * 14, 12 + ((int)(realtime * 4) & 1));
+    M_Print(32, 168, va("Current: %u x %u", vid.width* (LQ_UIActive() ? LQ_UIScale() : 1), vid.height* (LQ_UIActive() ? LQ_UIScale() : 1)));
+    if (video_cursor == 7 && !video_mipmaps)
+        M_Print(32, 184, "Anisotropy needs mipmaps enabled.");
+    else M_Print(32, 184, "Left/right changes; Apply saves.");
 }
 static void VideoMenuKey(int key)
 {
     VideoMenuInit();
     if (key == K_ESCAPE) { video_menu_active = false; M_Menu_Options_f(); return; }
-    if (key == K_UPARROW) { video_cursor = (video_cursor + 6) % 7; return; }
-    if (key == K_DOWNARROW) { video_cursor = (video_cursor + 1) % 7; return; }
+    if (key == K_UPARROW) { video_cursor = (video_cursor + 8) % 9; return; }
+    if (key == K_DOWNARROW) { video_cursor = (video_cursor + 1) % 9; return; }
     if (key != K_LEFTARROW && key != K_RIGHTARROW && key != K_ENTER) return;
     if (video_cursor == 0) {
         int count = sizeof(resolutions) / sizeof(resolutions[0]);
@@ -405,12 +422,16 @@ static void VideoMenuKey(int key)
     else if (video_cursor == 3) video_vsync = !video_vsync;
     else if (video_cursor == 4) video_filter = !video_filter;
     else if (video_cursor == 5) video_msaa = (video_msaa + (key == K_LEFTARROW ? 2 : 1)) % 3;
+    else if (video_cursor == 6) video_mipmaps = (video_mipmaps + (key == K_LEFTARROW ? 2 : 1)) % 3;
+    else if (video_cursor == 7) video_anisotropy = (video_anisotropy + (key == K_LEFTARROW ? 4 : 1)) % 5;
     else if (key == K_ENTER) {
         Cvar_SetValue("vid_width", resolutions[video_choice][0]);
         Cvar_SetValue("vid_height", resolutions[video_choice][1]);
         Cvar_SetValue("fov", video_fov);
         Cvar_SetValue("vid_fullscreen", video_fullscreen); Cvar_SetValue("vid_vsync", video_vsync);
         Cvar_SetValue("gpu_filter", video_filter); Cvar_SetValue("gpu_msaa", video_msaa == 2 ? 4 : video_msaa == 1 ? 2 : 0);
+        Cvar_SetValue("gpu_mipmaps", video_mipmaps);
+        Cvar_SetValue("gpu_anisotropy", anisotropy_levels[video_anisotropy]);
         Cbuf_AddText("vid_restart\n");
         video_menu_active = false;
     }

@@ -2,6 +2,7 @@
  * GPL-2.0-or-later. */
 #include <SDL3/SDL.h>
 #include "gpu_sdl.h"
+#include "indexed_mips.h"
 #include "generated/world_shaders.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,7 +15,8 @@ struct lq_gpu {
     SDL_GPUGraphicsPipeline *pipeline, *overlay_pipeline;
     SDL_GPUGraphicsPipeline *multisample[2];
     SDL_GPUTexture *multisample_color;
-    int smooth, samples;
+    int smooth, samples, mipmaps, anisotropy;
+    lq_mip_palette *mip_palette;
     SDL_GPUSampler *repeat, *point, *linear;
     SDL_GPUBuffer *vertices, *indices;
     SDL_GPUTexture **textures, *colormap, *lightmap, *color, *depth, *overlay;
@@ -154,6 +156,14 @@ int LQ_GPUOptions(lq_gpu *g, int smooth, int samples, int vsync, char *error, si
     if (g->samples != samples) { g->samples = samples; g->width = 0; }
     return 1;
 }
+int LQ_GPUTextureOptions(lq_gpu *g, int mipmaps, int anisotropy, char *error, size_t size)
+{
+    if (mipmaps < 0 || mipmaps > 2 ||
+        (anisotropy != 1 && anisotropy != 2 && anisotropy != 4 && anisotropy != 8 && anisotropy != 16)) {
+        SDL_SetError("invalid mipmap/anisotropic setting"); return Error(error, size, "GPU texture options");
+    }
+    g->mipmaps = mipmaps; g->anisotropy = anisotropy; return 1;
+}
 int LQ_GPUSamplesSupported(lq_gpu *g, int samples)
 { return samples == 0 || (samples == 2 && g->multisample[0]) || (samples == 4 && g->multisample[1]); }
 static SDL_GPUTransferBuffer *Transfer(lq_gpu *g, uint32_t bytes, SDL_GPUTransferBufferUsage usage, const void *data)
@@ -182,6 +192,47 @@ static SDL_GPUTexture *UploadImage(lq_gpu *g, const lq_image *image)
         SDL_GPUTextureRegion dest = {0};
         dest.texture = texture; dest.w = image->width; dest.h = image->height; dest.d = 1;
         SDL_UploadToGPUTexture(pass, &source, &dest, false); SDL_EndGPUCopyPass(pass);
+        if (!SDL_SubmitGPUCommandBuffer(command)) { SDL_ReleaseGPUTexture(g->device, texture); texture = NULL; }
+    } else if (texture) { SDL_ReleaseGPUTexture(g->device, texture); texture = NULL; }
+    if (transfer) SDL_ReleaseGPUTransferBuffer(g->device, transfer);
+    return texture;
+}
+/* Indexed textures require color-aware mip generation, not hardware averaging
+ * of palette numbers. Shaders filter the resulting palette colors explicitly. */
+static SDL_GPUTexture *UploadIndexed(lq_gpu *g, const lq_image *image)
+{
+    lq_mip_chain mip;
+    if (!LQ_IndexedMips(image, g->mip_palette, &mip)) {
+        SDL_SetError("cannot build indexed mip chain"); return NULL;
+    }
+    SDL_GPUTextureCreateInfo info = {0};
+    info.type = SDL_GPU_TEXTURETYPE_2D; info.format = SDL_GPU_TEXTUREFORMAT_R8_UNORM;
+    info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER; info.width = image->width; info.height = image->height;
+    info.layer_count_or_depth = 1; info.num_levels = mip.count; info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    SDL_GPUTexture *texture = SDL_CreateGPUTexture(g->device, &info);
+    /* Tight rows match the original upload path (older SDL Metal versions
+     * ignore pixels_per_row). Align each level start for buffer copies. */
+    uint32_t offsets[14], pitches[14], bytes = 0;
+    for (unsigned n = 0; n < mip.count; ++n) {
+        pitches[n] = mip.widths[n]; offsets[n] = (bytes+511)&~511u;
+        bytes = offsets[n]+pitches[n]*mip.heights[n];
+    }
+    uint8_t *data = calloc(1, bytes);
+    if (data) for (unsigned n = 0; n < mip.count; ++n)
+        for (unsigned y = 0; y < mip.heights[n]; ++y)
+            memcpy(data+offsets[n]+y*pitches[n], mip.pixels+mip.offsets[n]+y*mip.widths[n], mip.widths[n]);
+    SDL_GPUTransferBuffer *transfer = data ? Transfer(g, bytes, SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, data) : NULL;
+    free(data); free(mip.pixels);
+    SDL_GPUCommandBuffer *command = texture && transfer ? SDL_AcquireGPUCommandBuffer(g->device) : NULL;
+    if (command) {
+        SDL_GPUCopyPass *pass = SDL_BeginGPUCopyPass(command);
+        for (unsigned n = 0; n < mip.count; ++n) {
+            SDL_GPUTextureTransferInfo source = {transfer, offsets[n], pitches[n], mip.heights[n]};
+            SDL_GPUTextureRegion dest = {0};
+            dest.texture = texture; dest.mip_level = n; dest.w = mip.widths[n]; dest.h = mip.heights[n]; dest.d = 1;
+            SDL_UploadToGPUTexture(pass, &source, &dest, false);
+        }
+        SDL_EndGPUCopyPass(pass);
         if (!SDL_SubmitGPUCommandBuffer(command)) { SDL_ReleaseGPUTexture(g->device, texture); texture = NULL; }
     } else if (texture) { SDL_ReleaseGPUTexture(g->device, texture); texture = NULL; }
     if (transfer) SDL_ReleaseGPUTransferBuffer(g->device, transfer);
@@ -284,7 +335,7 @@ int LQ_GPUFrame(lq_gpu *g, const lq_frame *f, char *error, size_t size)
             SDL_SetError("invalid frame material"); return Error(error, size, "GPU frame");
         }
         if (!g->frame_textures[m->resource_id]) {
-            g->frame_textures[m->resource_id] = UploadImage(g, &m->indices);
+            g->frame_textures[m->resource_id] = UploadIndexed(g, &m->indices);
             if (!g->frame_textures[m->resource_id]) return Error(error, size, "GPU frame texture");
         }
     }
@@ -337,6 +388,9 @@ int LQ_GPUUpload(lq_gpu *g, const lq_scene *s, char *error, size_t size)
     g->textures = calloc(s->material_count, sizeof(*g->textures));
     g->draws = malloc((size_t)s->draw_count * sizeof(*g->draws));
     if (!g->textures || !g->draws) { SDL_SetError("out of memory"); goto failed; }
+    if (!g->mip_palette) g->mip_palette = malloc(sizeof(*g->mip_palette));
+    if (!g->mip_palette) { SDL_SetError("out of memory for mip palette"); goto failed; }
+    LQ_MipPaletteInit(g->mip_palette, s->colormap.pixels);
     g->texture_count = s->material_count; g->draw_count = s->draw_count;
     memcpy(g->draws, s->draws, (size_t)s->draw_count * sizeof(*g->draws));
     g->vertices = UploadBuffer(g, s->vertices, s->vertex_count * sizeof(*s->vertices), SDL_GPU_BUFFERUSAGE_VERTEX);
@@ -344,7 +398,7 @@ int LQ_GPUUpload(lq_gpu *g, const lq_scene *s, char *error, size_t size)
     g->colormap = UploadImage(g, &s->colormap); g->lightmap = UploadImage(g, &s->lightmap);
     if (!g->vertices || !g->indices || !g->colormap || !g->lightmap) goto failed;
     for (uint32_t i = 0; i < g->texture_count; ++i) {
-        g->textures[i] = UploadImage(g, &s->materials[i].indices);
+        g->textures[i] = UploadIndexed(g, &s->materials[i].indices);
         if (!g->textures[i]) goto failed;
     }
     return 1;
@@ -423,7 +477,8 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
         if (d->material >= g->texture_count) continue;
         struct { float lights[4], parameters[4], camera[4], dynamic[32][4]; uint32_t bits[4]; } uniforms = {0};
         memcpy(uniforms.dynamic, v->dynamic_lights, sizeof(uniforms.dynamic)); uniforms.bits[0] = d->light_bits;
-        uniforms.parameters[2] = g->smooth;
+        uniforms.parameters[2] = g->smooth; uniforms.parameters[3] = g->mipmaps;
+        uniforms.camera[3] = g->anisotropy;
         for (int j = 0; j < 4; ++j) uniforms.lights[j] = d->styles[j] == 255 ? 0 : v->lightstyles[d->styles[j]];
         uniforms.parameters[0] = v->time; uniforms.parameters[1] = (float)d->flags;
         memcpy(uniforms.camera, v->origin, sizeof(v->origin));
@@ -445,7 +500,8 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
             SDL_SetGPUViewport(pass, &viewport);
             struct { float lights[4], parameters[4], camera[4], dynamic[32][4]; uint32_t bits[4]; } uniforms = {0};
             memcpy(uniforms.dynamic, v->dynamic_lights, sizeof(uniforms.dynamic)); uniforms.bits[0] = d->light_bits;
-            uniforms.parameters[2] = g->smooth;
+            uniforms.parameters[2] = g->smooth; uniforms.parameters[3] = g->mipmaps;
+            uniforms.camera[3] = g->anisotropy;
             for (int j = 0; j < 4; ++j) uniforms.lights[j] = d->styles[j] == 255 ? 0 : v->lightstyles[d->styles[j]];
             uniforms.parameters[0] = v->time; uniforms.parameters[1] = d->flags;
             memcpy(uniforms.camera, v->origin, sizeof(v->origin));
@@ -535,5 +591,5 @@ void LQ_GPUDestroy(lq_gpu *g)
         if (g->claimed) SDL_ReleaseWindowFromGPUDevice(g->device, g->window);
         SDL_DestroyGPUDevice(g->device);
     }
-    free(g->frame_draws); free(g);
+    free(g->mip_palette); free(g->frame_draws); free(g);
 }

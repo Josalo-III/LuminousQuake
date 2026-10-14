@@ -78,6 +78,26 @@ int LQ_RunDiagnostics(int argc, char **argv)
     }
     Hunk_FreeToLowMark(mark);
     CHECK(Hunk_LowMark() == mark);
+    {
+        /* GPU sprites use Mod_Extradata. A sprite lives in the hunk, unlike
+         * MDL data: interpreting its preceding bytes as an LRU header crashes. */
+        model_t sprite_model = {0}, alias_model = {0};
+        mark = Hunk_LowMark();
+        msprite_t *sprite = Hunk_AllocName(sizeof(*sprite), "s_explod");
+        sprite->numframes = 1; sprite->type = SPR_VP_PARALLEL;
+        sprite_model.type = mod_sprite; sprite_model.cache.data = sprite;
+        alias_model.type = mod_alias;
+        Cache_Alloc(&alias_model.cache, 64, "alias-test");
+        memset(alias_model.cache.data, 0x5a, 64);
+        CHECK(Mod_Extradata(&sprite_model) == sprite);
+        CHECK(Mod_Extradata(&sprite_model) == sprite);
+        CHECK(sprite->numframes == 1 && sprite->type == SPR_VP_PARALLEL);
+        CHECK(Mod_Extradata(&alias_model) == alias_model.cache.data);
+        CHECK(((byte *)alias_model.cache.data)[63] == 0x5a);
+        Cache_Free(&alias_model.cache);
+        Hunk_FreeToLowMark(mark);
+        puts("PASS hunk sprite access and alias cache integrity");
+    }
     CHECK(UDP_StringToAddr("127.0.0.1:26000", &addr) == 0);
     CHECK(UDP_GetSocketPort(&addr) == 26000);
     CHECK(!strcmp(UDP_AddrToString(&addr), "127.0.0.1:26000"));

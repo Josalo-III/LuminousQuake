@@ -144,6 +144,14 @@ there is no separate seventh source set to audit here.
 
 ## What to do next
 
+Startup diagnostics now distinguish an absent optional `autoexec.cfg` from a
+failed required asset load. The installed `quake.rc` requests `scr_usekfont 1`;
+this is reported as unsupported, with the original bitmap font retained. The
+installed E1M1 worldspawn contains a `fog` value; when no QC field handles it,
+the engine reports that fog is unsupported and renders without it. These
+diagnostic changes do not implement rerelease fonts or fog rendering. Fog remains
+an in-scope visual compatibility task.
+
 1. Finish and verify the parameterized print and gib fixes against the installed
    program; retain literal-message behavior for original game code.
 2. Implement/test numeric 79/80 for this identified binary, with explicit ending

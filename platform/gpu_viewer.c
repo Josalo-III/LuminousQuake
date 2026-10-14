@@ -108,6 +108,50 @@ done:
     memset(view->dynamic_lights,0,sizeof(view->dynamic_lights)); LQ_SceneFree(&fixture);
     return good;
 }
+static int MipmapTest(lq_view *view, char *error, size_t size)
+{
+    lq_scene fixture = {0}; int good = 0;
+    if (!LQ_SceneFixture(&fixture)) return 0;
+    for (int row = 0; row < 64; ++row) {
+        uint8_t *color = fixture.colormap.pixels+(row*256+200)*4;
+        color[0] = color[2] = row == 0 ? 128 : row == 31 ? 64 : 0; color[3] = 255;
+    }
+    if (!LQ_GPUUpload(gpu,&fixture,error,size)) goto done;
+    lq_vertex vertices[3]; memcpy(vertices,fixture.vertices,sizeof(vertices));
+    uint8_t pixels[64*64];
+    for (int y = 0; y < 64; ++y) memset(pixels+y*64,y < 32 ? 201 : 202,64);
+    uint32_t indices[] = {0,1,2};
+    lq_material material = {.indices={64,64,1,pixels},.resource_id=45};
+    lq_draw draw = {0,3,0,LQ_SURFACE_MODEL,{255,255,255,255}};
+    lq_frame frame = {vertices,indices,&draw,&material,3,3,1,1};
+    for (int i = 0; i < 3; ++i) {
+        vertices[i].position[0] = 32; vertices[i].shade = 31;
+        vertices[i].uv[0] = i == 0 ? -512 : i == 1 ? 512 : 0;
+        vertices[i].uv[1] = 0.25f;
+    }
+    if (!LQ_GPUOptions(gpu,1,0,1,error,size) || !LQ_GPUFrame(gpu,&frame,error,size)) goto done;
+    for (int mode = 1; mode <= 2; ++mode) {
+        if (!LQ_GPUTextureOptions(gpu,mode,1,error,size) ||
+            !LQ_GPURender(gpu,view,640,480,error,size) || !CenterColor(64,64,error,size)) goto done;
+        for (int aniso = 2; aniso <= 16; aniso *= 2) {
+            if (!LQ_GPUTextureOptions(gpu,mode,aniso,error,size) ||
+                !LQ_GPURender(gpu,view,640,480,error,size)) goto done;
+        }
+        if (!CenterColor(127,0,error,size)) goto done;
+    }
+    /* Trilinear includes bilinear sampling even if crisp was selected. */
+    if (!LQ_GPUOptions(gpu,0,0,1,error,size) || !LQ_GPUTextureOptions(gpu,2,16,error,size) ||
+        !LQ_GPURender(gpu,view,640,480,error,size) || !CenterColor(127,0,error,size)) goto done;
+    draw.flags |= LQ_SURFACE_MASKED;
+    if (!LQ_GPUFrame(gpu,&frame,error,size) || !LQ_GPUTextureOptions(gpu,2,1,error,size) ||
+        !LQ_GPURender(gpu,view,640,480,error,size) || !CenterColor(127,0,error,size)) goto done;
+    good = 1;
+    puts("PASS mip minification, trilinear, 2x-16x anisotropy and crisp masked textures");
+done:
+    if (!good) fprintf(stderr,"MipmapTest: %s\n", error);
+    LQ_GPUTextureOptions(gpu,0,1,error,size); LQ_SceneFree(&fixture);
+    return good;
+}
 static void Move(lq_view *view, float seconds)
 {
     const bool *keys = SDL_GetKeyboardState(NULL);
@@ -213,6 +257,7 @@ int LQ_GPUViewer(int argc, char **argv)
         if (!OverlayTest(&view, error, sizeof(error))) goto done;
         if (!ViewportTest(&view, error, sizeof(error))) goto done;
         if (!FrameTest(&view, error, sizeof(error))) goto done;
+        if (!MipmapTest(&view, error, sizeof(error))) goto done;
         if (!LQ_GPURender(gpu, &view, 640, 480, error, sizeof(error))) goto done;
         if (capture && !SaveFrame(capture, error, sizeof(error))) goto done;
         puts("PASS SDL3 GPU geometry, depth/orientation, palette/lightstyles, overlay alpha, viewport, scene replacement, resize, readback and detached ownership");

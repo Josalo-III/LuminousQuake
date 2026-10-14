@@ -129,7 +129,6 @@ void IN_Init(void)
     Key_SetBinding('3', "impulse 3"); Key_SetBinding('4', "impulse 4");
     Key_SetBinding('5', "impulse 5"); Key_SetBinding('6', "impulse 6");
     Key_SetBinding('7', "impulse 7"); Key_SetBinding('8', "impulse 8");
-    Cbuf_AddText("+mlook\n");
     initialized = true;
     key_text_input = true;
 }
@@ -240,16 +239,17 @@ void LQ_PumpEvents(void)
 void IN_Move(usercmd_t *cmd)
 {
     float x = mouse_x, y = mouse_y;
+    qboolean mouselook = freelook.value || (in_mlook.state & 1);
     mouse_x = mouse_y = 0;
     if (!mouse_active) return;
     if (m_filter.value) { x = (x + previous_x) * 0.5f; y = (y + previous_y) * 0.5f; }
     previous_x = x; previous_y = y;
     x *= sensitivity.value; y *= sensitivity.value;
-    if ((in_strafe.state & 1) || (lookstrafe.value && (in_mlook.state & 1)))
+    if ((in_strafe.state & 1) || (lookstrafe.value && mouselook))
         cmd->sidemove += m_side.value * x;
     else cl.viewangles[YAW] -= m_yaw.value * x;
-    if (in_mlook.state & 1) V_StopPitchDrift();
-    if ((in_mlook.state & 1) && !(in_strafe.state & 1)) {
+    if (mouselook) V_StopPitchDrift();
+    if (mouselook && !(in_strafe.state & 1)) {
         cl.viewangles[PITCH] += m_pitch.value * y;
         if (cl.viewangles[PITCH] > 80) cl.viewangles[PITCH] = 80;
         if (cl.viewangles[PITCH] < -70) cl.viewangles[PITCH] = -70;

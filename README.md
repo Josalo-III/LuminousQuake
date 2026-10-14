@@ -4,7 +4,12 @@ A cross-platform Quake engine project exploring dynamic lighting, shadows,
 improved materials, and faithful asset improvements. See the
 [implementation plan](IMPLEMENTATION_PLAN.md).
 
-## Classic GPU gameplay: Phase 3 integration checkpoint
+## Classic GPU feature implementation checkpoint
+
+The Classic GPU feature implementation milestone is reached as of October 14,
+2026, including mipmaps, anisotropic filtering and saved video options. Broader
+campaign/platform validation and rerelease fog remain open. The Phase 4A engine
+worker pool and Enhanced rendering have not been implemented.
 
 The playable `luminousquake` executable supports **Software** and **Classic GPU**
 through Options. Classic GPU draws the world, animated models, moving brushes,
@@ -108,16 +113,25 @@ and is a separate question from playing their game data locally.
 Default controls: WASD movement, mouse look, left mouse attack, Space jump,
 Shift run, number keys for weapons, Escape menu, grave key console, F11
 fullscreen. Existing Quake configuration scripts override these defaults.
+Options includes **Mouselook** immediately after **Invert Mouse**. It defaults
+to on and is saved as `freelook`; held `+mlook` bindings remain available when
+it is off.
 Options includes a saved **Renderer** preference: **Software** (original CPU
 renderer), **Classic GPU** (GLQuake-style appearance with baked lightmaps), and
 **Enhanced** (Tenebrae-inspired lighting, shadows and materials). Left/right
 cycle in either direction; Enter advances. `lq_renderer` stores 0, 1 or 2.
-Classic GPU is now available as the mixed rendering checkpoint described above;
+Classic GPU is now available as the feature implementation checkpoint described above;
 Enhanced remains pending. Restart the game or use `vid_restart` to apply the
 saved choice. The experimental GPU viewer remains a separate `luminousquake-gpu`
 executable. Classic GPU describes appearance and can use Metal/Vulkan.
 Options → Video Options selects resolution, horizontal FOV (10–170 degrees),
-fullscreen, vsync, GPU filtering (crisp/smooth) and GPU anti-aliasing (off/2×/4× MSAA).
+fullscreen, vsync, GPU filtering (crisp/smooth), GPU anti-aliasing (off/2×/4× MSAA),
+mipmaps (off/nearest level/trilinear), and anisotropy (off/2×/4×/8×/16×).
+Anisotropy requires mipmaps; trilinear includes smooth filtering. Both new options default to off and preserve the
+existing appearance until enabled. For smoother distant textures, try smooth
+filtering, trilinear mipmaps and 4× anisotropy; higher anisotropy costs more shader
+work. Sky, masked sprites and UI retain their existing crisp sampling.
+`gpu_mipmaps` stores 0/1/2 and `gpu_anisotropy` stores 1/2/4/8/16 (1 means off).
 Unsupported GPU settings report a fallback. Apply activates the staged settings and saves them in
 the LuminousQuake profile. Resolution presets include 16:9 and 16:10 widescreen.
 The view uses square pixels so widescreen geometry keeps its proportions.

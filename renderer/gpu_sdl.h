@@ -10,6 +10,7 @@ int LQ_GPUOverlay(lq_gpu *gpu, const lq_image *image, char *error, size_t size);
 int LQ_GPUColormap(lq_gpu *gpu, const lq_image *image, char *error, size_t size);
 int LQ_GPUFrame(lq_gpu *gpu, const lq_frame *frame, char *error, size_t size);
 int LQ_GPUOptions(lq_gpu *gpu, int smooth, int samples, int vsync, char *error, size_t size);
+int LQ_GPUTextureOptions(lq_gpu *gpu, int mipmaps, int anisotropy, char *error, size_t size);
 int LQ_GPUSamplesSupported(lq_gpu *gpu, int samples);
 int LQ_GPURender(lq_gpu *gpu, const lq_view *view, uint32_t width, uint32_t height, char *error, size_t size);
 int LQ_GPUReadPixels(lq_gpu *gpu, uint8_t **pixels, uint32_t *width, uint32_t *height, char *error, size_t size);

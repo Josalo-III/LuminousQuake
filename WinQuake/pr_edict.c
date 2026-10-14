@@ -865,6 +865,13 @@ if (!strcmp(com_token, "light"))
 		key = ED_FindField (keyname);
 		if (!key)
 		{
+#ifdef LQ_PORTABLE
+			if (ent == sv.edicts && !strcmp(keyname, "fog"))
+			{
+				Con_Printf ("Map fog is unsupported; rendering without fog.\n");
+				continue;
+			}
+#endif
 			Con_Printf ("'%s' is not a field\n", keyname);
 			continue;
 		}

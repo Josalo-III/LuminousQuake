@@ -19,6 +19,8 @@ parser.add_argument('--height', type=int, default=480)
 parser.add_argument('--fov', type=int, default=90)
 parser.add_argument('--smooth', action='store_true')
 parser.add_argument('--msaa', type=int, choices=(0,2,4), default=0)
+parser.add_argument('--mipmaps', type=int, choices=(0,1,2), default=0)
+parser.add_argument('--anisotropy', type=int, choices=(1,2,4,8,16), default=1)
 parser.add_argument('--run-seconds', type=int, help='Override the bounded smoke duration')
 args = parser.parse_args()
 executable = args.executable.resolve()
@@ -40,6 +42,7 @@ with tempfile.TemporaryDirectory(prefix='lqr-') as directory:
     duration = args.run_seconds or (20 if classic else 8)
     commands = (f'vid_width {args.width}\nvid_height {args.height}\nfov {args.fov}\n' +
                 f'gpu_filter {int(args.smooth)}\ngpu_msaa {args.msaa}\n' +
+                f'gpu_mipmaps {args.mipmaps}\ngpu_anisotropy {args.anisotropy}\n' +
                 'lq_renderer ' + ('1' if classic else '0') + '\n' +
                 'record lq_smoke e1m1\n' + 'wait\n' * 80 +
                 '+forward\n+attack\n' + 'wait\n' * 40 +
@@ -82,7 +85,7 @@ with tempfile.TemporaryDirectory(prefix='lqr-') as directory:
     (game / 'autoexec.cfg').unlink()
     restart = subprocess.run([str(executable), '-basedir', str(root), '-userdir', str(user),
                               '-noudp', '-nosound', '--run-seconds', '1',
-                              '--screenshot', str(root / 'restart.bmp')], cwd=root,
+                              '--screenshot', str(root / 'restart.bmp'), '+gpu_mipmaps', '+gpu_anisotropy'], cwd=root,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=15)
     frame = root / 'restart.bmp'
     if restart.returncode != 0 or not frame.exists():
@@ -92,6 +95,9 @@ with tempfile.TemporaryDirectory(prefix='lqr-') as directory:
     if not modes or tuple(map(int, modes[-1])) != (args.width, args.height):
         print(restart.stdout)
         raise SystemExit(f'FAIL saved resolution: got {modes}')
-    print('PASS saved resolution across a fresh process launch')
+    for name, value in (("gpu_mipmaps", args.mipmaps), ("gpu_anisotropy", args.anisotropy)):
+        saved = re.search(r'"' + name + r'" is "([0-9.]+)"', restart.stdout)
+        assert saved and float(saved[1]) == value, restart.stdout
+    print('PASS saved resolution and texture options across a fresh process launch')
     print('PASS content smoke: movement/attack command sequence, save/load, demo record/playback, frame capture')
     print('Unverified content remains a sample; this is not full gameplay or original-data validation.')
