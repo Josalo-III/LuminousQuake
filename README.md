@@ -96,6 +96,15 @@ and has unverified provenance/content. It is a smoke-test sample, not the
 original 1996 compatibility baseline. Extension warnings from its game code
 remain visible. See [Phase 2 notes](docs/PHASE_2.md).
 
+LuminousQuake targets the original game. Rerelease installations are an expected
+compatibility case, with support still incomplete: known missing engine services
+are tracked in the [rerelease comparison](docs/RERELEASE_COMPARISON.md). The plan
+is to support the necessary services and detect unsupported requirements early,
+while preserving the installed game data. Rerelease visual improvements are
+within scope, with the original campaign central; full rerelease feature parity
+is not required. Compatibility with rerelease multiplayer servers is unverified
+and is a separate question from playing their game data locally.
+
 Default controls: WASD movement, mouse look, left mouse attack, Space jump,
 Shift run, number keys for weapons, Escape menu, grave key console, F11
 fullscreen. Existing Quake configuration scripts override these defaults.

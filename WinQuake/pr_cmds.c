@@ -19,6 +19,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 
 #include "quakedef.h"
+#include "localization.h"
 
 #define	RETURN_EDICT(e) (((int *)pr_globals)[OFS_RETURN] = EDICT_TO_PROG(e))
 
@@ -41,6 +42,17 @@ char *PF_VarString (int	first)
 		strcat (out, G_STRING((OFS_PARM0+i*3)));
 	}
 	return out;
+}
+static char *PF_PrintString(int first)
+{
+    /* SV_ClientPrintf/SV_BroadcastPrintf use 1024-byte formatting buffers. */
+    static char output[1024];
+    const char *arguments[8];
+    if (first < 0 || pr_argc < first || pr_argc > 8) PR_RunError("Invalid print arguments");
+    int count = pr_argc-first;
+    for (int i = 0; i < count; ++i) arguments[i] = G_STRING(OFS_PARM0+(first+i)*3);
+    if (!LQ_LocalizeArgs(count,arguments,output,sizeof(output))) PR_RunError("Localized print exceeds buffer");
+    return output;
 }
 
 
@@ -274,7 +286,7 @@ void PF_bprint (void)
 {
 	char		*s;
 
-	s = PF_VarString(0);
+	s = PF_PrintString(0);
 	SV_BroadcastPrintf ("%s", s);
 }
 
@@ -294,7 +306,7 @@ void PF_sprint (void)
 	int			entnum;
 	
 	entnum = G_EDICTNUM(OFS_PARM0);
-	s = PF_VarString(1);
+	s = PF_PrintString(1);
 	
 	if (entnum < 1 || entnum > svs.maxclients)
 	{
@@ -325,7 +337,7 @@ void PF_centerprint (void)
 	int			entnum;
 	
 	entnum = G_EDICTNUM(OFS_PARM0);
-	s = PF_VarString(1);
+	s = PF_PrintString(1);
 	
 	if (entnum < 1 || entnum > svs.maxclients)
 	{

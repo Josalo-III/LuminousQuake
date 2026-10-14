@@ -128,3 +128,33 @@ const char *LQ_Localize(const char *text)
         if (!strcmp(text+1, entries[i].key)) return entries[i].value;
     return text; /* Preserve unknown keys and all original game text. */
 }
+int LQ_LocalizeArgs(int argc, const char *const *argv, char *output, unsigned size)
+{
+    unsigned used = 0;
+    if (!size) return 0;
+    output[0] = 0;
+    for (int i = 0; i < argc; ++i) {
+        const char *literal = argv[i], *text = LQ_Localize(literal);
+        int localized = text != literal;
+        int consumed = 0;
+        while (*text) {
+            const char *value = NULL;
+            unsigned length = 1;
+            /* Only table strings are templates. Literal braces in original
+             * game messages/player names never become format instructions. */
+            if (localized && text[0] == '{' && text[1] >= '0' && text[1] <= '7' && text[2] == '}') {
+                int argument = text[1]-'0'+1;
+                if (i+argument < argc) {
+                    value = LQ_Localize(argv[i+argument]); length = (unsigned)strlen(value);
+                    if (argument > consumed) consumed = argument;
+                    text += 3;
+                }
+            }
+            if (!value) value = text++;
+            if (length >= size-used) { output[used] = 0; return 0; }
+            memcpy(output+used,value,length); used += length;
+        }
+        i += consumed;
+    }
+    output[used] = 0; return 1;
+}

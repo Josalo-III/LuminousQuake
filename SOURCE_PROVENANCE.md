@@ -1,5 +1,20 @@
 # Source provenance
 
+## Rerelease QuakeC comparison — October 14, 2026
+
+- Inspected donor/reference: `https://github.com/id-Software/quake-rerelease-qc`,
+  revision `634eefab09a77eb7b5f5ca7078ba3d8784a91142`; all six manifest-listed
+  source sets. Repository README identifies GPLv2; source headers retain id's
+  copyright and GPL notices. Reference-only checkout is in
+  `/private/tmp/lq-quake-rerelease-qc`.
+- Original single-player reference: `https://github.com/id-Software/Quake-Tools`,
+  revision `c0d1b91c74eb654365ac7755bc837e497caaca73`, `qcc/v101qc`.
+  Reference-only checkout is in `/private/tmp/lq-quake-tools`.
+- No donor implementation files were copied into the engine, built, or used
+  to overwrite installed game code. The read-only inventory script is original
+  LuminousQuake tooling. See [comparison report](docs/RERELEASE_COMPARISON.md)
+  for engine/API findings, installed-program metadata and scope limits.
+
 ## Initial engine
 
 - Source: https://github.com/id-Software/Quake

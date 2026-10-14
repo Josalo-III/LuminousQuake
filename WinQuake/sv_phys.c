@@ -1101,6 +1101,9 @@ void SV_Physics_Client (edict_t	*ent, int num)
 		
 	case MOVETYPE_TOSS:
 	case MOVETYPE_BOUNCE:
+#if defined(LQ_PORTABLE) && !defined(QUAKE2)
+	case MOVETYPE_GIB:
+#endif
 		SV_Physics_Toss (ent);
 		break;
 
@@ -1309,7 +1312,11 @@ void SV_Physics_Toss (edict_t *ent)
 	if (ent->free)
 		return;
 	
-	if (ent->v.movetype == MOVETYPE_BOUNCE)
+	if (ent->v.movetype == MOVETYPE_BOUNCE
+#if defined(LQ_PORTABLE) && !defined(QUAKE2)
+		|| ent->v.movetype == MOVETYPE_GIB
+#endif
+	)
 		backoff = 1.5;
 #ifdef QUAKE2
 	else if (ent->v.movetype == MOVETYPE_BOUNCEMISSILE)
@@ -1326,7 +1333,11 @@ void SV_Physics_Toss (edict_t *ent)
 #ifdef QUAKE2
 		if (ent->v.velocity[2] < 60 || (ent->v.movetype != MOVETYPE_BOUNCE && ent->v.movetype != MOVETYPE_BOUNCEMISSILE))
 #else
-		if (ent->v.velocity[2] < 60 || ent->v.movetype != MOVETYPE_BOUNCE)
+		if (ent->v.velocity[2] < 60 || (ent->v.movetype != MOVETYPE_BOUNCE
+#ifdef LQ_PORTABLE
+			&& ent->v.movetype != MOVETYPE_GIB
+#endif
+		))
 #endif
 		{
 			ent->v.flags = (int)ent->v.flags | FL_ONGROUND;
@@ -1547,6 +1558,9 @@ void SV_Physics (void)
 			SV_Physics_Step (ent);
 		else if (ent->v.movetype == MOVETYPE_TOSS 
 		|| ent->v.movetype == MOVETYPE_BOUNCE
+#if defined(LQ_PORTABLE) && !defined(QUAKE2)
+		|| ent->v.movetype == MOVETYPE_GIB
+#endif
 #ifdef QUAKE2
 		|| ent->v.movetype == MOVETYPE_BOUNCEMISSILE
 #endif

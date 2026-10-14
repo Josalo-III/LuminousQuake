@@ -7,6 +7,14 @@ See [Classic GPU checkpoint](docs/CLASSIC_GPU_CHECKPOINT.md). General CPU jobs,
 broader content/platform validation, remaining Phase 3A delivery checks and
 Enhanced rendering remain pending.
 
+Immediate compatibility priority: resilience when users select rerelease data;
+see [rerelease QuakeC comparison](docs/RERELEASE_COMPARISON.md).
+The installed program requires numeric builtins 79/80 which are not implemented;
+short gameplay smoke passes do not establish complete rerelease compatibility.
+Finish parameterized printing/gib fixes, implement and test ending/local-sound
+services, and add a load-time capability audit before claiming campaign support
+or rebuilding installed game code from the newer sources.
+
 Updated: October 14, 2026
 
 ## Purpose
@@ -14,6 +22,28 @@ Updated: October 14, 2026
 Build a cross-platform engine that plays the original 1996 Quake using unchanged original PAKs while providing optional dynamic lighting, shadows and improved rendering. Deliver a binary that can live beside classic Quake binaries in an existing installation. Preserve Quake's gameplay, proportions, and atmosphere, including the original choices about what lighting reveals and conceals.
 
 Enhanced game data is a separate project. This repository builds the engine and supports optional asset overlays; it does not require or produce texture upscales, replacement geometry or modified retail PAKs. Software, Classic GPU and Enhanced must all work with original assets alone. Enhanced rendering must provide useful improvements without a replacement-asset pack.
+
+The original campaign is the central development and validation target. Widely distributed rerelease data
+is an expected compatibility case: recognize its requirements, support the
+bounded engine services needed to play supported content, and report unsupported
+requirements clearly before entering gameplay where they can be detected at
+load time. Do not defer known incompatibilities until combat or an ending crashes.
+Rerelease visual improvements are within scope wherever they improve the look
+of the game, just as useful techniques from ioquake3 and Doom 3 are candidates.
+Evaluate their engine and asset requirements individually, preserve the Classic
+appearance option, and keep any enhanced-data production in the separate asset
+project. Visual support is not contingent on adopting rerelease gameplay.
+
+This does not commit the project to all rerelease campaigns, bots, multiplayer
+modes or gameplay changes. Never replace the user's game code or assets to make
+an installation fit the engine, and advertise only implemented extensions.
+
+Preserve existing classic multiplayer behavior as engine changes are made.
+Playing rerelease data locally and joining rerelease servers are separate
+compatibility questions. Rerelease server interoperability remains unverified
+and requires its own investigation of protocol, gameplay and service requirements
+before a support commitment. Do not assume that loading its QuakeC is sufficient,
+or change original-campaign behavior merely to pursue server compatibility.
 
 The repository begins with id Software's Quake source. Modernize it incrementally rather than adopting Tenebrae as the engine foundation. Prefer ioquake3 implementations where they provide equivalent functionality; selectively adapt Doom 3/dhewm3 rendering techniques. Evaluate Tenebrae solutions individually when they remain useful.
 

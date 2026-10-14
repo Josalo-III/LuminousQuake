@@ -38,12 +38,24 @@ int LQ_RunDiagnostics(int argc, char **argv)
           CHECK(SCR_ConsoleAdvance(current,0,300,2,height) == 0);
       }
     }
-    { char fixture[] = "// comment\nmap_jump_across = \"Jump across\\nnow\"\nempty = \"\"\nbroken = unquoted\n";
+    { char fixture[] = "// comment\nmap_jump_across = \"Jump across\\nnow\"\nempty = \"\"\nbroken = unquoted\n"
+                       "qc_item_health = \"You receive {0} health\\n\"\n"
+                       "qc_got_item = \"You got {0}\\n\"\nqc_armor = \"armor\"\n"
+                       "pair = \"{1}/{0}/{1}\"\n";
       LQ_LocalizationParse(fixture);
       CHECK(!strcmp(LQ_Localize("$map_jump_across"), "Jump across\nnow"));
       CHECK(!strcmp(LQ_Localize("$empty"), ""));
       CHECK(!strcmp(LQ_Localize("$missing"), "$missing"));
       CHECK(!strcmp(LQ_Localize("Original text"), "Original text"));
+      const char *health[] = {"$qc_item_health","15"}; char output[256];
+      CHECK(LQ_LocalizeArgs(2,health,output,sizeof(output)) && !strcmp(output,"You receive 15 health\n"));
+      const char *item[] = {"$qc_got_item","$qc_armor"};
+      CHECK(LQ_LocalizeArgs(2,item,output,sizeof(output)) && !strcmp(output,"You got armor\n"));
+      const char *pair[] = {"$pair","a","b"};
+      CHECK(LQ_LocalizeArgs(3,pair,output,sizeof(output)) && !strcmp(output,"b/a/b"));
+      const char *literal[] = {"original {0}","100%"};
+      CHECK(LQ_LocalizeArgs(2,literal,output,sizeof(output)) && !strcmp(output,"original {0}100%"));
+      CHECK(!LQ_LocalizeArgs(2,health,output,4));
       LQ_LocalizationParse(""); }
     CHECK(memory != NULL);
     CHECK(Q_ClampedInt(3.5) == 3 && Q_ClampedInt(-3.5) == -3);
@@ -166,6 +178,23 @@ int LQ_RunDiagnostics(int argc, char **argv)
         CHECK(EDICT_NUM(1)->v.health == 5.75f);
         CHECK(pr_globals[OFS_RETURN] == 5.75f);
         CHECK(pr_depth == 0);
+        { extern void SV_Physics(void); extern void SV_AddGravity(edict_t *);
+          extern cvar_t sv_gravity;
+          /* Exercise the actual server dispatcher for type 11. A grounded gib
+           * stops before collision tracing, so this fixture needs no BSP. */
+          pr_global_struct->StartFrame = 1; pr_global_struct->force_retouch = 0;
+          svs.maxclients = 0;
+          for (int i = 0; i < 3; ++i) {
+              edict_t *ent = EDICT_NUM(i); memset(&ent->v,0,sizeof(ent->v)); ent->free = i == 2;
+          }
+          edict_t *gib = EDICT_NUM(1); gib->v.movetype = MOVETYPE_GIB; gib->v.flags = FL_ONGROUND;
+          SV_Physics(); CHECK(gib->v.movetype == MOVETYPE_GIB);
+          float old_gravity = sv_gravity.value, old_frame = host_frametime;
+          sv_gravity.value = 800; host_frametime = 0.1f;
+          SV_AddGravity(gib); CHECK(gib->v.velocity[2] == -80);
+          sv_gravity.value = old_gravity; host_frametime = old_frame;
+          puts("PASS rerelease gib movement dispatcher and gravity");
+        }
         puts("PASS QuakeC v6 loader, odd-field entity alignment, arithmetic, entity store/load");
     }
     free(memory);
