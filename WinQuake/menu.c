@@ -18,6 +18,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 #include "quakedef.h"
+#ifdef LQ_PORTABLE
+#include "user_paths.h"
+#endif
 
 #ifdef _WIN32
 #include "winquake.h"
@@ -454,7 +457,11 @@ void M_ScanSaves (void)
 	{
 		strcpy (m_filenames[i], "--- UNUSED SLOT ---");
 		loadable[i] = false;
+#ifdef LQ_PORTABLE
+		snprintf (name, sizeof(name), "%s/s%i.sav", LQ_WriteDirectory(), i);
+#else
 		sprintf (name, "%s/s%i.sav", com_gamedir, i);
+#endif
 		f = fopen (name, "r");
 		if (!f)
 			continue;

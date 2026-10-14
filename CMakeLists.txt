@@ -84,7 +84,7 @@ add_library(quake_core OBJECT
     WinQuake/wad.c
     WinQuake/world.c
     WinQuake/cd_null.c
-    WinQuake/net_bsd.c platform/net_udp.c platform/diagnostics.c
+    WinQuake/net_bsd.c platform/net_udp.c platform/diagnostics.c platform/user_paths.c
 )
 target_include_directories(quake_core PUBLIC WinQuake platform)
 target_compile_definitions(quake_core PUBLIC LQ_PORTABLE=1)
@@ -110,7 +110,31 @@ if(LQ_BUILD_CLIENT)
     target_compile_definitions(luminousquake PRIVATE LQ_SDL=1 SDL_MAIN_HANDLED)
     target_link_libraries(luminousquake PRIVATE SDL3::SDL3 lq_scene)
     if(APPLE)
+        enable_language(OBJC)
+        target_sources(luminousquake PRIVATE platform/mac_launch.m)
+        target_link_libraries(luminousquake PRIVATE "-framework Cocoa")
         set_property(TARGET luminousquake APPEND PROPERTY BUILD_RPATH "@loader_path")
+        get_target_property(LQ_CLIENT_SOURCES luminousquake SOURCES)
+        add_executable(luminousquake-app MACOSX_BUNDLE ${LQ_CLIENT_SOURCES})
+        target_compile_definitions(luminousquake-app PRIVATE LQ_SDL=1 SDL_MAIN_HANDLED)
+        target_link_libraries(luminousquake-app PRIVATE SDL3::SDL3 lq_scene "-framework Cocoa")
+        set_target_properties(luminousquake-app PROPERTIES OUTPUT_NAME LuminousQuake
+            MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/platform/mac/Info.plist.in"
+            BUILD_WITH_INSTALL_RPATH TRUE INSTALL_RPATH "@executable_path/../Frameworks")
+        set(LQ_ICON "${CMAKE_CURRENT_BINARY_DIR}/LuminousQuake.icns")
+        add_custom_command(OUTPUT "${LQ_ICON}"
+            COMMAND /usr/bin/swift -module-cache-path "${CMAKE_CURRENT_BINARY_DIR}/SwiftModuleCache" "${CMAKE_CURRENT_SOURCE_DIR}/tools/mac_icon.swift" "${CMAKE_CURRENT_BINARY_DIR}/LuminousQuake.iconset"
+            COMMAND /usr/bin/iconutil -c icns "${CMAKE_CURRENT_BINARY_DIR}/LuminousQuake.iconset" -o "${LQ_ICON}"
+            DEPENDS tools/mac_icon.swift VERBATIM)
+        set_source_files_properties("${LQ_ICON}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+        target_sources(luminousquake-app PRIVATE "${LQ_ICON}")
+        add_custom_command(TARGET luminousquake-app POST_BUILD
+            COMMAND ${CMAKE_COMMAND} "-DBUNDLE=$<TARGET_BUNDLE_DIR:luminousquake-app>"
+                "-DEXECUTABLE=$<TARGET_FILE:luminousquake-app>" "-DSDL_LIBRARY=$<TARGET_FILE:SDL3::SDL3>"
+                "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}" -P "${CMAKE_CURRENT_SOURCE_DIR}/tools/package_mac.cmake"
+            VERBATIM)
+        list(APPEND LQ_TARGETS luminousquake-app)
+        list(APPEND LQ_EXECUTABLES luminousquake-app)
     endif()
     if(WIN32 OR APPLE)
         add_custom_command(TARGET luminousquake POST_BUILD
@@ -188,10 +212,10 @@ if(BUILD_TESTING)
         endif()
     endforeach()
     if(LQ_BUILD_CLIENT)
-        add_test(NAME sdl-platform COMMAND luminousquake --platform-test)
+        add_test(NAME sdl-platform COMMAND luminousquake --platform-test -userdir "${CMAKE_CURRENT_BINARY_DIR}/platform-test-user")
         set_tests_properties(sdl-platform PROPERTIES
             ENVIRONMENT "SDL_VIDEO_DRIVER=dummy;SDL_AUDIO_DRIVER=dummy" TIMEOUT 15)
-        add_test(NAME sdl-unavailable-audio COMMAND luminousquake --platform-test --expect-no-audio)
+        add_test(NAME sdl-unavailable-audio COMMAND luminousquake --platform-test --expect-no-audio -userdir "${CMAKE_CURRENT_BINARY_DIR}/platform-test-user")
         set_tests_properties(sdl-unavailable-audio PROPERTIES
             ENVIRONMENT "SDL_VIDEO_DRIVER=dummy;SDL_AUDIO_DRIVER=nonexistent" TIMEOUT 15)
     endif()

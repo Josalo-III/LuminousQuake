@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "r_local.h"
 #ifdef LQ_PORTABLE
 #include "render_bridge.h"
+#include "user_paths.h"
 #endif
 
 /*
@@ -265,7 +266,13 @@ void Host_WriteConfiguration (void)
 // config.cfg cvars
 	if (host_initialized & !isDedicated)
 	{
+#ifdef LQ_PORTABLE
+		char path[MAX_OSPATH];
+		if (!LQ_UserPath(path, sizeof(path), "config.cfg")) return;
+		f = fopen(path, "w");
+#else
 		f = fopen (va("%s/config.cfg",com_gamedir), "w");
+#endif
 		if (!f)
 		{
 			Con_Printf ("Couldn't write config.cfg.\n");

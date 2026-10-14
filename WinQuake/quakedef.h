@@ -97,7 +97,11 @@ void	VID_UnlockBuffer (void);
 
 
 #define	MAX_QPATH		64			// max length of a quake game pathname
-#define	MAX_OSPATH		128			// max length of a filesystem pathname
+#ifdef LQ_PORTABLE
+#define MAX_OSPATH 1024 /* Native paths, including macOS user-data directories. */
+#else
+#define MAX_OSPATH 128
+#endif
 
 #define	ON_EPSILON		0.1			// point on plane side epsilon
 

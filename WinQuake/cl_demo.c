@@ -19,6 +19,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 
 #include "quakedef.h"
+#ifdef LQ_PORTABLE
+#include "user_paths.h"
+#endif
 
 void CL_FinishTimeDemo (void);
 
@@ -230,7 +233,11 @@ void CL_Record_f (void)
 	else
 		track = -1;	
 
+#ifdef LQ_PORTABLE
+	if (!LQ_UserPath(name, sizeof(name) - 5, Cmd_Argv(1))) { Con_Printf("Invalid demo name.\n"); return; }
+#else
 	sprintf (name, "%s/%s", com_gamedir, Cmd_Argv(1));
+#endif
 	
 //
 // start the map up

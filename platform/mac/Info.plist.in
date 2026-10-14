@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.josalo.luminousquake</string>
+<key>CFBundleName</key><string>LuminousQuake</string>
+<key>CFBundleExecutable</key><string>LuminousQuake</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>@PROJECT_VERSION@</string>
+<key>CFBundleVersion</key><string>@PROJECT_VERSION@</string>
+<key>CFBundleIconFile</key><string>LuminousQuake.icns</string>
+<key>NSHighResolutionCapable</key><true/>
+<key>LSMinimumSystemVersion</key><string>11.0</string>
+<key>NSHumanReadableCopyright</key><string>LuminousQuake contributors; Quake © 1996–1997 id Software. GPL-2.0-or-later.</string>
+</dict></plist>

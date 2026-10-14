@@ -19,6 +19,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 
 #include "quakedef.h"
+#ifdef LQ_PORTABLE
+#include "user_paths.h"
+#define LQ_GAME_WRITES LQ_WriteDirectory()
+#else
+#define LQ_GAME_WRITES com_gamedir
+#endif
 
 extern cvar_t	pausable;
 
@@ -464,7 +470,7 @@ Host_Savegame_f
 */
 void Host_Savegame_f (void)
 {
-	char	name[256];
+	char	name[MAX_OSPATH];
 	FILE	*f;
 	int		i;
 	char	comment[SAVEGAME_COMMENT_LENGTH+1];
@@ -511,7 +517,11 @@ void Host_Savegame_f (void)
 		}
 	}
 
+#ifdef LQ_PORTABLE
+	if (!LQ_UserPath(name, sizeof(name) - 5, Cmd_Argv(1))) { Con_Printf("Invalid save name.\n"); return; }
+#else
 	sprintf (name, "%s/%s", com_gamedir, Cmd_Argv(1));
+#endif
 	COM_DefaultExtension (name, ".sav");
 	
 	Con_Printf ("Saving game to %s...\n", name);
@@ -582,7 +592,11 @@ void Host_Loadgame_f (void)
 
 	cls.demonum = -1;		// stop demo loop in case this fails
 
+#ifdef LQ_PORTABLE
+	if (!LQ_UserPath(name, sizeof(name) - 5, Cmd_Argv(1))) { Con_Printf("Invalid save name.\n"); return; }
+#else
 	sprintf (name, "%s/%s", com_gamedir, Cmd_Argv(1));
+#endif
 	COM_DefaultExtension (name, ".sav");
 	
 // we can't call SCR_BeginLoadingPlaque, because too much stack space has
@@ -715,7 +729,7 @@ void SaveGamestate()
 	char	comment[SAVEGAME_COMMENT_LENGTH+1];
 	edict_t	*ent;
 
-	sprintf (name, "%s/%s.gip", com_gamedir, sv.name);
+	sprintf (name, "%s/%s.gip", LQ_GAME_WRITES, sv.name);
 	
 	Con_Printf ("Saving game to %s...\n", name);
 	f = fopen (name, "w");
@@ -771,7 +785,7 @@ int LoadGamestate(char *level, char *startspot)
 	int		version;
 //	float	spawn_parms[NUM_SPAWN_PARMS];
 
-	sprintf (name, "%s/%s.gip", com_gamedir, level);
+	sprintf (name, "%s/%s.gip", LQ_GAME_WRITES, level);
 	
 	Con_Printf ("Loading game from %s...\n", name);
 	f = fopen (name, "r");

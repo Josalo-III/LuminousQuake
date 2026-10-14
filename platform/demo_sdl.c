@@ -286,6 +286,17 @@ static int TestPlatform(qboolean no_audio)
         VERIFY(LQ_AudioFrames() > before);
     }
     memset(&event, 0, sizeof(event)); event.type = SDL_EVENT_QUIT;
+    /* The menu stages resolution changes; Apply must use the real restart path. */
+    VERIFY(vid_menudrawfn && vid_menukeyfn);
+    vid_menudrawfn();
+    int old_width = vid.width, old_height = vid.height;
+    vid_menukeyfn(K_RIGHTARROW);
+    VERIFY(vid.width == (unsigned)old_width && vid.height == (unsigned)old_height);
+    vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_DOWNARROW);
+    vid_menukeyfn(K_ENTER); Cbuf_Execute();
+    VERIFY(vid.width == 1024 && vid.height == 768);
+    VERIFY(Cvar_FindVar("vid_width")->archive && Cvar_FindVar("vid_height")->archive);
+    puts("PASS video menu stages, applies and archives resolution");
     LQ_HandleEvent(&event); VERIFY(LQ_QuitRequested()); LQ_ResetQuit();
     puts("PASS SDL focus/key releases, text/modifiers, resize, palette, video restart, cache alignment, audio fallback/mixer/ring, quit");
     return 0;

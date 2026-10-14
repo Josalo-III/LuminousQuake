@@ -15,6 +15,9 @@
 #include "diagnostics.h"
 #ifdef LQ_SDL
 #include "sdl_backend.h"
+#ifdef __APPLE__
+#include "mac_launch.h"
+#endif
 static void PlatformExit(void) { S_Shutdown(); IN_Shutdown(); VID_Shutdown(); SDL_Quit(); }
 #endif
 
@@ -102,9 +105,14 @@ void Sys_DebugLog(char *path, char *fmt, ...)
 void Sys_Error(char *fmt, ...)
 {
     va_list args;
+    char message[2048];
     fprintf(stderr, "LuminousQuake: ");
-    va_start(args, fmt); vfprintf(stderr, fmt, args); va_end(args);
+    va_start(args, fmt); vsnprintf(message, sizeof(message), fmt, args); va_end(args);
+    fputs(message, stderr);
     fputc('\n', stderr);
+#if defined(LQ_SDL) && defined(__APPLE__)
+    LQ_MacError(message);
+#endif
     /* Initialization failures must not call shutdown through incomplete state. */
     exit(EXIT_FAILURE);
 }
@@ -171,6 +179,7 @@ int main(int argc, char **argv)
 {
     quakeparms_t parms = {0};
     char *engine_argv[MAX_NUM_ARGVS + 1];
+    char installation[MAX_OSPATH] = "";
     double previous, run_start, run_seconds = 0;
     const char *capture_path = NULL;
     int i, engine_argc = 0;
@@ -219,8 +228,33 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--check-data") || !strcmp(argv[i], "-dedicated")) break;
     if (i == argc) return LQ_GPUViewer(argc, argv);
 #endif
+    /* Resolve assets before entering the engine. Finder supplies an arbitrary
+     * working directory; SDL's base path supplies executable-relative discovery. */
+#ifdef LQ_SDL
+    int diagnostic = 0, explicit_base = 0;
+    for (i = 1; i < argc; ++i) {
+        if (!strcmp(argv[i], "--check-data") || !strcmp(argv[i], "-dedicated")) diagnostic = 1;
+        if (!strcmp(argv[i], "-basedir")) explicit_base = 1;
+    }
+    if (!diagnostic && !explicit_base) {
+#ifdef __APPLE__
+        int selected = LQ_MacInstallation(argc, argv, installation, sizeof(installation));
+        if (!selected) return 0;
+        if (selected < 0) Sys_Error("Cannot initialize installation selection");
+#endif
+        if (!installation[0]) {
+            const char *base = SDL_GetBasePath();
+            if (!base || strlen(base) >= sizeof(installation) - 32) Sys_Error("Cannot resolve executable path; use -basedir PATH");
+            snprintf(installation, sizeof(installation), "%s", base);
+        }
+    }
+#endif
     if (argc >= MAX_NUM_ARGVS) Sys_Error("Too many command-line arguments");
     for (i = 0; i < argc; ++i) engine_argv[engine_argc++] = argv[i];
+    if (installation[0]) {
+        if (engine_argc + 2 >= MAX_NUM_ARGVS) Sys_Error("Too many command-line arguments");
+        engine_argv[engine_argc++] = "-basedir"; engine_argv[engine_argc++] = installation;
+    }
 #ifdef LQ_DEDICATED
     engine_argv[engine_argc++] = "-dedicated";
 #endif
@@ -236,11 +270,13 @@ int main(int argc, char **argv)
     i = COM_CheckParm("-basedir");
     if (i) {
         if (i + 1 >= com_argc) Sys_Error("-basedir needs a directory");
-        if (strlen(com_argv[i + 1]) + sizeof("/id1/pak0.pak") >= MAX_OSPATH)
+        if (strlen(com_argv[i + 1]) + MAX_QPATH + 32 >= MAX_OSPATH)
             Sys_Error("Base directory exceeds the legacy path limit");
     }
     i = COM_CheckParm("-game");
-    if (i && (i + 1 >= com_argc || strlen(com_argv[i + 1]) >= MAX_QPATH))
+    if (i && (i + 1 >= com_argc || strlen(com_argv[i + 1]) >= MAX_QPATH ||
+              strstr(com_argv[i + 1], "..") || strchr(com_argv[i + 1], '/') ||
+              strchr(com_argv[i + 1], '\\') || strchr(com_argv[i + 1], ':')))
         Sys_Error("-game needs a mod directory shorter than MAX_QPATH");
     if (COM_CheckParm("--check-data")) return LQ_CheckData(&parms);
     Sys_Printf("LuminousQuake: native Quake bootstrap.\n"
@@ -248,6 +284,9 @@ int main(int argc, char **argv)
     isDedicated = COM_CheckParm("-dedicated") != 0;
     Host_Init(&parms);
     initialized = true;
+#if defined(LQ_SDL) && defined(__APPLE__)
+    if (LQ_MacFinderLaunch()) Cbuf_AddText("menu_main\n");
+#endif
     i = COM_CheckParm("--run-seconds");
     if (i) {
         char *end;

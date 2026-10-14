@@ -1,12 +1,14 @@
 # LuminousQuake implementation plan
 
-Status: Phases 1–2 implemented; Phase 3 has a standalone GPU viewer and an interim Classic GPU gameplay bridge alongside Software. Native Metal is locally validated; fully GPU actors/effects/UI, other-platform runtime checks and an authenticated original-data baseline remain pending
+Status: Phases 1–2 implemented; Phase 3 has a standalone GPU viewer and an interim Classic GPU gameplay bridge alongside Software. Next priority is drop-in installation support and a double-clickable Mac app (Phase 3A). Native Metal is locally validated; fully GPU actors/effects/UI, other-platform runtime checks and an authenticated original-data baseline remain pending.
 
-Date: October 13, 2026
+Updated: October 14, 2026
 
 ## Purpose
 
-Build a cross-platform engine that plays the original 1996 Quake while providing dynamic lighting, shadows, improved materials, and enhanced assets. Preserve Quake's gameplay, proportions, and atmosphere, including the original choices about what lighting reveals and conceals.
+Build a cross-platform engine that plays the original 1996 Quake using unchanged original PAKs while providing optional dynamic lighting, shadows and improved rendering. Deliver a binary that can live beside classic Quake binaries in an existing installation. Preserve Quake's gameplay, proportions, and atmosphere, including the original choices about what lighting reveals and conceals.
+
+Enhanced game data is a separate project. This repository builds the engine and supports optional asset overlays; it does not require or produce texture upscales, replacement geometry or modified retail PAKs. Software, Classic GPU and Enhanced must all work with original assets alone. Enhanced rendering must provide useful improvements without a replacement-asset pack.
 
 The repository begins with id Software's Quake source. Modernize it incrementally rather than adopting Tenebrae as the engine foundation. Prefer ioquake3 implementations where they provide equivalent functionality; selectively adapt Doom 3/dhewm3 rendering techniques. Evaluate Tenebrae solutions individually when they remain useful.
 
@@ -29,6 +31,9 @@ For every imported component, record the upstream commit, original paths, local 
 - Support macOS, Windows, and Linux from the beginning. Native Apple Silicon is the first locally tested target; automated builds on other systems do not establish runtime correctness.
 - Use the available M1 Max hardware for development: native arm64 dependencies, parallel builds, and substantial working sets where useful.
 - Retain original Quake content support. Replacement assets are optional overlays, not a requirement for playing the game.
+- Install alongside existing binaries without replacing them or rewriting original PAKs. Discover the installation independently of the process working directory; keep `-basedir` as an explicit override.
+- The Mac release is a native arm64 `LuminousQuake.app`, double-clickable from Finder beside `id1`. Find existing PAKs relative to the app, or offer a folder picker when they cannot be found. No Terminal command is required for normal launch.
+- Keep LuminousQuake settings, saves and recorded demos in its own user-data location so testing does not overwrite classic-engine files. Read game/mod assets from the selected installation and retain original file formats. Provide explicit migration/import rather than silently modifying existing settings or saves.
 - An unverified local Quake archive is available for smoke tests. Original disc data remains inaccessible in storage. Generated fixtures and synthetic scenes remain the reproducible test baseline.
 - GtkRadiant has already been ported to Apple Silicon and is available for asset work. Validate its Quake 1 game configuration and compiler workflow separately from the engine.
 - Do not assume compiled retail BSPs include editable map sources. New authored geometry and lighting overrides need their own reproducible workflow.
@@ -42,7 +47,7 @@ For every imported component, record the upstream commit, original paths, local 
 3. Keep gameplay entities distinct from renderer objects. Translate simulation state into scene submissions rather than exposing interpreter memory to the renderer.
 4. Preserve original file encodings and VM value widths while making native code safe for 64-bit addresses and alignment.
 5. Preserve simulation behavior when improving clocks, input delivery, and presentation pacing.
-6. Maintain a basic original-lighting rendering path long enough to compare new rendering against a recognizable baseline.
+6. Preserve three renderer choices: Software, Classic GPU with original baked-lighting appearance, and Enhanced with runtime lighting/material techniques. Classic GPU describes appearance and can use Metal/Vulkan. All three share gameplay and original-content support; unavailable choices must be clearly identified.
 7. Measure performance before adopting optimizations. Record correctness and scene-level results alongside timing.
 
 ## Phase 0: inventory and compatibility baseline
@@ -109,7 +114,7 @@ The software client remains the playable comparison build and its shared
 platform layer has migrated to SDL3. Renderer choice and map/restart lifecycle
 are integrated through a mixed GPU-world/CPU-layer bridge. Completing this phase
 requires explicit GPU actor/brush/effect/UI submissions,
-resource/map transitions and the replacement-asset boundary. The viewer is not
+completion of resource/map transitions and optional asset lookup. The viewer is not
 the completed gameplay renderer.
 
 ### Work
@@ -129,17 +134,40 @@ the completed gameplay renderer.
 - Asset precedence and replacement fallback are tested with generated fixtures.
 - An unchanged asset can be loaded and displayed through the boundary.
 
-## Phase 4: buffered rendering and enhanced textures
+## Phase 3A: drop-in installation and Mac application delivery
+
+This is the next implementation milestone, before expanding renderer features.
+
+### Work
+
+- Separate the read-only game installation from LuminousQuake's writable user data. Route configuration, saves and recorded demos through that policy while retaining PAK/loose-file/mod search precedence and original save/demo formats.
+- Resolve the installation from an explicit `-basedir`, a previously selected installation, or the executable/app location. On macOS use the directory containing `LuminousQuake.app`, not `Contents/MacOS` or the shell's current directory. Support a normal `id1/pak0.pak` installation; use `pak1.pak` when present and preserve shareware behavior when it is absent.
+- Add a Finder launch flow: validate discovered data, offer a native installation-folder picker if needed, remember a successful choice, and show useful errors for missing/incompatible files. Cancellation must exit cleanly. A missing installation must not strand the user at an invisible console.
+- Build a CMake macOS app bundle with application metadata, an owned icon, embedded SDL3 runtime, and relative library paths. Bundle engine resources and shaders, but no proprietary game data. Preserve the current CLI executable/arguments for development and advanced use.
+- Keep renderer choice accessible in the game UI. Software and Classic GPU remain usable alongside each other; Enhanced stays explicitly pending until its original-asset implementation is ready.
+- Provide packaging/install instructions for a release that coexists with classic binaries. Define equivalent executable-relative discovery and separate user-data locations on Windows/Linux; retain their builds even while Mac receives the first locally validated GUI package.
+- Establish signing/notarization requirements for a publicly distributed Mac build separately from local bundle testing. Track other-platform runtime validation and distribution requirements explicitly.
+
+### Exit criteria
+
+- Double-clicking the app beside an existing `id1` launches the game without Terminal, regardless of the inherited working directory.
+- Launching elsewhere offers a folder picker and remembers the selected installation; missing data and cancellation have clear, usable outcomes.
+- Generated installations verify PAK discovery, mod precedence and separate writes. Real-content checks confirm gameplay, save/load and demo use without changing installation files.
+- Original PAKs and classic-engine configuration/saves remain unchanged. No retail data is included in the application or release archive.
+- A packaged native arm64 app runs with its embedded SDL3 library, without requiring Homebrew on the target Mac. Software/Classic GPU selection and launch focus work in the bundle.
+- Windows/Linux build/package status and untested runtime behavior are documented.
+
+## Phase 4: buffered rendering and original-asset material support
 
 ### Work
 
 - Move CPU rasterization and selected GLQuake algorithms to vertex/index buffers and shaders incrementally.
 - Add animation interpolation, material inputs, texture upload/mipmapping, and clear color-space handling.
 - Preserve sky, water, transparency, emissive palette behavior, sprites, and UI during migration.
-- Support optional upscaled textures without changing surface scale, texture alignment, or gameplay dimensions.
-- Create a reproducible offline enhancement pipeline with source hashes and retained originals.
-- Evaluate upscales tiled and in-engine. Compare palette, large forms, contrast, seams, and a downsampled version against the original.
-- Treat inferred normal/specular information separately from texture upscaling; painted highlights and shadows must not automatically become physical surface relief.
+- Provide conservative original-asset material fallbacks and optional replacement lookup without changing surface scale, texture alignment or gameplay dimensions.
+- Keep texture upscaling, authored material packs, replacement geometry and their offline production/validation pipeline in the separate game-data project. Engine tests use generated overlay fixtures.
+- Evaluate optional overlays for compatibility and fallback behavior; their absence must not prevent any renderer mode from running original content.
+- Treat any inferred normal/specular information conservatively; painted highlights and shadows must not automatically become physical surface relief.
 
 ### Exit criteria
 
@@ -160,6 +188,7 @@ the completed gameplay renderer.
 - Keep baked lightmaps as a comparison/reference dataset, rather than multiplying them into the new direct-lighting path and double-counting illumination.
 - Calibrate illumination against original focal points, shadowed passages, silhouettes, and navigation cues. Document intentional departures.
 - Provide optional, inspectable per-map lighting overrides for cases where surviving entities are insufficient.
+- Establish an original-PAK-only Enhanced mode before relying on optional overrides or material packs. Keep authored enhancement data in the separate asset project.
 
 ### Exit criteria
 
@@ -199,14 +228,15 @@ Raising entity/model/sound limits requires coordinated review of allocation, VM 
 - **Visual checks:** repeatable cameras/captures comparing original lighting with the new path. Exact image identity is not the goal for intentional rendering changes.
 - **Cross-platform checks:** automated compilation and suitable headless tests first; real input, audio, graphics, and gameplay testing when hardware/testers are available. Track untested combinations explicitly.
 - **Performance checks:** fixed scenes, comparable settings, CPU and GPU timings where available, frame-time variation, and memory use.
+- **Installation/package checks:** executable/app-relative discovery, explicit overrides, folder-picker cancellation/persistence, separate writable user data, unchanged installation files, and bundled runtime dependencies. Use generated PAKs for reproducible checks and local original content for gameplay validation.
 
 Each phase should produce a reviewable change with its source provenance, validation evidence, known limitations, and updated status in this plan. Avoid expanding testing or importing unrelated systems without a concrete reason.
 
-## First delivery and outstanding decisions
+## Next delivery and outstanding decisions
 
-The first delivery comprises Phases 0–2: a reproducible native build, portable platform foundation, basic sound output, and a synthetic rendering/input scene. It is not yet a validated playable engine without original data.
+The portable software game, SDL3 platform layer and interim Classic GPU gameplay bridge are implemented. The next delivery is Phase 3A: an engine binary usable alongside an existing Quake installation and a Finder-launchable Mac app. First establish installation discovery and independent user-data writes, then package the app and validate launch/data selection.
 
-Once retail data is available, establish a playable compatibility baseline before removing the old rendering behavior. Then implement the renderer boundary, enhanced assets, and runtime lighting in sequence.
+After that delivery, replace the mixed renderer bridge with explicit GPU actor/brush/effect/UI submissions and complete the Classic GPU baseline. Then implement Enhanced runtime lighting using original assets, with optional enhancement packs produced separately. Software remains a supported renderer. Authentic original-disc comparisons and broader platform runtime testing remain pending.
 
 Decisions to resolve during implementation:
 
@@ -214,6 +244,8 @@ Decisions to resolve during implementation:
 - Exact donor revisions and the scope of each adaptation.
 - Runtime lighting attenuation, ambient treatment, and shadow technique.
 - Material metadata format and replacement-asset precedence.
+- Final user-data layout, import behavior and Finder installation-selection UX.
+- Mac release signing/notarization and Windows/Linux distribution packaging.
 - Available Windows/Linux runtime testing and hosted CI setup.
 - Whether later goals include protocol extensions, larger maps, new gameplay, or additional game-format support.
 

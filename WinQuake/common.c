@@ -20,6 +20,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // common.c -- misc functions used in client and server
 
 #include "quakedef.h"
+#ifdef LQ_PORTABLE
+#include "user_paths.h"
+#endif
 
 #define NUM_SAFE_ARGVS  7
 
@@ -1288,7 +1291,11 @@ void COM_WriteFile (char *filename, void *data, int len)
 	int             handle;
 	char    name[MAX_OSPATH];
 	
+#ifdef LQ_PORTABLE
+	if (!LQ_UserPath(name, sizeof(name), filename)) { Sys_Printf("Invalid output filename\n"); return; }
+#else
 	sprintf (name, "%s/%s", com_gamedir, filename);
+#endif
 
 	handle = Sys_FileOpenWrite (name);
 	if (handle == -1)
@@ -1380,6 +1387,19 @@ int COM_FindFile (char *filename, int *handle, FILE **file)
 		Sys_Error ("COM_FindFile: both handle and file set");
 	if (!file && !handle)
 		Sys_Error ("COM_FindFile: neither handle or file set");
+#ifdef LQ_PORTABLE
+	/* Only configuration/save/demo names use the writable profile overlay.
+	 * Never silently import the classic engine's config.cfg. */
+	const char *extension = COM_FileExtension(filename);
+	if (!strcmp(extension, "cfg") || !strcmp(extension, "dem") || !strcmp(extension, "sav")) {
+		int length = LQ_UserFile(filename, handle, file);
+		if (length >= 0) { com_filesize = length; return length; }
+		if (!strcmp(filename, "config.cfg")) {
+			if (handle) *handle = -1; else *file = NULL;
+			com_filesize = -1; return -1;
+		}
+	}
+#endif
 		
 //
 // search through the path, one element at a time
@@ -1827,6 +1847,9 @@ void COM_InitFilesystem (void)
 
 	if (COM_CheckParm ("-proghack"))
 		proghack = true;
+#ifdef LQ_PORTABLE
+	LQ_InitUserDirectory(com_gamedir);
+#endif
 }
 
 

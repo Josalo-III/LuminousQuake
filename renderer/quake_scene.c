@@ -3,6 +3,7 @@
  * The backend never receives model_t, allocator handles or QuakeC entities. */
 #include "quakedef.h"
 #include "quake_scene.h"
+#include "user_paths.h"
 #include <stdint.h>
 void COM_InitFilesystem(void);
 static void *legacy_heap;
@@ -73,6 +74,7 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
     if (argc && legacy_heap) return Failure(s, error, size, "A legacy scene is already loaded");
     if (argc >= MAX_NUM_ARGVS) return Failure(s, error, size, "Too many command-line arguments");
     if (argc) {
+    LQ_ReadOnlyFiles();
     COM_InitArgv(argc, argv);
     option = COM_CheckParm("-basedir");
     if (option && (option + 1 >= com_argc || strlen(com_argv[option + 1]) + 32 >= MAX_OSPATH))
