@@ -21,6 +21,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "r_local.h"
+#ifdef LQ_PORTABLE
+#include "render_bridge.h"
+#endif
 
 /*
 
@@ -86,8 +89,8 @@ cvar_t	temp1 = {"temp1","0"};
 static cvar_t campaign = {"campaign", "0"};
 
 /* Saved renderer preference: 0 software, 1 classic GPU, 2 enhanced GPU.
- * The playable SDL2 binary currently implements software; the GPU preferences
- * will take effect once their gameplay backends are integrated. */
+ * Classic GPU currently composites CPU actors/effects/UI over its BSP world.
+ * Enhanced is reserved; selecting it falls back to Software for now. */
 cvar_t lq_renderer = {"lq_renderer", "0", true};
 
 
@@ -666,6 +669,11 @@ void _Host_Frame (float time)
 
 // process console commands
 	Cbuf_Execute ();
+#ifdef LQ_PORTABLE
+	/* Startup configuration can redraw the console while it executes. Apply
+	 * the saved renderer only after that command pass, before the game frame. */
+	LQ_RenderAfterCommands ();
+#endif
 
 	NET_Poll();
 

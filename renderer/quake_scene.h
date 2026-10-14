@@ -3,6 +3,7 @@
 #define LQ_QUAKE_SCENE_H
 #include "scene.h"
 int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *scene, char *error, size_t size);
+int LQ_QuakeSceneFromWorld(lq_scene *scene, char *error, size_t size);
 void LQ_QuakeSceneShutdown(void);
 void LQ_QuakeLightstyles(float time, float values[256]);
 #endif

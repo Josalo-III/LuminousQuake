@@ -92,7 +92,7 @@ if(WIN32)
     target_compile_definitions(quake_core PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS _WIN32_WINNT=0x0601)
 endif()
 
-set(LQ_HEADLESS_BACKENDS WinQuake/vid_null.c WinQuake/in_null.c WinQuake/snd_null.c)
+set(LQ_HEADLESS_BACKENDS WinQuake/vid_null.c WinQuake/in_null.c WinQuake/snd_null.c platform/render_bridge_null.c)
 add_executable(luminousquake-headless platform/sys_portable.c ${LQ_HEADLESS_BACKENDS})
 add_executable(luminousquake-server platform/sys_portable.c ${LQ_HEADLESS_BACKENDS})
 target_compile_definitions(luminousquake-server PRIVATE LQ_DEDICATED=1)
@@ -105,9 +105,10 @@ if(LQ_BUILD_CLIENT)
     find_package(SDL3 3.2 CONFIG REQUIRED)
     add_executable(luminousquake platform/sys_portable.c
         platform/vid_sdl.c platform/in_sdl.c platform/snd_sdl.c platform/demo_sdl.c
+        platform/render_bridge.c renderer/quake_scene.c renderer/gpu_sdl.c
         WinQuake/snd_dma.c WinQuake/snd_mem.c WinQuake/snd_mix.c)
     target_compile_definitions(luminousquake PRIVATE LQ_SDL=1 SDL_MAIN_HANDLED)
-    target_link_libraries(luminousquake PRIVATE SDL3::SDL3)
+    target_link_libraries(luminousquake PRIVATE SDL3::SDL3 lq_scene)
     if(APPLE)
         set_property(TARGET luminousquake APPEND PROPERTY BUILD_RPATH "@loader_path")
     endif()

@@ -1241,9 +1241,11 @@ void M_Options_Draw (void)
 	{
 		if (M_RendererChoice () == 0)
 			M_Print (16, 160, "Software gameplay is available.");
+		else if (M_RendererChoice () == 1)
+			M_Print (16, 160, "Classic GPU world; CPU actors/UI.");
 		else
-			M_Print (16, 160, "GPU gameplay integration pending.");
-		M_Print (16, 168, "Preference saved; restart to apply.");
+			M_Print (16, 160, "Enhanced integration pending.");
+		M_Print (16, 168, "Restart or use vid_restart to apply.");
 	}
 
 	if (vid_menudrawfn)

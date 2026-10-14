@@ -10,31 +10,31 @@
 struct lq_gpu {
     SDL_Window *window;
     SDL_GPUDevice *device;
-    SDL_GPUGraphicsPipeline *pipeline;
+    SDL_GPUGraphicsPipeline *pipeline, *overlay_pipeline;
     SDL_GPUSampler *repeat, *point, *linear;
     SDL_GPUBuffer *vertices, *indices;
-    SDL_GPUTexture **textures, *colormap, *lightmap, *color, *depth;
+    SDL_GPUTexture **textures, *colormap, *lightmap, *color, *depth, *overlay;
     uint32_t texture_count, draw_count, width, height;
     lq_draw *draws;
     int claimed;
 };
 static int Error(char *error, size_t size, const char *what)
 { snprintf(error, size, "%s: %s", what, SDL_GetError()); return 0; }
-static SDL_GPUShader *Shader(lq_gpu *g, int fragment)
+static SDL_GPUShader *Shader(lq_gpu *g, int fragment, int overlay)
 {
     int metal = (SDL_GetGPUShaderFormats(g->device) & SDL_GPU_SHADERFORMAT_MSL) != 0;
     SDL_GPUShaderCreateInfo info = {0};
     if (fragment) {
-        info.code = metal ? lq_world_frag_msl : lq_world_frag_spv;
-        info.code_size = metal ? sizeof(lq_world_frag_msl) : sizeof(lq_world_frag_spv);
+        info.code = overlay ? (metal ? lq_overlay_frag_msl : lq_overlay_frag_spv) : (metal ? lq_world_frag_msl : lq_world_frag_spv);
+        info.code_size = overlay ? (metal ? sizeof(lq_overlay_frag_msl) : sizeof(lq_overlay_frag_spv)) : (metal ? sizeof(lq_world_frag_msl) : sizeof(lq_world_frag_spv));
     } else {
-        info.code = metal ? lq_world_vert_msl : lq_world_vert_spv;
-        info.code_size = metal ? sizeof(lq_world_vert_msl) : sizeof(lq_world_vert_spv);
+        info.code = overlay ? (metal ? lq_overlay_vert_msl : lq_overlay_vert_spv) : (metal ? lq_world_vert_msl : lq_world_vert_spv);
+        info.code_size = overlay ? (metal ? sizeof(lq_overlay_vert_msl) : sizeof(lq_overlay_vert_spv)) : (metal ? sizeof(lq_world_vert_msl) : sizeof(lq_world_vert_spv));
     }
     info.entrypoint = metal ? "main0" : "main";
     info.format = metal ? SDL_GPU_SHADERFORMAT_MSL : SDL_GPU_SHADERFORMAT_SPIRV;
     info.stage = fragment ? SDL_GPU_SHADERSTAGE_FRAGMENT : SDL_GPU_SHADERSTAGE_VERTEX;
-    info.num_samplers = fragment ? 3 : 0; info.num_uniform_buffers = 1;
+    info.num_samplers = fragment ? (overlay ? 1 : 3) : 0; info.num_uniform_buffers = overlay ? 0 : 1;
     return SDL_CreateGPUShader(g->device, &info);
 }
 static SDL_GPUSampler *Sampler(lq_gpu *g, SDL_GPUFilter filter, SDL_GPUSamplerAddressMode mode)
@@ -64,7 +64,7 @@ lq_gpu *LQ_GPUCreate(SDL_Window *window, int debug, char *error, size_t size)
     g->claimed = 1;
     if (!SDL_SetGPUSwapchainParameters(g->device, window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, SDL_GPU_PRESENTMODE_VSYNC)) goto failed;
     SDL_Log("LuminousQuake GPU driver: %s", SDL_GetGPUDeviceDriver(g->device));
-    vertex = Shader(g, 0); fragment = Shader(g, 1);
+    vertex = Shader(g, 0, 0); fragment = Shader(g, 1, 0);
     if (!vertex || !fragment) goto failed;
     info.vertex_shader = vertex; info.fragment_shader = fragment;
     info.vertex_input_state = (SDL_GPUVertexInputState){&buffer, 1, attributes, 3};
@@ -80,10 +80,30 @@ lq_gpu *LQ_GPUCreate(SDL_Window *window, int debug, char *error, size_t size)
     g->pipeline = SDL_CreateGPUGraphicsPipeline(g->device, &info);
     SDL_ReleaseGPUShader(g->device, vertex); SDL_ReleaseGPUShader(g->device, fragment);
     vertex = fragment = NULL;
+    vertex = Shader(g, 0, 1); fragment = Shader(g, 1, 1);
+    if (!vertex || !fragment) goto failed;
+    memset(&info, 0, sizeof(info));
+    info.vertex_shader = vertex; info.fragment_shader = fragment;
+    info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    color.blend_state.enable_blend = true;
+    color.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+    color.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    color.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+    color.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+    color.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    color.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+    info.target_info.color_target_descriptions = &color;
+    info.target_info.num_color_targets = 1;
+    g->overlay_pipeline = SDL_CreateGPUGraphicsPipeline(g->device, &info);
+    SDL_ReleaseGPUShader(g->device, vertex); SDL_ReleaseGPUShader(g->device, fragment);
+    vertex = fragment = NULL;
     g->repeat = Sampler(g, SDL_GPU_FILTER_NEAREST, SDL_GPU_SAMPLERADDRESSMODE_REPEAT);
     g->point = Sampler(g, SDL_GPU_FILTER_NEAREST, SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE);
     g->linear = Sampler(g, SDL_GPU_FILTER_LINEAR, SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE);
-    if (!g->pipeline || !g->repeat || !g->point || !g->linear) goto failed;
+    if (!g->pipeline || !g->overlay_pipeline || !g->repeat || !g->point || !g->linear) goto failed;
     return g;
 failed:
     Error(error, size, "GPU initialization");
@@ -145,6 +165,30 @@ static SDL_GPUBuffer *UploadBuffer(lq_gpu *g, const void *data, uint32_t bytes, 
     } else if (buffer) { SDL_ReleaseGPUBuffer(g->device, buffer); buffer = NULL; }
     if (transfer) SDL_ReleaseGPUTransferBuffer(g->device, transfer);
     return buffer;
+}
+int LQ_GPUOverlay(lq_gpu *g, const lq_image *image, char *error, size_t size)
+{
+    SDL_GPUTexture *next = NULL;
+    if (image) {
+        if (image->channels != 4 || !image->pixels || !image->width || !image->height ||
+            image->width > 8192 || image->height > 8192) {
+            SDL_SetError("invalid overlay image"); return Error(error, size, "GPU overlay");
+        }
+        next = UploadImage(g, image);
+        if (!next) return Error(error, size, "GPU overlay upload");
+    }
+    if (g->overlay) SDL_ReleaseGPUTexture(g->device, g->overlay);
+    g->overlay = next; return 1;
+}
+int LQ_GPUColormap(lq_gpu *g, const lq_image *image, char *error, size_t size)
+{
+    if (!image || image->channels != 4 || image->width != 256 || image->height != 64 || !image->pixels) {
+        SDL_SetError("invalid colormap image"); return Error(error, size, "GPU palette");
+    }
+    SDL_GPUTexture *next = UploadImage(g, image);
+    if (!next) return Error(error, size, "GPU palette upload");
+    if (g->colormap) SDL_ReleaseGPUTexture(g->device, g->colormap);
+    g->colormap = next; return 1;
 }
 static void ReleaseScene(lq_gpu *g)
 {
@@ -220,7 +264,16 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
     SDL_BindGPUGraphicsPipeline(pass, g->pipeline);
     SDL_GPUBufferBinding vertex = {g->vertices, 0}, index = {g->indices, 0};
     SDL_BindGPUVertexBuffers(pass, 0, &vertex, 1); SDL_BindGPUIndexBuffer(pass, &index, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-    LQ_ViewMatrix(v, (float)width / height, matrix);
+    uint32_t vw = v->viewport[2] ? v->viewport[2] : width;
+    uint32_t vh = v->viewport[3] ? v->viewport[3] : height;
+    if (v->viewport[0] > width || vw > width - v->viewport[0] ||
+        v->viewport[1] > height || vh > height - v->viewport[1]) {
+        SDL_EndGPURenderPass(pass); SDL_CancelGPUCommandBuffer(command);
+        SDL_SetError("invalid view rectangle"); return Error(error, size, "GPU viewport");
+    }
+    SDL_GPUViewport viewport = {(float)v->viewport[0], (float)v->viewport[1], (float)vw, (float)vh, 0, 1};
+    SDL_SetGPUViewport(pass, &viewport);
+    LQ_ViewMatrix(v, (float)vw / vh, matrix);
     SDL_PushGPUVertexUniformData(command, 0, matrix, sizeof(matrix));
     for (uint32_t i = 0; i < g->draw_count; ++i) {
         const lq_draw *d = &g->draws[i];
@@ -236,11 +289,26 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
         SDL_DrawGPUIndexedPrimitives(pass, d->index_count, 1, d->first_index, 0, 0);
     }
     SDL_EndGPURenderPass(pass);
+    if (g->overlay) {
+        color.load_op = SDL_GPU_LOADOP_LOAD;
+        pass = SDL_BeginGPURenderPass(command, &color, 1, NULL);
+        SDL_BindGPUGraphicsPipeline(pass, g->overlay_pipeline);
+        SDL_GPUTextureSamplerBinding sampler = {g->overlay, g->point};
+        SDL_BindGPUFragmentSamplers(pass, 0, &sampler, 1);
+        SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+        SDL_EndGPURenderPass(pass);
+    }
     if (swapchain) {
         SDL_GPUBlitInfo blit = {0};
         blit.source.texture = g->color; blit.source.w = width; blit.source.h = height;
-        blit.destination.texture = swapchain; blit.destination.w = swap_width; blit.destination.h = swap_height;
-        blit.load_op = SDL_GPU_LOADOP_DONT_CARE; blit.filter = SDL_GPU_FILTER_NEAREST;
+        float scale = (float)swap_width / width;
+        if ((float)swap_height / height < scale) scale = (float)swap_height / height;
+        blit.destination.texture = swapchain;
+        blit.destination.w = (uint32_t)(width * scale); blit.destination.h = (uint32_t)(height * scale);
+        blit.destination.x = (swap_width - blit.destination.w) / 2;
+        blit.destination.y = (swap_height - blit.destination.h) / 2;
+        blit.load_op = SDL_GPU_LOADOP_CLEAR; blit.clear_color = (SDL_FColor){0, 0, 0, 1};
+        blit.filter = SDL_GPU_FILTER_NEAREST;
         SDL_BlitGPUTexture(command, &blit);
     }
     if (!SDL_SubmitGPUCommandBuffer(command)) return Error(error, size, "GPU submit");
@@ -284,6 +352,8 @@ void LQ_GPUDestroy(lq_gpu *g)
         if (g->color) SDL_ReleaseGPUTexture(g->device, g->color);
         if (g->depth) SDL_ReleaseGPUTexture(g->device, g->depth);
         if (g->pipeline) SDL_ReleaseGPUGraphicsPipeline(g->device, g->pipeline);
+        if (g->overlay_pipeline) SDL_ReleaseGPUGraphicsPipeline(g->device, g->overlay_pipeline);
+        if (g->overlay) SDL_ReleaseGPUTexture(g->device, g->overlay);
         if (g->repeat) SDL_ReleaseGPUSampler(g->device, g->repeat);
         if (g->point) SDL_ReleaseGPUSampler(g->device, g->point);
         if (g->linear) SDL_ReleaseGPUSampler(g->device, g->linear);

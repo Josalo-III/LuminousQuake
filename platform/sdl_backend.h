@@ -5,6 +5,12 @@
 #include <SDL3/SDL_main.h>
 SDL_Window *LQ_SDLWindow(void);
 SDL_Renderer *LQ_SDLRenderer(void);
+typedef struct lq_gpu lq_gpu;
+lq_gpu *LQ_PlayableGPU(void);
+void LQ_ApplyRenderer(void);
+void LQ_FallbackRenderer(const char *reason);
+void LQ_RenderBridgeShutdown(void);
+qboolean LQ_RenderBridgePresent(void);
 void LQ_PumpEvents(void);
 void LQ_HandleEvent(const SDL_Event *event);
 void LQ_UpdateCapture(void);

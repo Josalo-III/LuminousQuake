@@ -1,6 +1,6 @@
 # LuminousQuake implementation plan
 
-Status: Phases 1–2 implemented; Phase 3 begun with an SDL3 GPU world viewer and renderer-owned scene boundary. Native Metal is locally validated; full GPU gameplay integration, other-platform runtime checks and an authenticated original-data baseline remain pending
+Status: Phases 1–2 implemented; Phase 3 has a standalone GPU viewer and an interim Classic GPU gameplay bridge alongside Software. Native Metal is locally validated; fully GPU actors/effects/UI, other-platform runtime checks and an authenticated original-data baseline remain pending
 
 Date: October 13, 2026
 
@@ -106,7 +106,9 @@ Implemented; see [Phase 2 validation and limitations](docs/PHASE_2.md).
 Initial slice implemented: [SDL3 GPU world viewer](docs/PHASE_3.md), renderer-owned
 geometry/textures/lightmap data, embedded SPIR-V/MSL shaders and native Metal proof.
 The software client remains the playable comparison build and its shared
-platform layer has migrated to SDL3. Completing this phase requires gameplay scene submissions,
+platform layer has migrated to SDL3. Renderer choice and map/restart lifecycle
+are integrated through a mixed GPU-world/CPU-layer bridge. Completing this phase
+requires explicit GPU actor/brush/effect/UI submissions,
 resource/map transitions and the replacement-asset boundary. The viewer is not
 the completed gameplay renderer.
 

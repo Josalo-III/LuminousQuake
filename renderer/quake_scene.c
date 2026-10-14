@@ -70,8 +70,9 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
     int lighting_bytes;
     if (!map || !*map || strlen(map) > MAX_QPATH - 10 || strstr(map, "..") || strchr(map, '/') || strchr(map, '\\'))
         return Failure(s, error, size, "Use a map name such as e1m1, without a path or extension");
-    if (legacy_heap) return Failure(s, error, size, "A legacy scene is already loaded");
+    if (argc && legacy_heap) return Failure(s, error, size, "A legacy scene is already loaded");
     if (argc >= MAX_NUM_ARGVS) return Failure(s, error, size, "Too many command-line arguments");
+    if (argc) {
     COM_InitArgv(argc, argv);
     option = COM_CheckParm("-basedir");
     if (option && (option + 1 >= com_argc || strlen(com_argv[option + 1]) + 32 >= MAX_OSPATH))
@@ -87,6 +88,11 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
     if (!palette || com_filesize != 768) return Failure(s, error, size, "Missing/invalid gfx/palette.lmp");
     colormap = COM_LoadHunkFile("gfx/colormap.lmp");
     if (!colormap || com_filesize < 256 * 64) return Failure(s, error, size, "Missing/invalid gfx/colormap.lmp");
+    } else {
+        palette = host_basepal; colormap = host_colormap;
+        if (!palette || !colormap || !cl.worldmodel)
+            return Failure(s, error, size, "No live world assets");
+    }
     s->colormap = (lq_image){256, 64, 4, malloc(256 * 64 * 4)};
     s->lightmap = (lq_image){ATLAS_SIZE, ATLAS_SIZE, 4, calloc(ATLAS_SIZE * ATLAS_SIZE, 4)};
     if (!s->colormap.pixels || !s->lightmap.pixels) return Failure(s, error, size, "Cannot allocate lighting images");
@@ -95,11 +101,14 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
         s->colormap.pixels[i * 4 + 3] = 255;
     }
     snprintf(path, sizeof(path), "maps/%s.bsp", map);
-    { dheader_t *header = (dheader_t *)COM_LoadHunkFile(path);
-      if (!header || com_filesize < (int)sizeof(*header)) return Failure(s, error, size, "Missing/truncated map");
-      lighting_bytes = LittleLong(header->lumps[LUMP_LIGHTING].filelen);
-      if (lighting_bytes < 0 || lighting_bytes > com_filesize) return Failure(s, error, size, "Invalid map lighting range"); }
-    world = Mod_ForName(path, false);
+    { dheader_t header; FILE *file = NULL;
+      int bytes = COM_FOpenFile(path, &file);
+      if (!file) return Failure(s, error, size, "Missing map");
+      size_t count = fread(&header, 1, sizeof(header), file); fclose(file);
+      if (bytes < (int)sizeof(header) || count != sizeof(header)) return Failure(s, error, size, "Truncated map");
+      lighting_bytes = LittleLong(header.lumps[LUMP_LIGHTING].filelen);
+      if (lighting_bytes < 0 || lighting_bytes > bytes) return Failure(s, error, size, "Invalid map lighting range"); }
+    world = argc ? Mod_ForName(path, false) : cl.worldmodel;
     if (!world || world->type != mod_brush) return Failure(s, error, size, "Cannot load brush map");
     for (int i = 0; i < world->nummodelsurfaces; ++i) {
         msurface_t *f = world->surfaces + world->firstmodelsurface + i;
@@ -190,4 +199,16 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
         s->index_count / 3, s->draw_count, s->material_count, ATLAS_SIZE, ATLAS_SIZE);
     return 1;
 #undef FAIL
+}
+int LQ_QuakeSceneFromWorld(lq_scene *s, char *error, size_t size)
+{
+    char name[MAX_QPATH];
+    if (!cl.worldmodel || strncmp(cl.worldmodel->name, "maps/", 5))
+        return Failure(s, error, size, "No live BSP world");
+    snprintf(name, sizeof(name), "%s", cl.worldmodel->name + 5);
+    size_t length = strlen(name);
+    if (length < 5 || strcmp(name + length - 4, ".bsp"))
+        return Failure(s, error, size, "Invalid live BSP name");
+    name[length - 4] = 0;
+    return LQ_QuakeSceneLoad(0, NULL, name, s, error, size);
 }

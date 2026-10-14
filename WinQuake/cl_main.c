@@ -20,6 +20,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // cl_main.c  -- client main loop
 
 #include "quakedef.h"
+#ifdef LQ_PORTABLE
+#include "render_bridge.h"
+#endif
 
 // we need to declare some mouse variables here, because the menu system
 // references them even when on a unix system.
@@ -62,6 +65,9 @@ CL_ClearState
 void CL_ClearState (void)
 {
 	int			i;
+#ifdef LQ_PORTABLE
+	LQ_RenderMapChanged ();
+#endif
 
 	if (!sv.active)
 		Host_ClearMemory ();

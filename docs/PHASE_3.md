@@ -5,6 +5,50 @@ E1M1's BSP triangles are transformed, depth-tested, textured and shaded on Metal
 on the M1 Max. This is the first renderer-boundary milestone, not the completed
 GPU gameplay client. `luminousquake` remains the software playable baseline.
 
+## October 14: live gameplay bridge
+
+`luminousquake` now applies `lq_renderer` at the first rendered frame after
+startup configuration, and when `vid_restart` runs. Software (0) uses the SDL
+framebuffer presenter. Classic GPU (1) claims the same SDL3 window for its GPU
+device, copies the live engine BSP into owned scene data, and renders from
+`r_refdef` with the live engine light-style values. Enhanced (2) reports that it
+is pending and uses Software. The preference remains archived in all cases.
+
+The Classic GPU path is an interim mixed renderer. Quake still computes its
+software frame and depth. Visible brush/animated/dynamically lit surface spans
+and actor/weapon/sprite/particle depth changes identify software layers, which
+are uploaded as an RGBA overlay. HUD/crosshair changes are composited after 3D
+rendering; menus, console, underwater warp and legacy special debug views retain
+a complete software frame. Palette/gamma/content shifts update the GPU colormap.
+GPU view rectangles follow the engine screen-size/FOV settings, and presentation
+preserves aspect ratio. This is a functional integration step, not a completed
+fully GPU renderer or a performance optimization. UI difference detection and
+mixed software/GPU depth are temporary bridges to explicit frame submissions;
+exact visual equivalence and all gameplay situations remain unvalidated.
+
+Client-state clearing invalidates the copied level, including same-map save/load
+and demo changes where legacy hunk addresses may be reused. The next live frame
+replaces GPU level resources. Renderer restart releases the GPU/window claim
+before restoring the software presenter; returning to GPU creates fresh scene
+resources. Allocation/device/upload failures restore software rendering and
+explain the fallback in the console. CPU arrays are freed after GPU upload.
+
+The isolated content smoke test can request `--renderer classic`. It verifies
+movement/attack, save/load, demo playback, a transition to Start and switching
+Software then Classic GPU, rejecting unexpected fallback. `--capture PATH`
+retains its final frame only at an explicitly chosen location. The asset-free
+GPU test additionally checks overlay orientation, transparent pixels and alpha
+blending. The software baseline remains available through `lq_renderer 0`.
+
+Validation: the combined Debug and ASan/UBSan suites pass 17 tests. Native GPU
+readback verifies overlay alpha/orientation and a nonzero-origin view rectangle.
+Software and Classic GPU content smoke tests pass; the Classic test also passes
+under sanitizers, activates its startup preference without `vid_restart`, and
+switches backends in the running game. A final Start frame with world, weapon
+and HUD was visually inspected. Native launch-focus/fullscreen checks pass for
+the standard software client. Cross-platform CI/runtime validation remains
+pending, and these checks do not establish complete game or GLQuake equivalence.
+
 ## API decision and existing hardware renderer
 
 Quake already has a hardware-rendering lineage. Its GLQuake implementation is
@@ -30,11 +74,12 @@ The playable Options menu has a persistent three-choice Renderer selector:
 Software (0), Classic GPU (1), and Enhanced (2), stored in `lq_renderer`.
 Classic GPU preserves GLQuake-style baked lighting through the Metal/Vulkan
 backend; Enhanced is the subsequent Tenebrae-inspired lighting/material path.
-Left/right cycle both ways and Enter advances. The menu explicitly identifies
-GPU gameplay integration as pending and marks preferences as restart-required.
-Software is currently the operational gameplay renderer. Phase 3 will connect
-Classic GPU first, keeping Software available alongside it; enhanced rendering
-will build on that playable GPU baseline.
+Left/right cycle both ways and Enter advances. The menu identifies Classic GPU
+as retaining CPU actors/UI, marks Enhanced as pending, and explains restart or
+`vid_restart` application of the preference.
+Software and the interim Classic GPU bridge are operational in the playable
+client. Enhanced rendering will follow explicit GPU actor/brush/effect/UI
+submissions and completion of the classic appearance baseline.
 
 ## Renderer boundary and ownership
 
@@ -162,8 +207,8 @@ is an explicit failure for the requested GPU test, not a claimed pass.
 
 ## Next integration work
 
-1. Connect renderer choice/lifecycle through the migrated SDL3 playable platform
-   to the existing engine, including clean map transitions and video restart.
+1. Replace the mixed rendering bridge with explicit GPU frame submissions,
+   retaining the integrated renderer choice, map transitions and video restart.
 2. Submit animated MDL entities, brush entities, sprites, particles and UI through
    explicit renderer-facing data, retaining the software comparison path.
 3. Add visibility, texture animation and required effects to complete the original

@@ -21,6 +21,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "r_local.h"
+#ifdef LQ_PORTABLE
+#include "render_bridge.h"
+#endif
 
 // only the refresh window will be updated unless these variables are flagged 
 int			scr_copytop;
@@ -890,6 +893,9 @@ void SCR_UpdateScreen (void)
 
 	VID_LockBuffer ();
 
+#ifdef LQ_PORTABLE
+	LQ_RenderBegin ();
+#endif
 	V_RenderView ();
 
 	VID_UnlockBuffer ();

@@ -66,6 +66,44 @@ static void Move(lq_view *view, float seconds)
     view->origin[1] += seconds * speed * (forward * cosf(pitch) * sinf(yaw) - right * cosf(yaw));
     view->origin[2] += seconds * speed * (-forward * sinf(pitch) + up);
 }
+static int OverlayTest(lq_view *view, char *error, size_t size)
+{
+    uint8_t image[8 * 8 * 4] = {0}, *pixels;
+    uint32_t width, height;
+    image[1] = 255; image[3] = 255; /* opaque top-left green marker */
+    image[(7 + 7 * 8) * 4] = 255; image[(7 + 7 * 8) * 4 + 3] = 128;
+    lq_image overlay = {8, 8, 4, image};
+    if (!LQ_GPUOverlay(gpu, &overlay, error, size) ||
+        !LQ_GPURender(gpu, view, 640, 480, error, size) ||
+        !LQ_GPUReadPixels(gpu, &pixels, &width, &height, error, size)) return 0;
+    const uint8_t *top = pixels + (20 + 20 * width) * 4;
+    const uint8_t *bottom = pixels + (20 + (height - 20) * width) * 4;
+    const uint8_t *center = pixels + (width / 2 + height / 2 * width) * 4;
+    const uint8_t *blend = pixels + (width - 20 + (height - 20) * width) * 4;
+    int good = top[0] == 0 && top[1] == 255 && top[2] == 0 &&
+        bottom[0] == 0 && bottom[1] == 0 && bottom[2] == 127 &&
+        center[0] == 127 && center[1] == 0 && center[2] == 0 &&
+        blend[0] >= 127 && blend[0] <= 129 && blend[2] >= 62 && blend[2] <= 64;
+    if (!good) snprintf(error, size, "overlay orientation/transparency/blending mismatch: top %u,%u,%u bottom %u,%u,%u blend %u,%u,%u",
+        top[0], top[1], top[2], bottom[0], bottom[1], bottom[2], blend[0], blend[1], blend[2]);
+    free(pixels);
+    return good && LQ_GPUOverlay(gpu, NULL, error, size);
+}
+static int ViewportTest(lq_view *view, char *error, size_t size)
+{
+    uint8_t *pixels; uint32_t width, height;
+    view->viewport[0] = 80; view->viewport[1] = 60;
+    view->viewport[2] = 320; view->viewport[3] = 240;
+    if (!LQ_GPURender(gpu, view, 640, 480, error, size) ||
+        !LQ_GPUReadPixels(gpu, &pixels, &width, &height, error, size)) return 0;
+    const uint8_t *center = pixels + (240 + 180 * width) * 4;
+    const uint8_t *outside = pixels + (20 + 20 * width) * 4;
+    int good = center[0] == 127 && center[1] == 0 && center[2] == 0 &&
+        outside[0] == 5 && outside[1] == 5 && outside[2] == 6;
+    if (!good) snprintf(error, size, "viewport origin/extent readback mismatch");
+    free(pixels); memset(view->viewport, 0, sizeof(view->viewport));
+    return good;
+}
 int LQ_GPUViewer(int argc, char **argv)
 {
     char error[512] = "";
@@ -115,8 +153,11 @@ int LQ_GPUViewer(int argc, char **argv)
             if (!LQ_GPURender(gpu, &view, i ? 640 : 320, i ? 480 : 240, error, sizeof(error)) ||
                 !PixelTest(i ? 127 : 255, error, sizeof(error))) goto done;
         }
+        if (!OverlayTest(&view, error, sizeof(error))) goto done;
+        if (!ViewportTest(&view, error, sizeof(error))) goto done;
+        if (!LQ_GPURender(gpu, &view, 640, 480, error, sizeof(error))) goto done;
         if (capture && !SaveFrame(capture, error, sizeof(error))) goto done;
-        puts("PASS SDL3 GPU indexed geometry, depth/orientation, palette/lightstyle shading, scene replacement, resize, readback and detached scene ownership");
+        puts("PASS SDL3 GPU geometry, depth/orientation, palette/lightstyles, overlay alpha, viewport, scene replacement, resize, readback and detached ownership");
         result = 0; goto done;
     }
     active = !!(SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS);

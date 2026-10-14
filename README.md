@@ -4,6 +4,28 @@ A cross-platform Quake engine project exploring dynamic lighting, shadows,
 improved materials, and faithful asset improvements. See the
 [implementation plan](IMPLEMENTATION_PLAN.md).
 
+## Classic GPU gameplay: Phase 3 integration checkpoint
+
+The playable `luminousquake` executable now supports **Software** and an interim
+**Classic GPU** mode through Options. Classic GPU draws the BSP world through
+Metal/Vulkan while compositing Quake's software actors, moving brushes, effects
+and UI. The software frame is still computed for retained layers and occlusion;
+this checkpoint makes no performance or exact GLQuake-equivalence claim.
+
+From the repository root:
+
+```sh
+./build/luminousquake -basedir "$PWD/quake-complete/Quake" +lq_renderer 1 +map e1m1
+```
+
+Use `+lq_renderer 0` for Software. Options saves the choice for the next launch;
+the console command `vid_restart` also applies a change in the current game.
+**Enhanced** remains reserved and currently falls back to Software. Menus,
+console and underwater warp retain a complete software frame in Classic GPU.
+Animated/dynamically lit surfaces are retained in the software layer until their
+GPU implementations are ready. Failed GPU initialization/map uploads fall back
+to Software with a console explanation. See [integration details](docs/PHASE_3.md).
+
 ## GPU world viewer: first Phase 3 milestone
 
 The experimental `luminousquake-gpu` target draws BSP triangles and palette-indexed
@@ -80,9 +102,9 @@ Options includes a saved **Renderer** preference: **Software** (original CPU
 renderer), **Classic GPU** (GLQuake-style appearance with baked lightmaps), and
 **Enhanced** (Tenebrae-inspired lighting, shadows and materials). Left/right
 cycle in either direction; Enter advances. `lq_renderer` stores 0, 1 or 2.
-The menu identifies GPU gameplay integration as pending. Those preferences take
-effect after restart once their backends are connected to the playable client;
-today the experimental GPU viewer remains the separate `luminousquake-gpu`
+Classic GPU is now available as the mixed rendering checkpoint described above;
+Enhanced remains pending. Restart the game or use `vid_restart` to apply the
+saved choice. The experimental GPU viewer remains a separate `luminousquake-gpu`
 executable. Classic GPU describes appearance and can use Metal/Vulkan.
 The old video-options page
 is not an SDL settings UI; use console commands instead.

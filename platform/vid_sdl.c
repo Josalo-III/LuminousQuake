@@ -3,6 +3,7 @@
 #include "quakedef.h"
 #include "d_local.h"
 #include "sdl_backend.h"
+#include "gpu_sdl.h"
 
 viddef_t vid;
 unsigned short d_8to16table[256];
@@ -10,6 +11,9 @@ unsigned d_8to24table[256];
 static SDL_Window *window;
 static SDL_Renderer *renderer;
 static SDL_Texture *texture;
+static lq_gpu *gpu;
+static qboolean backend_applied;
+lq_gpu *LQ_PlayableGPU(void) { return gpu; }
 static uint32_t *pixels;
 static byte *surface_cache;
 static byte direct_saved[48 * 48];
@@ -55,15 +59,17 @@ static void Framebuffer(int width, int height)
     zbuffer = calloc(count, sizeof(*zbuffer));
     converted = calloc(count, sizeof(*converted));
     cache = malloc(cache_size);
-    next = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
-        SDL_TEXTUREACCESS_STREAMING, width, height);
-    if (!buffer || !zbuffer || !converted || !cache || !next) {
+    next = renderer ? SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
+        SDL_TEXTUREACCESS_STREAMING, width, height) : NULL;
+    if (!buffer || !zbuffer || !converted || !cache || (renderer && !next)) {
         free(buffer); free(zbuffer); free(converted); free(cache);
         SDL_DestroyTexture(next);
         Sys_Error("Cannot create software framebuffer: %s", SDL_GetError());
     }
-    SDL_SetTextureScaleMode(next, SDL_SCALEMODE_NEAREST);
-    SDL_SetTextureBlendMode(next, SDL_BLENDMODE_NONE);
+    if (next) {
+        SDL_SetTextureScaleMode(next, SDL_SCALEMODE_NEAREST);
+        SDL_SetTextureBlendMode(next, SDL_BLENDMODE_NONE);
+    }
     if (surface_cache) D_FlushCaches();
     free(vid.buffer); free(d_pzbuffer); free(pixels); free(surface_cache);
     SDL_DestroyTexture(texture);
@@ -77,7 +83,7 @@ static void Framebuffer(int width, int height)
     vid.colormap = host_colormap;
     vid.fullbright = host_colormap ? 256 - LittleLong(*((int *)host_colormap + 2048)) : 256;
     D_InitCaches(surface_cache, cache_size);
-    SDL_SetRenderLogicalPresentation(renderer, width, height, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+    if (renderer) SDL_SetRenderLogicalPresentation(renderer, width, height, SDL_LOGICAL_PRESENTATION_LETTERBOX);
     direct_active = false;
     Con_Printf("Software framebuffer: %dx%d\n", width, height);
 }
@@ -113,11 +119,41 @@ static void Restart(void)
         vid_width.value < 320 || vid_width.value > MAXWIDTH ||
         vid_height.value < 200 || vid_height.value > MAXHEIGHT)
         Sys_Error("Invalid vid_width/vid_height for software renderer");
+    backend_applied = false;
+    LQ_ApplyRenderer();
     Framebuffer((int)vid_width.value, (int)vid_height.value);
     Fullscreen();
-    if (!SDL_SetRenderVSync(renderer, vid_vsync.value != 0))
+    if (renderer && !SDL_SetRenderVSync(renderer, vid_vsync.value != 0))
         Con_Printf("VSync setting unavailable: %s\n", SDL_GetError());
     LQ_UpdateCapture();
+}
+void LQ_FallbackRenderer(const char *reason)
+{
+    Con_Printf("Software renderer fallback: %s\n", reason);
+    LQ_RenderBridgeShutdown();
+    LQ_GPUDestroy(gpu); gpu = NULL;
+    if (!renderer) renderer = SDL_CreateRenderer(window, NULL);
+    if (!renderer) Sys_Error("Cannot restore software presentation: %s", SDL_GetError());
+    Framebuffer((int)vid.width, (int)vid.height);
+    SDL_SetRenderVSync(renderer, vid_vsync.value != 0);
+}
+void LQ_ApplyRenderer(void)
+{
+    char error[256];
+    if (backend_applied || !window) return;
+    backend_applied = true;
+    if (Cvar_VariableValue("lq_renderer") == 1) {
+        if (gpu) return;
+        SDL_DestroyTexture(texture); texture = NULL;
+        SDL_DestroyRenderer(renderer); renderer = NULL;
+        gpu = LQ_GPUCreate(window, 0, error, sizeof(error));
+        if (!gpu) { LQ_FallbackRenderer(error); return; }
+        Con_Printf("Classic GPU world enabled; software actors, brushes, effects and UI.\n");
+    } else {
+        if (gpu) LQ_FallbackRenderer("Software selected");
+        if (Cvar_VariableValue("lq_renderer") == 2)
+            Con_Printf("Enhanced renderer is pending integration; using Software.\n");
+    }
 }
 
 void VID_Init(unsigned char *palette)
@@ -168,6 +204,7 @@ void VID_Update(vrect_t *rects)
 {
     size_t i, count = (size_t)vid.width * vid.height;
     (void)rects;
+    if (gpu && LQ_RenderBridgePresent()) return;
     if (!renderer) return;
     for (i = 0; i < count; ++i) pixels[i] = d_8to24table[vid.buffer[i]];
     if (!SDL_UpdateTexture(texture, NULL, pixels, (int)vid.width * sizeof(*pixels)))
@@ -181,6 +218,13 @@ qboolean LQ_SaveFrame(const char *path)
 {
     SDL_Surface *surface;
     qboolean result;
+    if (gpu) {
+        byte *data; uint32_t width, height; char error[256];
+        if (!LQ_GPUReadPixels(gpu, &data, &width, &height, error, sizeof(error))) return false;
+        surface = SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_RGBA32, data, width * 4);
+        result = surface && SDL_SaveBMP(surface, path);
+        SDL_DestroySurface(surface); free(data); return result;
+    }
     if (!renderer) return false;
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer); SDL_RenderTexture(renderer, texture, NULL, NULL);
@@ -193,6 +237,8 @@ qboolean LQ_SaveFrame(const char *path)
 void VID_Shutdown(void)
 {
     if (!window && !renderer) return;
+    LQ_RenderBridgeShutdown(); LQ_GPUDestroy(gpu); gpu = NULL;
+    backend_applied = false;
     IN_ClearStates();
     SDL_SetWindowRelativeMouseMode(window, false);
     SDL_StopTextInput(window);

@@ -26,6 +26,7 @@ typedef struct {
 typedef struct {
     float origin[3], angles[3], horizontal_fov;
     float lightstyles[256], time;
+    uint32_t viewport[4]; /* x/y/width/height; zero size uses the whole target */
 } lq_view;
 void LQ_SceneFree(lq_scene *scene);
 void LQ_ViewMatrix(const lq_view *view, float aspect, float matrix[16]);

@@ -21,6 +21,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "d_local.h"
+#ifdef LQ_PORTABLE
+#include "render_bridge.h"
+#endif
 
 static int	miplevel;
 
@@ -178,6 +181,9 @@ void D_DrawSurfaces (void)
 	surfcache_t		*pcurrentcache;
 	vec3_t			world_transformed_modelorg;
 	vec3_t			local_modelorg;
+#ifdef LQ_PORTABLE
+	int preserve_layers = LQ_RenderBridgeActive();
+#endif
 
 	currententity = &cl_entities[0];
 	TransformVector (modelorg, transformed_modelorg);
@@ -207,6 +213,18 @@ void D_DrawSurfaces (void)
 				continue;
 
 			r_drawnpolycount++;
+#ifdef LQ_PORTABLE
+			/* Preserve software brush/animated/dynamically lit surfaces until
+			 * their GPU submissions are implemented. Spans are already clipped. */
+			if (preserve_layers) {
+			pface = s->data;
+			int preserve = s->insubmodel ||
+				(!(s->flags & SURF_DRAWBACKGROUND) && pface &&
+				 (pface->dlightframe == r_framecount || pface->texinfo->texture->anim_total));
+			for (espan_t *span = s->spans; span; span = span->pnext)
+				LQ_RenderSurface(span->u, span->v, span->count, preserve);
+			}
+#endif
 
 			d_zistepu = s->d_zistepu;
 			d_zistepv = s->d_zistepv;

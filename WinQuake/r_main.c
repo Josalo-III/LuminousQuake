@@ -21,6 +21,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "r_local.h"
+#ifdef LQ_PORTABLE
+#include "render_bridge.h"
+#endif
 
 //define	PASSAGES
 
@@ -984,6 +987,9 @@ SetVisibilityByPassages ();
 	}
 	
 	R_EdgeDrawing ();
+#ifdef LQ_PORTABLE
+	LQ_RenderWorldDone ();
+#endif
 
 	if (!r_dspeeds.value)
 	{
@@ -1023,6 +1029,9 @@ SetVisibilityByPassages ();
 		D_WarpScreen ();
 
 	V_SetContentsColor (r_viewleaf->contents);
+#ifdef LQ_PORTABLE
+	LQ_RenderSceneDone ();
+#endif
 
 	if (r_timegraph.value)
 		R_TimeGraph ();
