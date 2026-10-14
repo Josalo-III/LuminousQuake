@@ -85,6 +85,11 @@ cvar_t	temp1 = {"temp1","0"};
  * Original game code does not use it; do not archive it in config.cfg. */
 static cvar_t campaign = {"campaign", "0"};
 
+/* Saved renderer preference: 0 software, 1 classic GPU, 2 enhanced GPU.
+ * The playable SDL2 binary currently implements software; the GPU preferences
+ * will take effect once their gameplay backends are integrated. */
+cvar_t lq_renderer = {"lq_renderer", "0", true};
+
 
 /*
 ================
@@ -234,6 +239,7 @@ void Host_InitLocal (void)
 
 	Cvar_RegisterVariable (&temp1);
 	Cvar_RegisterVariable (&campaign);
+	Cvar_RegisterVariable (&lq_renderer);
 
 	Host_FindMaxClients ();
 	

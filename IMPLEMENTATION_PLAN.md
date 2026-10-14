@@ -105,8 +105,8 @@ Implemented; see [Phase 2 validation and limitations](docs/PHASE_2.md).
 
 Initial slice implemented: [SDL3 GPU world viewer](docs/PHASE_3.md), renderer-owned
 geometry/textures/lightmap data, embedded SPIR-V/MSL shaders and native Metal proof.
-The existing software client remains the playable comparison build. Completing
-this phase requires shared platform migration to SDL3, gameplay scene submissions,
+The software client remains the playable comparison build and its shared
+platform layer has migrated to SDL3. Completing this phase requires gameplay scene submissions,
 resource/map transitions and the replacement-asset boundary. The viewer is not
 the completed gameplay renderer.
 

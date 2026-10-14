@@ -1,7 +1,8 @@
 /* LuminousQuake SDL platform interface. GPL-2.0-or-later. */
 #ifndef LQ_SDL_BACKEND_H
 #define LQ_SDL_BACKEND_H
-#include <SDL.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
 SDL_Window *LQ_SDLWindow(void);
 SDL_Renderer *LQ_SDLRenderer(void);
 void LQ_PumpEvents(void);

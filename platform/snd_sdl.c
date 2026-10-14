@@ -27,7 +27,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "quakedef.h"
 #include "sdl_backend.h"
 
-static SDL_AudioDeviceID device;
+static SDL_AudioStream *audio_stream;
 static dma_t dma;
 static byte *ring;
 static size_t ring_bytes, read_byte;
@@ -37,7 +37,9 @@ static qboolean subsystem, audio_focus = true;
 extern int sound_started;
 
 /* The callback only consumes the already-mixed ring; it never touches gameplay
- * or loads assets. Main-thread writes hold the SDL device lock. */
+ * or loads assets. Main-thread writes hold the SDL stream lock, also held by
+ * SDL while invoking the callback. SDL converts the fixed mixer format to the
+ * output device's format and sample rate. */
 void LQ_AudioConsume(byte *stream, int length)
 {
     while (length > 0) {
@@ -50,20 +52,31 @@ void LQ_AudioConsume(byte *stream, int length)
         frames_read += count / (sizeof(short) * dma.channels);
     }
 }
-static void AudioCallback(void *context, Uint8 *stream, int length)
+static void SDLCALL AudioCallback(void *context, SDL_AudioStream *stream,
+                                 int additional, int total)
 {
+    byte samples[4096];
     (void)context;
-    if (!ring || !ring_bytes) { memset(stream, 0, length); return; }
-    LQ_AudioConsume(stream, length);
+    (void)total;
+    if (!ring || !ring_bytes || additional <= 0) return;
+    /* Whole stereo frames preserve the ring clock even for variable requests.
+     * Use fixed scratch storage rather than allocating in the audio callback. */
+    additional = (additional + 3) & ~3;
+    while (additional > 0) {
+        int count = additional > (int)sizeof(samples) ? (int)sizeof(samples) : additional;
+        LQ_AudioConsume(samples, count);
+        if (!SDL_PutAudioStreamData(stream, samples, count)) return;
+        additional -= count;
+    }
 }
-qboolean LQ_AudioReady(void) { return device != 0; }
+qboolean LQ_AudioReady(void) { return audio_stream != NULL; }
 void SNDDMA_BeginPainting(void)
 {
-    if (device && !paint_depth++) SDL_LockAudioDevice(device);
+    if (audio_stream && !paint_depth++) SDL_LockAudioStream(audio_stream);
 }
 void SNDDMA_Submit(void)
 {
-    if (device && paint_depth > 0 && !--paint_depth) SDL_UnlockAudioDevice(device);
+    if (audio_stream && paint_depth > 0 && !--paint_depth) SDL_UnlockAudioStream(audio_stream);
 }
 uint64_t LQ_AudioFrames(void)
 {
@@ -89,16 +102,18 @@ int SNDDMA_GetSoundtime(void)
 void LQ_AudioFocus(qboolean focus)
 {
     audio_focus = focus;
-    if (!device) return;
-    SDL_PauseAudioDevice(device, 1);
-    if (!focus) S_ClearBuffer();
-    SDL_PauseAudioDevice(device, focus ? 0 : 1);
+    if (!audio_stream) return;
+    SDL_PauseAudioStreamDevice(audio_stream);
+    if (!focus) {
+        S_ClearBuffer();
+        SDL_ClearAudioStream(audio_stream);
+    } else SDL_ResumeAudioStreamDevice(audio_stream);
 }
 qboolean SNDDMA_Init(void)
 {
-    SDL_AudioSpec wanted, obtained;
+    SDL_AudioSpec wanted;
     int option, rate = 44100;
-    if (device) return true;
+    if (audio_stream) return true;
     if (COM_CheckParm("-nosound")) return false;
     option = COM_CheckParm("-sndspeed");
     if (option) {
@@ -110,15 +125,15 @@ qboolean SNDDMA_Init(void)
         rate = (int)parsed;
     }
     SDL_SetMainReady();
-    if (SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+    if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
         Con_Printf("SDL audio unavailable: %s\n", SDL_GetError()); return false;
     }
     subsystem = true;
     memset(&wanted, 0, sizeof(wanted));
-    wanted.freq = rate; wanted.format = AUDIO_S16SYS; wanted.channels = 2;
-    wanted.samples = 1024; wanted.callback = AudioCallback;
-    device = SDL_OpenAudioDevice(NULL, 0, &wanted, &obtained, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
-    if (!device) {
+    wanted.freq = rate; wanted.format = SDL_AUDIO_S16; wanted.channels = 2;
+    audio_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
+                                             &wanted, AudioCallback, NULL);
+    if (!audio_stream) {
         Con_Printf("SDL audio device unavailable: %s\n", SDL_GetError());
         SNDDMA_Shutdown(); return false;
     }
@@ -126,22 +141,22 @@ qboolean SNDDMA_Init(void)
     ring = calloc(ring_bytes, 1);
     if (!ring) { SNDDMA_Shutdown(); return false; }
     memset(&dma, 0, sizeof(dma));
-    dma.samplebits = 16; dma.speed = obtained.freq; dma.channels = 2;
+    dma.samplebits = 16; dma.speed = rate; dma.channels = 2;
     dma.samples = (int)(ring_bytes / sizeof(short)); dma.submission_chunk = 1;
     dma.buffer = ring; dma.gamealive = dma.soundalive = true;
     shm = &dma; frames_read = epoch = read_byte = 0; paint_depth = 0;
     paintedtime = 0;
-    SDL_PauseAudioDevice(device, audio_focus ? 0 : 1);
-    Con_Printf("SDL audio: %d Hz stereo signed 16-bit\n", dma.speed);
+    if (audio_focus) SDL_ResumeAudioStreamDevice(audio_stream);
+    Con_Printf("SDL3 audio stream: %d Hz stereo signed 16-bit\n", dma.speed);
     return true;
 }
 void SNDDMA_Shutdown(void)
 {
-    if (device) {
+    if (audio_stream) {
         /* Fatal exits may interrupt mixing while this thread owns the lock. */
-        if (paint_depth) { SDL_UnlockAudioDevice(device); paint_depth = 0; }
-        /* Closing waits for the callback before releasing the ring. */
-        SDL_CloseAudioDevice(device); device = 0;
+        if (paint_depth) { SDL_UnlockAudioStream(audio_stream); paint_depth = 0; }
+        /* Destroying waits for the callback and closes its logical device. */
+        SDL_DestroyAudioStream(audio_stream); audio_stream = NULL;
     }
     free(ring); ring = NULL; ring_bytes = read_byte = 0;
     paint_depth = 0; shm = NULL;

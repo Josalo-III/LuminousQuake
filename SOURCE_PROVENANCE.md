@@ -58,6 +58,12 @@ and a temporary content-derived secret-trigger reproduction were validated.
 
 ## Phase 3 GPU foundation
 
+The playable window/input/audio adapters migrated from SDL2 to SDL3 on October
+14. SDL3's official `docs/README-migration.md` was used as the API reference.
+Quake's mixer and the ioquake3-derived input/ring design remain; audio callback
+submission now uses SDL3 audio streams and stream locks. No additional upstream
+implementation source was copied for this migration.
+
 - SDL3 is an external zlib-licensed dependency. The first local SDK was built
   from official tag `release-3.4.18`, commit
   `829a65d769d935c4852f8159e964312c0957260a`; the durable Homebrew arm64 SDK

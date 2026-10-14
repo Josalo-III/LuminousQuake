@@ -9,14 +9,14 @@ improved materials, and faithful asset improvements. See the
 The experimental `luminousquake-gpu` target draws BSP triangles and palette-indexed
 textures/lightmaps through SDL3 GPU. It currently provides a free-flight world
 viewer; actors, moving brush models, effects, UI and gameplay integration remain
-next steps. The playable `luminousquake` target still uses SDL2/software rendering.
+next steps. The playable `luminousquake` target uses SDL3 with software rendering.
 See [Phase 3 scope and validation](docs/PHASE_3.md).
 
 On Apple Silicon:
 
 ```sh
 brew install sdl3
-cmake -S . -B build-gpu -DCMAKE_BUILD_TYPE=Debug -DLQ_BUILD_GPU=ON -DCMAKE_PREFIX_PATH="/opt/homebrew/opt/sdl3;/opt/homebrew/opt/sdl2"
+cmake -S . -B build-gpu -DCMAKE_BUILD_TYPE=Debug -DLQ_BUILD_GPU=ON -DCMAKE_PREFIX_PATH=/opt/homebrew/opt/sdl3
 cmake --build build-gpu --parallel 10
 ./build-gpu/luminousquake-gpu -basedir "$PWD/quake-complete/Quake" -map e1m1
 ```
@@ -31,7 +31,7 @@ For repeatable captures add `--fixed-camera --run-seconds 4 --screenshot /tmp/qu
 sampling, resizing and readback without game data. Configure `-DLQ_GPU_TESTS=ON`
 to include that window-system/GPU-dependent check in CTest. Ordinary scene/import
 checks run without a GPU. `-DLQ_BUILD_CLIENT=OFF -DLQ_BUILD_GPU=ON` builds the
-SDL3 viewer with no SDL2 dependency; headless-only builds require neither library.
+SDL3 viewer without the playable client; headless-only builds require no SDL library.
 
 MSL and Vulkan SPIR-V shaders are embedded; runtime Qt/shader tools are not needed.
 To regenerate them, install `glslang` and `spirv-cross`, then run
@@ -40,18 +40,18 @@ shaders support the other initial backend. D3D12 needs a future DXIL shader buil
 
 ## Playable software client: Phase 2
 
-The SDL2 client presents Quake's original software renderer and retains the
+The SDL3 client presents Quake's original software renderer and retains the
 original gameplay, QuakeC interpreter and sound mixer. Dynamic lighting upgrades
 and a modern 3D graphics backend are later phases. The headless client and
 dedicated server retain null video/input/audio backends and need no SDL.
 
-Requirements: C11 compiler, CMake 3.20+, SDL2 2.0.18+ for the windowed client,
+Requirements: C11 compiler, CMake 3.20+, SDL3 3.2+ for the windowed client,
 and Python 3 for tests (`-DBUILD_TESTING=OFF` removes the Python requirement).
 On Apple Silicon use native arm64 dependencies:
 
 ```sh
-brew install sdl2
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=/opt/homebrew/opt/sdl2
+brew install sdl3
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=/opt/homebrew/opt/sdl3
 cmake --build build --parallel 10
 ctest --test-dir build --output-on-failure
 ./build/luminousquake --platform-demo
@@ -76,8 +76,16 @@ remain visible. See [Phase 2 notes](docs/PHASE_2.md).
 Default controls: WASD movement, mouse look, left mouse attack, Space jump,
 Shift run, number keys for weapons, Escape menu, grave key console, F11
 fullscreen. Existing Quake configuration scripts override these defaults.
-The menu remains the original Quake menu. Its old video-options page is not
-an SDL settings UI; use console commands instead.
+Options includes a saved **Renderer** preference: **Software** (original CPU
+renderer), **Classic GPU** (GLQuake-style appearance with baked lightmaps), and
+**Enhanced** (Tenebrae-inspired lighting, shadows and materials). Left/right
+cycle in either direction; Enter advances. `lq_renderer` stores 0, 1 or 2.
+The menu identifies GPU gameplay integration as pending. Those preferences take
+effect after restart once their backends are connected to the playable client;
+today the experimental GPU viewer remains the separate `luminousquake-gpu`
+executable. Classic GPU describes appearance and can use Metal/Vulkan.
+The old video-options page
+is not an SDL settings UI; use console commands instead.
 
 Window resizing preserves the software render resolution and aspect ratio.
 `-width 640 -height 480` chooses the internal resolution;
@@ -103,16 +111,17 @@ The last checks required asset presence and returns 2 when files are missing;
 it does not certify compatibility. `-noudp` disables UDP and `-ip ADDRESS`
 selects an IPv4 interface. The loopback test needs socket-binding permission.
 
-On Linux install `libsdl2-dev`. On Windows use a current Visual Studio C11
-compiler and SDL2's VC development package, passing its `cmake` directory as
-`-DSDL2_DIR=...`; use `--config Debug` for builds and `-C Debug` for CTest.
+On Linux use an SDL3 development package or build SDL3 from its official source.
+On Windows use a current Visual Studio C11 compiler and SDL3's VC development
+package, passing its `cmake` directory as `-DSDL3_DIR=...`; use `--config Debug`
+for builds and `-C Debug` for CTest. CI builds a pinned SDL3 SDK on each platform.
 The DLL is copied beside the client executable. The CI workflow installs SDL
 on all three platforms; Windows/Linux jobs have not yet run for this project.
 
 Sanitizer build:
 
 ```sh
-cmake -S . -B build-sanitize -DCMAKE_BUILD_TYPE=Debug -DLQ_SANITIZERS=ON -DCMAKE_PREFIX_PATH=/opt/homebrew/opt/sdl2
+cmake -S . -B build-sanitize -DCMAKE_BUILD_TYPE=Debug -DLQ_SANITIZERS=ON -DCMAKE_PREFIX_PATH=/opt/homebrew/opt/sdl3
 cmake --build build-sanitize --parallel 10
 ctest --test-dir build-sanitize --output-on-failure
 ./build-sanitize/luminousquake --platform-test --test-fullscreen

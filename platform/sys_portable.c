@@ -190,7 +190,7 @@ int main(int argc, char **argv)
 #elif defined(LQ_GPU)
                 "SDL3 GPU world viewer"
 #elif defined(LQ_SDL)
-                "SDL2 software client"
+                "SDL3 software client"
 #else
                 "headless client"
 #endif

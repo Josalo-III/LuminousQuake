@@ -25,7 +25,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "sdl_backend.h"
 
 static qboolean initialized, focused, quit_requested, demo_active, mouse_active, suppress_text;
-static int pressed[SDL_NUM_SCANCODES], held[256];
+static int pressed[SDL_SCANCODE_COUNT], held[256];
 static float mouse_x, mouse_y, previous_x, previous_y;
 static cvar_t in_mouse = {"in_mouse", "1", true};
 static cvar_t in_nograb = {"in_nograb", "0", true};
@@ -37,12 +37,14 @@ qboolean LQ_QuitRequested(void) { return quit_requested; }
 void LQ_ResetQuit(void) { quit_requested = false; }
 void LQ_SetDemo(qboolean active) { demo_active = active; }
 
-static int TranslateKey(const SDL_Keysym *keysym)
+static int TranslateKey(const SDL_KeyboardEvent *event)
 {
-    SDL_Keycode symbol = keysym->sym;
+    SDL_Keycode symbol = event->key;
     /* Preserve number-row bindings across keyboard layouts, as ioquake3 does. */
-    if (keysym->scancode >= SDL_SCANCODE_1 && keysym->scancode <= SDL_SCANCODE_0)
-        return keysym->scancode == SDL_SCANCODE_0 ? '0' : '1' + keysym->scancode - SDL_SCANCODE_1;
+    if (event->scancode >= SDL_SCANCODE_1 && event->scancode <= SDL_SCANCODE_0)
+        return event->scancode == SDL_SCANCODE_0 ? '0' : '1' + event->scancode - SDL_SCANCODE_1;
+    /* SDL3 keycodes use uppercase Latin letters; Quake bindings use lowercase. */
+    if (symbol >= SDLK_A && symbol <= SDLK_Z) return 'a' + symbol - SDLK_A;
     if (symbol >= SDLK_SPACE && symbol < SDLK_DELETE) return (int)symbol;
     switch (symbol) {
     case SDLK_RETURN: case SDLK_KP_ENTER: return K_ENTER;
@@ -82,14 +84,16 @@ void LQ_UpdateCapture(void)
         (demo_active || (cls.state == ca_connected && !con_forcedup));
     if (wanted == mouse_active) return;
     if (wanted) {
-        if (SDL_SetRelativeMouseMode(SDL_TRUE)) {
+        if (!SDL_SetWindowRelativeMouseMode(window, true)) {
             /* Dummy/headless video drivers need not implement capture. */
             return;
         }
-        SDL_SetWindowGrab(window, SDL_TRUE);
+        SDL_SetWindowMouseGrab(window, true);
     } else {
-        SDL_SetRelativeMouseMode(SDL_FALSE);
-        if (window) SDL_SetWindowGrab(window, SDL_FALSE);
+        if (window) {
+            SDL_SetWindowRelativeMouseMode(window, false);
+            SDL_SetWindowMouseGrab(window, false);
+        }
     }
     mouse_active = wanted;
     mouse_x = mouse_y = previous_x = previous_y = 0;
@@ -153,62 +157,67 @@ void LQ_HandleEvent(const SDL_Event *event)
 {
     int key;
     switch (event->type) {
-    case SDL_QUIT: quit_requested = true; break;
-    case SDL_WINDOWEVENT:
+    case SDL_EVENT_QUIT: quit_requested = true; break;
+    case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
+    case SDL_EVENT_WINDOW_MINIMIZED:
+    case SDL_EVENT_WINDOW_FOCUS_GAINED:
+    case SDL_EVENT_WINDOW_EXPOSED:
+    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
         if (event->window.windowID != SDL_GetWindowID(LQ_SDLWindow())) break;
-        switch (event->window.event) {
-        case SDL_WINDOWEVENT_CLOSE: quit_requested = true; break;
-        case SDL_WINDOWEVENT_FOCUS_LOST: case SDL_WINDOWEVENT_MINIMIZED: LQ_SetFocus(false); break;
-        case SDL_WINDOWEVENT_FOCUS_GAINED: LQ_SetFocus(true); break;
-        case SDL_WINDOWEVENT_EXPOSED: case SDL_WINDOWEVENT_SIZE_CHANGED: VID_Update(NULL); break;
+        switch (event->type) {
+        case SDL_EVENT_WINDOW_CLOSE_REQUESTED: quit_requested = true; break;
+        case SDL_EVENT_WINDOW_FOCUS_LOST: case SDL_EVENT_WINDOW_MINIMIZED: LQ_SetFocus(false); break;
+        case SDL_EVENT_WINDOW_FOCUS_GAINED: LQ_SetFocus(true); break;
+        case SDL_EVENT_WINDOW_EXPOSED: case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: VID_Update(NULL); break;
         default: break;
         }
         break;
-    case SDL_KEYDOWN:
+    case SDL_EVENT_KEY_DOWN:
         if (!focused) break;
-        if ((event->key.keysym.mod & KMOD_ALT) && event->key.keysym.sym == SDLK_RETURN) {
+        if ((event->key.mod & SDL_KMOD_ALT) && event->key.key == SDLK_RETURN) {
             if (!event->key.repeat) Cbuf_AddText("vid_togglefullscreen\n");
             suppress_text = true;
             break;
         }
 #ifdef __APPLE__
-        if ((event->key.keysym.mod & KMOD_GUI) && event->key.keysym.sym == SDLK_q) {
+        if ((event->key.mod & SDL_KMOD_GUI) && event->key.key == SDLK_Q) {
             quit_requested = true; break;
         }
 #endif
-        if (demo_active && event->key.keysym.sym == SDLK_ESCAPE) { quit_requested = true; break; }
-        key = TranslateKey(&event->key.keysym);
+        if (demo_active && event->key.key == SDLK_ESCAPE) { quit_requested = true; break; }
+        key = TranslateKey(&event->key);
         suppress_text = key && keybindings[key] && !strcmp(keybindings[key], "toggleconsole");
-        if (event->key.keysym.scancode >= SDL_NUM_SCANCODES) break;
-        if (!pressed[event->key.keysym.scancode]) {
-            pressed[event->key.keysym.scancode] = key;
+        if (event->key.scancode < 0 || event->key.scancode >= SDL_SCANCODE_COUNT) break;
+        if (!pressed[event->key.scancode]) {
+            pressed[event->key.scancode] = key;
             Button(key, true);
         } else if (event->key.repeat && (key == K_BACKSPACE || key == K_DEL)) Key_Event(key, true);
         break;
-    case SDL_KEYUP:
-        if (event->key.keysym.scancode >= SDL_NUM_SCANCODES) break;
-        key = pressed[event->key.keysym.scancode];
-        pressed[event->key.keysym.scancode] = 0;
+    case SDL_EVENT_KEY_UP:
+        if (event->key.scancode < 0 || event->key.scancode >= SDL_SCANCODE_COUNT) break;
+        key = pressed[event->key.scancode];
+        pressed[event->key.scancode] = 0;
         Button(key, false);
         break;
-    case SDL_TEXTINPUT:
+    case SDL_EVENT_TEXT_INPUT:
         if (focused && !suppress_text) {
             const unsigned char *text = (const unsigned char *)event->text.text;
             while (*text) Key_CharEvent(*text++);
         }
         suppress_text = false;
         break;
-    case SDL_MOUSEBUTTONDOWN: case SDL_MOUSEBUTTONUP:
-        if (focused) Button(MouseKey(event->button.button), event->type == SDL_MOUSEBUTTONDOWN);
+    case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
+        if (focused) Button(MouseKey(event->button.button), event->type == SDL_EVENT_MOUSE_BUTTON_DOWN);
         break;
-    case SDL_MOUSEWHEEL:
+    case SDL_EVENT_MOUSE_WHEEL:
         if (focused && event->wheel.y) {
             int direction = event->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1 : 1;
             key = event->wheel.y * direction > 0 ? K_MWHEELUP : K_MWHEELDOWN;
             Key_Event(key, true); Key_Event(key, false);
         }
         break;
-    case SDL_MOUSEMOTION:
+    case SDL_EVENT_MOUSE_MOTION:
         if (mouse_active) { mouse_x += event->motion.xrel; mouse_y += event->motion.yrel; }
         break;
     default: break;

@@ -3,7 +3,7 @@
 October 13, 2026. `luminousquake-gpu` is an experimental SDL3 GPU world viewer.
 E1M1's BSP triangles are transformed, depth-tested, textured and shaded on Metal
 on the M1 Max. This is the first renderer-boundary milestone, not the completed
-GPU gameplay client. `luminousquake` remains the SDL2/software playable baseline.
+GPU gameplay client. `luminousquake` remains the software playable baseline.
 
 ## API decision and existing hardware renderer
 
@@ -17,11 +17,24 @@ are SPIR-V for Vulkan and MSL for Metal. SDL3's D3D12 backend requires DXIL/DXBC
 that shader-generation step is future work. Windows can use the Vulkan path once
 validated. No Mac-only engine interface or OpenGL context is introduced.
 
-SDL3 and SDL2 are separate executable dependencies at this stage: the GPU viewer
-links SDL3, the playable client links SDL2, and headless targets link neither.
-Migration of the shared playable window/input/audio layer to SDL3 remains part of
-the integration work. Keeping that change separate allows renderer development
-and comparison against the currently playable engine.
+The playable window/input/audio layer now uses SDL3, matching the GPU viewer's
+dependency. Headless targets need no SDL. The software renderer still produces
+the original indexed framebuffer; SDL3 presents it with nearest texture sampling
+and letterboxing. Quake's mixer feeds a locked SDL3 audio stream in signed 16-bit
+stereo at the chosen mixer rate; SDL converts it to the device format. Focus loss
+pauses playback and clears queued stream data. Window/input/audio code is ready
+for the gameplay renderer integration, but the standalone viewer still has its
+own entry point and camera loop.
+
+The playable Options menu has a persistent three-choice Renderer selector:
+Software (0), Classic GPU (1), and Enhanced (2), stored in `lq_renderer`.
+Classic GPU preserves GLQuake-style baked lighting through the Metal/Vulkan
+backend; Enhanced is the subsequent Tenebrae-inspired lighting/material path.
+Left/right cycle both ways and Enter advances. The menu explicitly identifies
+GPU gameplay integration as pending and marks preferences as restart-required.
+Software is currently the operational gameplay renderer. Phase 3 will connect
+Classic GPU first, keeping Software available alongside it; enhanced rendering
+will build on that playable GPU baseline.
 
 ## Renderer boundary and ownership
 
@@ -76,7 +89,7 @@ code's minimum API requirement.
 
 ```sh
 brew install sdl3
-cmake -S . -B build-gpu -DCMAKE_BUILD_TYPE=Debug -DLQ_BUILD_GPU=ON -DCMAKE_PREFIX_PATH="/opt/homebrew/opt/sdl3;/opt/homebrew/opt/sdl2"
+cmake -S . -B build-gpu -DCMAKE_BUILD_TYPE=Debug -DLQ_BUILD_GPU=ON -DCMAKE_PREFIX_PATH=/opt/homebrew/opt/sdl3
 cmake --build build-gpu --parallel 10
 ./build-gpu/luminousquake-gpu -basedir "$PWD/quake-complete/Quake" -map e1m1
 ```
@@ -90,7 +103,7 @@ camera/capture, add `--fixed-camera --run-seconds 4 --screenshot /tmp/quake-gpu.
 The viewer reads game assets and writes only an explicitly requested screenshot;
 it does not write configuration, saves or demos into the source installation.
 
-Build without the SDL2 playable client using `-DLQ_BUILD_CLIENT=OFF`; build without
+Build without the playable client using `-DLQ_BUILD_CLIENT=OFF`; build without
 all windowing libraries using `-DLQ_BUILD_CLIENT=OFF -DLQ_BUILD_GPU=OFF`.
 Windows/Linux require an SDL3 development package or source build; pass its
 installation prefix to CMake. The CI Vulkan job pins official SDL3 3.4.18.
@@ -108,6 +121,15 @@ cross-compiles to Metal 2.1 source. Resource sets follow SDL3's stage-specific
 binding conventions. No shader compiler or Qt dependency exists at runtime.
 
 ## Validation and limits
+
+October 14 platform-migration checkpoint: the SDL3 software client passes all
+13 existing tests in Debug and ASan/UBSan builds. The combined software/GPU
+configuration passes 17 tests, including native Metal readback. A native platform
+run verifies startup keyboard focus, relative mouse math, text/modifier handling,
+fullscreen enter/exit, audio restart and frame capture. The isolated E1M1
+movement/attack, save/load and demo record/playback smoke passes in both Debug
+and the sanitizer build. The Windows/Linux CI definitions now build the pinned
+SDL3 SDK for the playable client as well as the viewer; those jobs remain unrun.
 
 - Asset-free native GPU test draws a near red triangle before a far blue wall,
   checks palette colours, image orientation and depth occlusion in actual
@@ -140,7 +162,7 @@ is an explicit failure for the requested GPU test, not a claimed pass.
 
 ## Next integration work
 
-1. Move the playable platform layer to SDL3 and connect renderer choice/lifecycle
+1. Connect renderer choice/lifecycle through the migrated SDL3 playable platform
    to the existing engine, including clean map transitions and video restart.
 2. Submit animated MDL entities, brush entities, sprites, particles and UI through
    explicit renderer-facing data, retaining the software comparison path.

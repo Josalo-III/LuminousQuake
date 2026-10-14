@@ -62,6 +62,8 @@ static void Framebuffer(int width, int height)
         SDL_DestroyTexture(next);
         Sys_Error("Cannot create software framebuffer: %s", SDL_GetError());
     }
+    SDL_SetTextureScaleMode(next, SDL_SCALEMODE_NEAREST);
+    SDL_SetTextureBlendMode(next, SDL_BLENDMODE_NONE);
     if (surface_cache) D_FlushCaches();
     free(vid.buffer); free(d_pzbuffer); free(pixels); free(surface_cache);
     SDL_DestroyTexture(texture);
@@ -75,7 +77,7 @@ static void Framebuffer(int width, int height)
     vid.colormap = host_colormap;
     vid.fullbright = host_colormap ? 256 - LittleLong(*((int *)host_colormap + 2048)) : 256;
     D_InitCaches(surface_cache, cache_size);
-    SDL_RenderSetLogicalSize(renderer, width, height);
+    SDL_SetRenderLogicalPresentation(renderer, width, height, SDL_LOGICAL_PRESENTATION_LETTERBOX);
     direct_active = false;
     Con_Printf("Software framebuffer: %dx%d\n", width, height);
 }
@@ -93,10 +95,11 @@ void VID_ShiftPalette(unsigned char *palette) { VID_SetPalette(palette); }
 
 static void Fullscreen(void)
 {
-    if (SDL_SetWindowFullscreen(window, vid_fullscreen.value ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0)) {
+    if (!SDL_SetWindowFullscreen(window, vid_fullscreen.value != 0)) {
         Con_Printf("Fullscreen change failed: %s\n", SDL_GetError());
-        Cvar_SetValue("vid_fullscreen", !!(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN_DESKTOP));
-    }
+        Cvar_SetValue("vid_fullscreen", !!(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
+    } else if (!SDL_SyncWindow(window))
+        Con_Printf("Fullscreen transition failed: %s\n", SDL_GetError());
 }
 static void ToggleFullscreen(void)
 {
@@ -112,16 +115,15 @@ static void Restart(void)
         Sys_Error("Invalid vid_width/vid_height for software renderer");
     Framebuffer((int)vid_width.value, (int)vid_height.value);
     Fullscreen();
-    if (SDL_RenderSetVSync(renderer, vid_vsync.value != 0))
+    if (!SDL_SetRenderVSync(renderer, vid_vsync.value != 0))
         Con_Printf("VSync setting unavailable: %s\n", SDL_GetError());
     LQ_UpdateCapture();
 }
 
 void VID_Init(unsigned char *palette)
 {
-    SDL_RendererInfo info;
     int width, height, win_width, win_height;
-    Uint32 flags;
+    SDL_WindowFlags flags;
     if (window) return;
     if (!cvars_registered) {
         Cvar_RegisterVariable(&vid_width); Cvar_RegisterVariable(&vid_height);
@@ -137,25 +139,30 @@ void VID_Init(unsigned char *palette)
     if (COM_CheckParm("-fullscreen")) Cvar_SetValue("vid_fullscreen", 1);
     if (COM_CheckParm("-window")) Cvar_SetValue("vid_fullscreen", 0);
     SDL_SetMainReady();
-    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
-    SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_SCALING, "0");
-    if (SDL_InitSubSystem(SDL_INIT_VIDEO)) Sys_Error("SDL video initialization failed: %s", SDL_GetError());
-    flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
-    if (vid_fullscreen.value) flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
-    window = SDL_CreateWindow("LuminousQuake", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        win_width, win_height, flags);
+    if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) Sys_Error("SDL video initialization failed: %s", SDL_GetError());
+    flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    if (vid_fullscreen.value) flags |= SDL_WINDOW_FULLSCREEN;
+    window = SDL_CreateWindow("LuminousQuake", win_width, win_height, flags);
     if (!window) Sys_Error("SDL window creation failed: %s", SDL_GetError());
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED |
-        (vid_vsync.value ? SDL_RENDERER_PRESENTVSYNC : 0));
-    if (!renderer) renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
+    SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    renderer = SDL_CreateRenderer(window, NULL);
+    if (!renderer) renderer = SDL_CreateRenderer(window, "software");
     if (!renderer) Sys_Error("SDL renderer creation failed: %s", SDL_GetError());
-    SDL_GetRendererInfo(renderer, &info);
-    Con_Printf("SDL presentation: %s\n", info.name);
+    SDL_SetRenderVSync(renderer, vid_vsync.value != 0);
+    Con_Printf("SDL3 presentation: %s\n", SDL_GetRendererName(renderer));
     Cvar_SetValue("vid_width", width); Cvar_SetValue("vid_height", height);
     Framebuffer(width, height);
     VID_SetPalette(palette);
+#ifdef __APPLE__
+    /* A visible Cocoa window is not necessarily an active application when
+     * launched as a Terminal executable. SDL's Cocoa RaiseWindow activates
+     * the application and makes this window key. Do this only at startup so
+     * switching to another application continues to release input normally. */
+    SDL_RaiseWindow(window);
+    SDL_PumpEvents();
+#endif
     LQ_SetFocus((SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0);
-    SDL_StartTextInput();
+    SDL_StartTextInput(window);
 }
 void VID_Update(vrect_t *rects)
 {
@@ -163,33 +170,32 @@ void VID_Update(vrect_t *rects)
     (void)rects;
     if (!renderer) return;
     for (i = 0; i < count; ++i) pixels[i] = d_8to24table[vid.buffer[i]];
-    if (SDL_UpdateTexture(texture, NULL, pixels, (int)vid.width * sizeof(*pixels)))
+    if (!SDL_UpdateTexture(texture, NULL, pixels, (int)vid.width * sizeof(*pixels)))
         Sys_Error("SDL texture update failed: %s", SDL_GetError());
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
-    SDL_RenderCopy(renderer, texture, NULL, NULL);
+    SDL_RenderTexture(renderer, texture, NULL, NULL);
     SDL_RenderPresent(renderer);
 }
 qboolean LQ_SaveFrame(const char *path)
 {
     SDL_Surface *surface;
-    int width, height, result;
-    if (!renderer || SDL_GetRendererOutputSize(renderer, &width, &height)) return false;
-    surface = SDL_CreateRGBSurfaceWithFormat(0, width, height, 32, SDL_PIXELFORMAT_ARGB8888);
-    if (!surface) return false;
+    qboolean result;
+    if (!renderer) return false;
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    SDL_RenderClear(renderer); SDL_RenderCopy(renderer, texture, NULL, NULL);
-    result = SDL_RenderReadPixels(renderer, NULL, surface->format->format, surface->pixels, surface->pitch);
-    if (!result) result = SDL_SaveBMP(surface, path);
-    SDL_FreeSurface(surface); SDL_RenderPresent(renderer);
-    return result == 0;
+    SDL_RenderClear(renderer); SDL_RenderTexture(renderer, texture, NULL, NULL);
+    surface = SDL_RenderReadPixels(renderer, NULL);
+    if (!surface) return false;
+    result = SDL_SaveBMP(surface, path);
+    SDL_DestroySurface(surface); SDL_RenderPresent(renderer);
+    return result;
 }
 void VID_Shutdown(void)
 {
     if (!window && !renderer) return;
     IN_ClearStates();
-    SDL_SetRelativeMouseMode(SDL_FALSE);
-    SDL_StopTextInput();
+    SDL_SetWindowRelativeMouseMode(window, false);
+    SDL_StopTextInput(window);
     if (surface_cache) D_FlushCaches();
     free(vid.buffer); free(d_pzbuffer); free(pixels); free(surface_cache);
     SDL_DestroyTexture(texture); SDL_DestroyRenderer(renderer); SDL_DestroyWindow(window);

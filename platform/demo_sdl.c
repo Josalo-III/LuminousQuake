@@ -165,7 +165,7 @@ static void KeyEvent(SDL_Event *event, Uint32 type, SDL_Scancode scan, SDL_Keyco
 {
     memset(event, 0, sizeof(*event)); event->type = type;
     event->key.windowID = SDL_GetWindowID(LQ_SDLWindow());
-    event->key.keysym.scancode = scan; event->key.keysym.sym = symbol;
+    event->key.scancode = scan; event->key.key = symbol;
     LQ_HandleEvent(event);
 }
 static int TestPlatform(qboolean no_audio)
@@ -174,14 +174,25 @@ static int TestPlatform(qboolean no_audio)
     int saved_width = vid.width, saved_height = vid.height;
     size_t bytes; byte *output;
     extern qboolean keydown[256];
+    if (COM_CheckParm("--test-startup-focus")) {
+        Uint64 deadline = SDL_GetTicks() + 1000;
+        do {
+            LQ_PumpEvents();
+            if (SDL_GetKeyboardFocus() == LQ_SDLWindow() && LQ_HasFocus()) break;
+            SDL_Delay(10);
+        } while (SDL_GetTicks() < deadline);
+        VERIFY(SDL_GetKeyboardFocus() == LQ_SDLWindow());
+        VERIFY(LQ_HasFocus());
+        puts("PASS native startup keyboard focus (no synthetic focus event)");
+    }
     LQ_PumpEvents(); LQ_SetFocus(true);
     { float old_yaw = cl.viewangles[YAW];
       SDL_Event motion;
-      memset(&motion, 0, sizeof(motion)); motion.type = SDL_MOUSEMOTION;
+      memset(&motion, 0, sizeof(motion)); motion.type = SDL_EVENT_MOUSE_MOTION;
       motion.motion.windowID = SDL_GetWindowID(LQ_SDLWindow());
       motion.motion.xrel = 100; motion.motion.yrel = -10000;
       usercmd_t movement = {0};
-      if (SDL_GetRelativeMouseMode()) {
+      if (SDL_GetWindowRelativeMouseMode(LQ_SDLWindow())) {
           VERIFY(SDL_PushEvent(&motion) == 1); LQ_PumpEvents(); IN_Move(&movement);
       } else {
           puts("SKIP OS relative capture: driver unavailable; checking Quake mouse-delta math");
@@ -190,44 +201,43 @@ static int TestPlatform(qboolean no_audio)
       VERIFY(fabsf(cl.viewangles[YAW] - old_yaw + 100 * sensitivity.value * m_yaw.value) < 0.001f);
       VERIFY(cl.viewangles[PITCH] == -70); }
     Key_SetBinding('w', "+forward");
-    KeyEvent(&event, SDL_KEYDOWN, SDL_SCANCODE_W, SDLK_w); Cbuf_Execute();
+    KeyEvent(&event, SDL_EVENT_KEY_DOWN, SDL_SCANCODE_W, SDLK_W); Cbuf_Execute();
     VERIFY(in_forward.state & 1);
-    memset(&event, 0, sizeof(event)); event.type = SDL_WINDOWEVENT;
+    memset(&event, 0, sizeof(event)); event.type = SDL_EVENT_WINDOW_FOCUS_LOST;
     event.window.windowID = SDL_GetWindowID(LQ_SDLWindow());
-    event.window.event = SDL_WINDOWEVENT_FOCUS_LOST;
     LQ_HandleEvent(&event); Cbuf_Execute();
-    VERIFY(!(in_forward.state & 1)); VERIFY(!keydown['w']); VERIFY(!SDL_GetRelativeMouseMode());
-    event.window.event = SDL_WINDOWEVENT_FOCUS_GAINED; LQ_HandleEvent(&event);
+    VERIFY(!(in_forward.state & 1)); VERIFY(!keydown['w']); VERIFY(!SDL_GetWindowRelativeMouseMode(LQ_SDLWindow()));
+    event.type = SDL_EVENT_WINDOW_FOCUS_GAINED; LQ_HandleEvent(&event);
     key_dest = key_console; LQ_UpdateCapture();
-    KeyEvent(&event, SDL_KEYDOWN, SDL_SCANCODE_A, SDLK_a);
-    memset(&event, 0, sizeof(event)); event.type = SDL_TEXTINPUT;
-    strcpy(event.text.text, "A!"); LQ_HandleEvent(&event);
+    KeyEvent(&event, SDL_EVENT_KEY_DOWN, SDL_SCANCODE_A, SDLK_A);
+    memset(&event, 0, sizeof(event)); event.type = SDL_EVENT_TEXT_INPUT;
+    event.text.text = "A!"; LQ_HandleEvent(&event);
     VERIFY(!strcmp(key_lines[edit_line] + 1, "A!"));
-    KeyEvent(&event, SDL_KEYUP, SDL_SCANCODE_A, SDLK_a);
-    KeyEvent(&event, SDL_KEYDOWN, SDL_SCANCODE_LSHIFT, SDLK_LSHIFT);
-    KeyEvent(&event, SDL_KEYDOWN, SDL_SCANCODE_RSHIFT, SDLK_RSHIFT);
-    KeyEvent(&event, SDL_KEYUP, SDL_SCANCODE_LSHIFT, SDLK_LSHIFT);
+    KeyEvent(&event, SDL_EVENT_KEY_UP, SDL_SCANCODE_A, SDLK_A);
+    KeyEvent(&event, SDL_EVENT_KEY_DOWN, SDL_SCANCODE_LSHIFT, SDLK_LSHIFT);
+    KeyEvent(&event, SDL_EVENT_KEY_DOWN, SDL_SCANCODE_RSHIFT, SDLK_RSHIFT);
+    KeyEvent(&event, SDL_EVENT_KEY_UP, SDL_SCANCODE_LSHIFT, SDLK_LSHIFT);
     VERIFY(keydown[K_SHIFT]);
-    KeyEvent(&event, SDL_KEYUP, SDL_SCANCODE_RSHIFT, SDLK_RSHIFT); VERIFY(!keydown[K_SHIFT]);
+    KeyEvent(&event, SDL_EVENT_KEY_UP, SDL_SCANCODE_RSHIFT, SDLK_RSHIFT); VERIFY(!keydown[K_SHIFT]);
     key_dest = key_game;
     SDL_SetWindowSize(LQ_SDLWindow(), 800, 600); LQ_PumpEvents();
     VERIFY(vid.width == (unsigned)saved_width && vid.height == (unsigned)saved_height);
     if (COM_CheckParm("--test-fullscreen")) {
         Cbuf_AddText("vid_togglefullscreen\n"); Cbuf_Execute(); LQ_PumpEvents();
-        VERIFY(SDL_GetWindowFlags(LQ_SDLWindow()) & SDL_WINDOW_FULLSCREEN_DESKTOP);
+        VERIFY(SDL_GetWindowFlags(LQ_SDLWindow()) & SDL_WINDOW_FULLSCREEN);
         Cbuf_AddText("vid_togglefullscreen\n"); Cbuf_Execute(); LQ_PumpEvents();
-        VERIFY(!(SDL_GetWindowFlags(LQ_SDLWindow()) & SDL_WINDOW_FULLSCREEN_DESKTOP));
+        VERIFY(!(SDL_GetWindowFlags(LQ_SDLWindow()) & SDL_WINDOW_FULLSCREEN));
         puts("PASS native fullscreen enter/exit");
     }
     memset(vid.buffer, 0, vid.width * vid.height);
     Draw_Fill(0, 0, vid.width, vid.height, 150); VID_Update(NULL);
     { SDL_Surface *capture; char path[128];
-      snprintf(path, sizeof(path), "luminousquake-sdl-%u.bmp", SDL_GetTicks());
+      snprintf(path, sizeof(path), "luminousquake-sdl-%llu.bmp", (unsigned long long)SDL_GetTicks());
       VERIFY(LQ_SaveFrame(path)); capture = SDL_LoadBMP(path); VERIFY(capture != NULL);
-      SDL_Surface *rgba = SDL_ConvertSurfaceFormat(capture, SDL_PIXELFORMAT_ARGB8888, 0);
+      SDL_Surface *rgba = SDL_ConvertSurface(capture, SDL_PIXELFORMAT_ARGB8888);
       VERIFY(rgba != NULL);
       VERIFY(((uint32_t *)rgba->pixels)[rgba->w / 2 + rgba->h / 2 * (rgba->pitch / 4)] == d_8to24table[150]);
-      SDL_FreeSurface(rgba); SDL_FreeSurface(capture); remove(path); }
+      SDL_DestroySurface(rgba); SDL_DestroySurface(capture); remove(path); }
     VERIFY(d_8to24table[150] == (UINT32_C(0xff000000) | (124u << 16) | (79u << 8) | 34u));
     { byte palette[768]; Palette(palette); palette[450] = 5; palette[451] = 7; palette[452] = 9;
       VID_ShiftPalette(palette); VID_Update(NULL);
@@ -275,7 +285,7 @@ static int TestPlatform(qboolean no_audio)
         LQ_AudioFocus(true); before = LQ_AudioFrames(); SDL_Delay(70);
         VERIFY(LQ_AudioFrames() > before);
     }
-    memset(&event, 0, sizeof(event)); event.type = SDL_QUIT;
+    memset(&event, 0, sizeof(event)); event.type = SDL_EVENT_QUIT;
     LQ_HandleEvent(&event); VERIFY(LQ_QuitRequested()); LQ_ResetQuit();
     puts("PASS SDL focus/key releases, text/modifiers, resize, palette, video restart, cache alignment, audio fallback/mixer/ring, quit");
     return 0;

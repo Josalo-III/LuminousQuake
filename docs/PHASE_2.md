@@ -4,6 +4,13 @@ Implemented October 13, 2026. Local validation uses native arm64 Apple Clang,
 SDL2 2.32.10 from Homebrew, and the M1 Max Mac. Windows/Linux builds are
 configured in CI but have not run against a project-owned remote.
 
+October 14 follow-up: the playable platform layer has migrated to SDL3 3.2+,
+locally using native arm64 SDL3 3.4.16. The SDL2 implementation described below
+is its historical starting point. Current audio uses a locked SDL3 stream and
+retains Quake's mixer/ring clock; SDL handles output-device conversion. Text
+input, mouse capture, nearest framebuffer presentation and focus release are
+preserved. Fullscreen commands synchronize SDL3's asynchronous transition.
+
 ## Implementation
 
 - Three executables: SDL `luminousquake`, null-backend `luminousquake-headless`,
@@ -14,6 +21,11 @@ configured in CI but have not run against a project-owned remote.
   backend yet. Nearest sampling and aspect-preserving letterboxing are retained.
 - Independent window/render dimensions, HiDPI window support, desktop fullscreen,
   configurable vsync, framebuffer/cache recreation, palette effects and disc icon.
+- macOS Terminal launches explicitly activate the window once through
+  `SDL_RaiseWindow`, then pump native events before reading its initial focus.
+  Normal focus loss still releases capture and keys. An opt-in native check,
+  `./build/luminousquake --platform-test --test-startup-focus`, verifies actual
+  keyboard focus before the platform test sends any synthetic focus events.
 - ioquake3-derived SDL key translation/capture handling adapted to Quake: separate
   text events, physical number-row bindings, relative mouse movement, existing
   mouse sensitivity/filter/strafe/mlook math, held-modifier counts and key releases
