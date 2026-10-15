@@ -69,13 +69,47 @@ static int BounceRoomTest(void)
         const uint8_t *texel = center + (size_t)wall * (GRID + 2) * 4;
         CHECK(texel[0] > 140 && texel[0] < 215 && texel[0] == texel[1] && abs((int)texel[0] - center[0]) <= 3);
     }
+    /* Probes: at 0.4 reflectance a wall's direct exitance runs ~60-94 and one
+     * bounce adds ~30, so the centre probe, which sees every wall, measures
+     * ~105 in all six directions. */
+    for (int wall = 0; wall < 6; ++wall)
+        room.face_samples[wall].albedo[0] = room.face_samples[wall].albedo[1] = room.face_samples[wall].albedo[2] = 0.4f;
+    CHECK(LQ_SceneComputeBounce(&room, 128, NULL, error, sizeof(error)));
+    CHECK(room.probe_static && room.probe_styles[0] == 5 && room.probe_styles[1] == 255);
+    uint32_t px = room.probe_size[0] / 2, py = room.probe_size[1] / 2, pz = room.probe_size[2] / 2;
+    float probe_center[3] = {room.probe_origin[0] + px*room.probe_spacing, room.probe_origin[1] + py*room.probe_spacing,
+        room.probe_origin[2] + pz*room.probe_spacing};
+    CHECK(fabsf(probe_center[0]) < 1 && fabsf(probe_center[1]) < 1 && fabsf(probe_center[2]) < 1);
+    int first_value = -1;
+    for (uint32_t d = 0; d < 6; ++d) {
+        const uint8_t *texel = room.probe_static + ((((size_t)d * room.probe_size[2] + pz) * room.probe_size[1] + py) *
+            room.probe_size[0] + px) * 4;
+        if (first_value < 0) first_value = texel[0];
+        CHECK(texel[0] > 85 && texel[0] < 125 && abs((int)texel[0] - first_value) <= 6);
+    }
+    /* Gameplay light: a muzzle-flash-sized light in the room bounces into
+     * probes near it and nowhere when absent. */
+    size_t dynamic_bytes = (size_t)room.probe_size[0] * room.probe_size[1] * room.probe_size[2] * 6 * 4;
+    uint8_t *dynamic = malloc(dynamic_bytes);
+    CHECK(dynamic);
+    lq_runtime_light gameplay[LQ_MAX_RUNTIME_LIGHTS] = {0};
+    static const float warm[3] = {1, 1, 1};
+    float flash[3] = {0, 0, 0};
+    LQ_DynamicRuntimeLight(&gameplay[LQ_MAX_RUNTIME_LIGHTS-1], flash, 220, warm, 4, 1);
+    CHECK(!LQ_SceneDynamicProbes(&room, gameplay, LQ_MAX_RUNTIME_LIGHTS-1, 16, NULL, dynamic));
+    CHECK(LQ_SceneDynamicProbes(&room, gameplay, LQ_MAX_RUNTIME_LIGHTS, 16, NULL, dynamic));
+    const uint8_t *bounced = dynamic + (((size_t)pz * room.probe_size[1] + py) * room.probe_size[0] + px) * 4;
+    /* Walls at 128-222 units get (220 - d) * incidence, at most 92; at 0.4
+     * reflectance the centre receives roughly a fifth of that. */
+    CHECK(bounced[0] > 8 && bounced[0] < 40 && bounced[0] == bounced[1]);
+    free(dynamic);
     /* Black walls reflect nothing. */
     for (int wall = 0; wall < 6; ++wall) memset(room.face_samples[wall].albedo, 0, sizeof(room.face_samples[wall].albedo));
     CHECK(LQ_SceneComputeBounce(&room, 64, NULL, error, sizeof(error)));
     center = room.bounce.pixels + ((size_t)(1 + GRID/2) * room.bounce.width + 1 + GRID/2) * 4;
     CHECK(room.draws[0].bounce_styles[0] == 255 && center[0] == 0);
     LQ_SceneFree(&room);
-    puts("PASS static bounce gather: closed room hits, cosine weighting, style layers and albedo");
+    puts("PASS static bounce and probe gather: closed room hits, cosine weighting, style layers, albedo and gameplay-light probes");
     return 0;
 }
 int main(void)

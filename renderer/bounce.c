@@ -23,6 +23,7 @@ typedef struct {
 } bounce_context;
 
 static float Dot(const float a[3], const float b[3]) { return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
+static void Serial(size_t count, size_t grain, lq_range_fn function, void *context);
 static int Blocking(const lq_scene *s, int32_t node)
 {
     uint32_t leaf = (uint32_t)(-(node + 1));
@@ -189,16 +190,17 @@ static uint32_t Hash(uint32_t x)
 {
     x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x;
 }
-/* Bilinear exitance at a hit point for one of the hit face's style slots. */
-static void HitExitance(const bounce_context *c, uint32_t face, const float hit[3], int slot, float out[3])
+/* Bilinear per-sample value at a hit point for one of a face's style slots. */
+static void HitValue(const lq_scene *s, const float (*values)[FACE_STYLES][3], uint32_t face,
+    const float hit[3], int slot, float out[3])
 {
-    const lq_face_samples *grid = &c->scene->face_samples[face];
+    const lq_face_samples *grid = &s->face_samples[face];
     float u = (Dot(hit, grid->s) + grid->s[3] - grid->mins[0]) / 16.0f;
     float v = (Dot(hit, grid->t) + grid->t[3] - grid->mins[1]) / 16.0f;
     u = fminf(fmaxf(u, 0), (float)(grid->width - 1)); v = fminf(fmaxf(v, 0), (float)(grid->height - 1));
     int x = (int)u, y = (int)v, x1 = x + 1 < grid->width ? x + 1 : x, y1 = y + 1 < grid->height ? y + 1 : y;
     float fx = u - x, fy = v - y;
-    const float (*e)[FACE_STYLES][3] = c->emit + grid->first_sample;
+    const float (*e)[FACE_STYLES][3] = values + grid->first_sample;
     for (int k = 0; k < 3; ++k) {
         float top = e[y*grid->width + x][slot][k] * (1-fx) + e[y*grid->width + x1][slot][k] * fx;
         float bottom = e[y1*grid->width + x][slot][k] * (1-fx) + e[y1*grid->width + x1][slot][k] * fx;
@@ -259,7 +261,7 @@ static void GatherFaces(void *opaque, size_t begin, size_t end)
                     uint32_t at = Candidate(candidates, &candidate_count, style);
                     if (at == UINT32_MAX) continue;
                     float exitance[3];
-                    HitExitance(c, face, hit, slot, exitance);
+                    HitValue(s, (const float (*)[FACE_STYLES][3])c->emit, face, hit, slot, exitance);
                     for (int k = 0; k < 3; ++k) { accumulate[i][at][k] += exitance[k]; candidates[at].energy += exitance[k]; }
                 }
             }
@@ -289,6 +291,287 @@ static void GatherFaces(void *opaque, size_t begin, size_t end)
         }
     }
     free(accumulate);
+}
+/* ---- Irradiance probes ---------------------------------------------------- */
+#define PROBE_SPACING 64.0f
+#define PROBE_LIMIT 262144u
+#define PROBE_RAYS 96u
+typedef struct {
+    const lq_scene *scene;
+    const bounce_context *bounce; /* static: face exitance and bounce */
+    uint8_t layer_of_style[256];
+    const lq_runtime_light *lights[LQ_MAX_DYNAMIC_LIGHTS]; /* dynamic */
+    uint32_t light_count, rays, box_min[3], box_size[3];
+    uint8_t *output;
+    uint32_t layers;
+} probe_context;
+static void ProbePosition(const lq_scene *s, uint32_t x, uint32_t y, uint32_t z, float out[3])
+{
+    out[0] = s->probe_origin[0] + x * s->probe_spacing;
+    out[1] = s->probe_origin[1] + y * s->probe_spacing;
+    out[2] = s->probe_origin[2] + z * s->probe_spacing;
+}
+/* Even sphere coverage (Fibonacci lattice), rotated per probe about Z. */
+static void SphereDirection(uint32_t i, uint32_t count, float rotation, float out[3])
+{
+    float z = 1 - (2.0f * i + 1) / count, radius = sqrtf(fmaxf(1 - z*z, 0));
+    float angle = i * 2.39996323f + rotation;
+    out[0] = radius * cosf(angle); out[1] = radius * sinf(angle); out[2] = z;
+}
+/* Light arriving from direction d adds irradiance to the cube faces it faces. */
+static void CubeAdd(float cube[6][3], const float d[3], const float value[3])
+{
+    for (int axis = 0; axis < 3; ++axis) {
+        float weight = fabsf(d[axis]);
+        float *face = cube[axis*2 + (d[axis] < 0)];
+        for (int k = 0; k < 3; ++k) face[k] += value[k] * weight;
+    }
+}
+static void StoreCube(const probe_context *c, uint32_t x, uint32_t y, uint32_t z, uint32_t layer,
+    float cube[6][3], float scale)
+{
+    const lq_scene *s = c->scene;
+    for (uint32_t d = 0; d < 6; ++d) {
+        size_t depth = (size_t)(layer*6 + d) * s->probe_size[2] + z;
+        uint8_t *texel = c->output + ((depth * s->probe_size[1] + y) * s->probe_size[0] + x) * 4;
+        for (int k = 0; k < 3; ++k) texel[k] = (uint8_t)fminf(fmaxf(cube[d][k] * scale + 0.5f, 0), 255);
+        texel[3] = 255;
+    }
+}
+static void StaticProbes(void *opaque, size_t begin, size_t end)
+{
+    const probe_context *c = opaque;
+    const lq_scene *s = c->scene;
+    const bounce_context *b = c->bounce;
+    for (size_t p = begin; p < end; ++p) {
+        if (!s->probe_valid[p]) continue;
+        uint32_t x = (uint32_t)(p % s->probe_size[0]), y = (uint32_t)(p / s->probe_size[0] % s->probe_size[1]);
+        uint32_t z = (uint32_t)(p / ((size_t)s->probe_size[0] * s->probe_size[1]));
+        float origin[3], cube[FACE_STYLES][6][3];
+        memset(cube, 0, sizeof(cube));
+        ProbePosition(s, x, y, z, origin);
+        float rotation = (Hash((uint32_t)p) & 0xffff) / 65536.0f * 6.2831853f;
+        for (uint32_t r = 0; r < c->rays; ++r) {
+            float d[3], target[3], hit[3]; uint32_t face;
+            SphereDirection(r, c->rays, rotation, d);
+            for (int k = 0; k < 3; ++k) target[k] = origin[k] + d[k] * RAY_LENGTH;
+            if (TraceFace(s, 0, origin, target, d, &face, hit, 0) != 1) continue;
+            const float *albedo = s->face_samples[face].albedo;
+            for (int slot = 0; slot < FACE_STYLES; ++slot) {
+                float value[3];
+                uint8_t style = b->emit_styles[face][slot], layer = style == 255 ? 255 : c->layer_of_style[style];
+                if (layer != 255) {
+                    HitValue(s, (const float (*)[FACE_STYLES][3])b->emit, face, hit, slot, value);
+                    CubeAdd(cube[layer], d, value);
+                }
+                style = b->gather_styles[face][slot]; layer = style == 255 ? 255 : c->layer_of_style[style];
+                if (layer != 255) {
+                    HitValue(s, (const float (*)[FACE_STYLES][3])b->gather, face, hit, slot, value);
+                    for (int k = 0; k < 3; ++k) value[k] *= albedo[k];
+                    CubeAdd(cube[layer], d, value);
+                }
+            }
+        }
+        /* Irradiance E(n) = (4/N) sum M max(0, d.n) for Lambertian exitance M. */
+        float scale = 4.0f / c->rays * s->bounce_scale;
+        for (uint32_t layer = 0; layer < c->layers; ++layer) StoreCube(c, x, y, z, layer, cube[layer], scale);
+    }
+}
+/* Probes inside solid take the mean of filled neighbours, so trilinear
+ * filtering near walls does not pull in black. */
+static void DilateProbes(const lq_scene *s, uint8_t *texels, uint32_t blocks, uint8_t *filled)
+{
+    uint32_t nx = s->probe_size[0], ny = s->probe_size[1], nz = s->probe_size[2];
+    size_t count = (size_t)nx * ny * nz;
+    for (int pass = 0; pass < 4; ++pass) {
+        uint8_t *next = malloc(count);
+        if (!next) return;
+        memcpy(next, filled, count);
+        for (size_t p = 0; p < count; ++p) {
+            if (filled[p]) continue;
+            int x = (int)(p % nx), y = (int)(p / nx % ny), z = (int)(p / ((size_t)nx * ny));
+            static const int offsets[6][3] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+            size_t neighbours[6]; int found = 0;
+            for (int i = 0; i < 6; ++i) {
+                int a = x + offsets[i][0], b = y + offsets[i][1], c = z + offsets[i][2];
+                if (a < 0 || b < 0 || c < 0 || a >= (int)nx || b >= (int)ny || c >= (int)nz) continue;
+                size_t q = (size_t)a + (size_t)nx * ((size_t)b + (size_t)ny * c);
+                if (filled[q]) neighbours[found++] = q;
+            }
+            if (!found) continue;
+            for (uint32_t block = 0; block < blocks; ++block) {
+                uint8_t *target = texels + (((size_t)block * nz + z) * ny * nx + (size_t)y * nx + x) * 4;
+                for (int k = 0; k < 4; ++k) {
+                    unsigned sum = 0;
+                    for (int i = 0; i < found; ++i) {
+                        size_t q = neighbours[i];
+                        uint32_t qz = (uint32_t)(q / ((size_t)nx * ny)), qy = (uint32_t)(q / nx % ny), qx = (uint32_t)(q % nx);
+                        sum += texels[(((size_t)block * nz + qz) * ny * nx + (size_t)qy * nx + qx) * 4 + k];
+                    }
+                    target[k] = (uint8_t)(sum / found);
+                }
+            }
+            next[p] = 1;
+        }
+        memcpy(filled, next, count); free(next);
+    }
+}
+/* Map-wide probe layers: style 0 first, then the three strongest other
+ * styles. Unchosen animated styles (below 32) fold into style 0; unchosen
+ * switchable styles are left out rather than shown while switched off. */
+static uint32_t ProbeStyles(const bounce_context *c, uint8_t styles[FACE_STYLES], uint8_t layer_of_style[256])
+{
+    const lq_scene *s = c->scene;
+    double energy[256] = {0};
+    for (uint32_t f = 0; f < s->draw_count; ++f) {
+        const lq_face_samples *grid = &s->face_samples[f];
+        for (uint32_t i = 0; grid->width && i < (uint32_t)grid->width * grid->height; ++i)
+            for (int slot = 0; slot < FACE_STYLES; ++slot) {
+                const float *e = c->emit[grid->first_sample + i][slot], *g = c->gather[grid->first_sample + i][slot];
+                if (c->emit_styles[f][slot] != 255) energy[c->emit_styles[f][slot]] += e[0] + e[1] + e[2];
+                if (c->gather_styles[f][slot] != 255) energy[c->gather_styles[f][slot]] += g[0] + g[1] + g[2];
+            }
+    }
+    uint32_t count = 0;
+    memset(styles, 255, FACE_STYLES); memset(layer_of_style, 255, 256);
+    if (energy[0] > 0) { styles[count] = 0; layer_of_style[0] = (uint8_t)count++; }
+    while (count < FACE_STYLES) {
+        int best = -1;
+        for (int style = 1; style < 255; ++style)
+            if (energy[style] > 0 && layer_of_style[style] == 255 && (best < 0 || energy[style] > energy[best])) best = style;
+        if (best < 0) break;
+        styles[count] = (uint8_t)best; layer_of_style[best] = (uint8_t)count++;
+    }
+    for (int style = 1; style < 32; ++style)
+        if (layer_of_style[style] == 255 && layer_of_style[0] != 255) layer_of_style[style] = layer_of_style[0];
+    return count;
+}
+static int BuildStaticProbes(lq_scene *s, const bounce_context *b, lq_range_runner run)
+{
+    float low[3] = {INFINITY, INFINITY, INFINITY}, high[3] = {-INFINITY, -INFINITY, -INFINITY};
+    for (uint32_t i = 0; i < s->vertex_count; ++i)
+        for (int k = 0; k < 3; ++k) {
+            low[k] = fminf(low[k], s->vertices[i].position[k]); high[k] = fmaxf(high[k], s->vertices[i].position[k]);
+        }
+    if (!(high[0] > low[0] && high[1] > low[1] && high[2] > low[2])) return 0;
+    float spacing = PROBE_SPACING;
+    uint32_t size[3];
+    for (;;) {
+        for (int k = 0; k < 3; ++k) size[k] = (uint32_t)ceilf((high[k] - low[k]) / spacing) + 1;
+        if ((uint64_t)size[0] * size[1] * size[2] <= PROBE_LIMIT && size[2] * 6 * FACE_STYLES <= 2048 &&
+            size[0] <= 2048 && size[1] <= 2048) break;
+        spacing *= 1.25f;
+    }
+    size_t count = (size_t)size[0] * size[1] * size[2];
+    free(s->probe_static); free(s->probe_valid);
+    s->probe_static = calloc(count * 6 * FACE_STYLES, 4); s->probe_valid = calloc(count, 1);
+    if (!s->probe_static || !s->probe_valid) return 0;
+    memcpy(s->probe_origin, low, sizeof(low)); s->probe_spacing = spacing;
+    memcpy(s->probe_size, size, sizeof(size));
+    for (size_t p = 0; p < count; ++p) {
+        float origin[3];
+        ProbePosition(s, (uint32_t)(p % size[0]), (uint32_t)(p / size[0] % size[1]), (uint32_t)(p / ((size_t)size[0] * size[1])), origin);
+        uint32_t leaf = LQ_SceneLeaf(s, origin);
+        s->probe_valid[p] = leaf < s->leaf_count && s->leaf_contents[leaf] != LQ_LEAF_SOLID && s->leaf_contents[leaf] != LQ_LEAF_SKY;
+    }
+    probe_context c = {s, b, {0}, {0}, 0, PROBE_RAYS, {0}, {0}, s->probe_static, FACE_STYLES};
+    ProbeStyles(b, s->probe_styles, c.layer_of_style);
+    run(count, 64, StaticProbes, &c);
+    uint8_t *filled = malloc(count);
+    if (filled) { memcpy(filled, s->probe_valid, count); DilateProbes(s, s->probe_static, 6 * FACE_STYLES, filled); free(filled); }
+    return 1;
+}
+/* Value of a runtime light at a distance, as the shader evaluates it. */
+static float RuntimeValue(const lq_runtime_light *light, float distance)
+{
+    float value = light->falloff[0], scaled = light->falloff[1] * distance;
+    switch ((int)(light->falloff[3] + 0.5f)) {
+    case LQ_LIGHT_LINEAR: return fmaxf(value - scaled, 0);
+    case LQ_LIGHT_INVERSE: return value * 128 / fmaxf(scaled, 1);
+    case LQ_LIGHT_INVERSE2: return value * 16384 / fmaxf(scaled * scaled, 1);
+    case LQ_LIGHT_INFINITE: return value;
+    case LQ_LIGHT_INVERSE2A: return value * 16384 / ((scaled + 128) * (scaled + 128));
+    default: return 0;
+    }
+}
+static void DynamicProbes(void *opaque, size_t begin, size_t end)
+{
+    const probe_context *c = opaque;
+    const lq_scene *s = c->scene;
+    for (size_t i = begin; i < end; ++i) {
+        uint32_t x = c->box_min[0] + (uint32_t)(i % c->box_size[0]);
+        uint32_t y = c->box_min[1] + (uint32_t)(i / c->box_size[0] % c->box_size[1]);
+        uint32_t z = c->box_min[2] + (uint32_t)(i / ((size_t)c->box_size[0] * c->box_size[1]));
+        size_t p = x + (size_t)s->probe_size[0] * (y + (size_t)s->probe_size[1] * z);
+        if (!s->probe_valid[p]) continue;
+        float origin[3], cube[6][3];
+        memset(cube, 0, sizeof(cube));
+        ProbePosition(s, x, y, z, origin);
+        int near = 0;
+        for (uint32_t l = 0; l < c->light_count; ++l) {
+            const float *at = c->lights[l]->position_radius;
+            float dx = at[0]-origin[0], dy = at[1]-origin[1], dz = at[2]-origin[2];
+            near |= dx*dx + dy*dy + dz*dz < (at[3] + s->probe_spacing) * (at[3] + s->probe_spacing);
+        }
+        if (!near) continue;
+        float rotation = (Hash((uint32_t)p ^ 0x5bd1e995u) & 0xffff) / 65536.0f * 6.2831853f;
+        for (uint32_t r = 0; r < c->rays; ++r) {
+            float d[3], target[3], hit[3]; uint32_t face;
+            SphereDirection(r, c->rays, rotation, d);
+            for (int k = 0; k < 3; ++k) target[k] = origin[k] + d[k] * RAY_LENGTH;
+            if (TraceFace(s, 0, origin, target, d, &face, hit, 0) != 1) continue;
+            const float *normal = s->vertices[s->indices[s->draws[face].first_index]].normal;
+            const float *albedo = s->face_samples[face].albedo;
+            float lifted[3] = {hit[0] + normal[0], hit[1] + normal[1], hit[2] + normal[2]};
+            for (uint32_t l = 0; l < c->light_count; ++l) {
+                const lq_runtime_light *light = c->lights[l];
+                float toward[3] = {light->position_radius[0]-hit[0], light->position_radius[1]-hit[1], light->position_radius[2]-hit[2]};
+                float distance = sqrtf(Dot(toward, toward));
+                if (distance >= light->position_radius[3] || distance < 0.001f) continue;
+                float facing = Dot(normal, toward) / distance;
+                if (facing <= 0) continue;
+                float value = RuntimeValue(light, distance) * ((1 - light->falloff[2]) + light->falloff[2] * facing) *
+                    light->color_strength[3];
+                if (value < 0.01f || !SegmentClear(s, 0, lifted, light->position_radius, 0)) continue;
+                float exitance[3];
+                for (int k = 0; k < 3; ++k) exitance[k] = value * light->color_strength[k] * albedo[k];
+                CubeAdd(cube, d, exitance);
+            }
+        }
+        StoreCube(c, x, y, z, 0, cube, 4.0f / c->rays * s->bounce_scale);
+    }
+}
+int LQ_SceneDynamicProbes(const lq_scene *s, const lq_runtime_light *lights, uint32_t count,
+    uint32_t rays, lq_range_runner run, uint8_t *output)
+{
+    if (!s || !s->probe_valid || !output || !rays) return 0;
+    size_t texels = (size_t)s->probe_size[0] * s->probe_size[1] * s->probe_size[2] * 6;
+    memset(output, 0, texels * 4);
+    probe_context c = {s, NULL, {0}, {0}, 0, rays, {0}, {0}, output, 1};
+    int64_t low[3] = {INT64_MAX, INT64_MAX, INT64_MAX}, high[3] = {INT64_MIN, INT64_MIN, INT64_MIN};
+    for (uint32_t i = 0; i < count && i < LQ_MAX_RUNTIME_LIGHTS; ++i) {
+        const lq_runtime_light *light = &lights[i];
+        if (!(light->source_index & LQ_DYNAMIC_LIGHT_SOURCE) || light->position_radius[3] <= 0 ||
+            light->color_strength[3] <= 0 || c.light_count == LQ_MAX_DYNAMIC_LIGHTS) continue;
+        c.lights[c.light_count++] = light;
+        for (int k = 0; k < 3; ++k) {
+            float reach = light->position_radius[3] + s->probe_spacing;
+            int64_t a = (int64_t)floorf((light->position_radius[k] - reach - s->probe_origin[k]) / s->probe_spacing);
+            int64_t b = (int64_t)ceilf((light->position_radius[k] + reach - s->probe_origin[k]) / s->probe_spacing);
+            if (a < low[k]) low[k] = a;
+            if (b > high[k]) high[k] = b;
+        }
+    }
+    if (!c.light_count) return 0;
+    for (int k = 0; k < 3; ++k) {
+        if (low[k] < 0) low[k] = 0;
+        if (high[k] >= (int64_t)s->probe_size[k]) high[k] = (int64_t)s->probe_size[k] - 1;
+        if (high[k] < low[k]) return 0;
+        c.box_min[k] = (uint32_t)low[k]; c.box_size[k] = (uint32_t)(high[k] - low[k] + 1);
+    }
+    if (!run) run = Serial;
+    run((size_t)c.box_size[0] * c.box_size[1] * c.box_size[2], 16, DynamicProbes, &c);
+    return 1;
 }
 static void Serial(size_t count, size_t grain, lq_range_fn function, void *context)
 { (void)grain; function(context, 0, count); }
@@ -333,6 +616,10 @@ int LQ_SceneComputeBounce(lq_scene *s, uint32_t rays, lq_range_runner run, char 
     }
     free(s->bounce.pixels);
     s->bounce = (lq_image){width, 4 * layer, 4, pixels};
+    if (!BuildStaticProbes(s, &c, run)) {
+        free(s->probe_static); free(s->probe_valid); s->probe_static = s->probe_valid = NULL;
+        memset(s->probe_size, 0, sizeof(s->probe_size));
+    }
     free(c.emit); free(c.gather); free(c.emit_styles); free(c.gather_styles);
     return 1;
 }

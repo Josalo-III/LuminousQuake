@@ -160,16 +160,58 @@ flash, the rocket in flight and its explosion lighting the corridor. An ASan
 build ran the same session without reports. Switching between Classic and
 Enhanced rebuilds the map for the new mode.
 
+## Probe grid: actors and moving-light bounce
+
+The hybrid's dynamic half is an irradiance probe grid over the world bounds,
+64 units apart. The spacing widens for very large maps, staying within 3D
+texture limits. Each probe stores an ambient cube: irradiance toward ±X, ±Y and
+±Z, in brightness units.
+
+- **Static layer.** Computed at map load right after the face bounce. Each
+  open-space probe casts 96 evenly spread rays. The surfaces they hit contribute
+  their direct exitance plus their bounce times texture color. Probes inside
+  solid copy their neighbours, so filtering near walls does not darken. Layers
+  are map-wide: style 0, then the three strongest other styles. Animated styles
+  that miss out fold into style 0; switchable ones are left out rather than shown
+  while off. On E1M3 the grid is 57×53×25 (4,525 probes in open space), adding
+  little to the 1.7 s load.
+- **Dynamic layer.** Rebuilt every frame on the worker pool, only for probes near
+  active gameplay lights. 16 rays per probe find the surfaces a rocket, muzzle
+  flash or explosion lights (with a BSP occlusion test toward the light) and
+  gather what they reflect. World surfaces and actors both sample it, so weapon
+  light bounces onto nearby walls.
+- **Actors.** MDL models (except flames, which stay fullbright emitters), the
+  view weapon and standalone ammo/health boxes carry `LQ_SURFACE_ACTOR`. In
+  Enhanced they are lit per pixel by the same runtime lights and shadow cubes as
+  the world, plus static and dynamic probe irradiance. The view weapon keeps
+  Quake's 24-brightness minimum. Classic ignores the flag and uses `shade`.
+
+The closed-room test checks probe magnitudes against hand arithmetic: a centre
+probe of about 105 in all six directions at 0.4 reflectance, and a muzzle-flash
+bounce inside its expected band. A GPU readback checks that an actor is lit by a
+runtime light in Enhanced and keeps its vertex shade in Classic.
+
+E1M1 profile while firing rockets (`lq_profile`, 7 s after warm-up, M1 Max,
+640×480):
+
+| Mode | CPU per frame | Scene preparation |
+| --- | ---: | ---: |
+| Classic | 3.6 ms | 0.5 ms |
+| Enhanced | 4.2 ms | 0.9 ms |
+
+Enhanced figures include the dynamic probes. Interactions are built only for
+visible faces, using cached bounds. GPU time is not measured.
+
 Current limits:
 
-- Actors, the view weapon, particles and moving brush models keep Classic
-  shading and do not cast Enhanced shadows. Brush-model faces in the static scene
-  are lit, and cast, at their compiled positions.
-- Bounce is static: moving lights (including weapons) and switched-light
-  geometry changes do not update it. A probe grid will cover actors and
-  dynamic bounce.
+- Actors and moving brush models do not cast Enhanced shadows. Particles and
+  sprites keep Classic shading. Brush-model faces in the static scene are lit,
+  and cast, at their compiled positions.
+- Face bounce is static. Weapon light reaches surfaces only through the probe
+  grid, which is coarser than the bounce atlas. Probes do not test visibility,
+  so light can leak through thin walls between probe cells.
 - 24 shadowed map lights per view, so lights can pop as the set changes. Bounce
-  takes 1–2 s of map load and is not cached yet.
+  and probes take 1–2 s of map load and are not cached yet.
 - PVS reach may exclude surfaces lit through water if the map was vised with
   opaque water.
 - Only Metal has run; the Vulkan path, including `imageCubeArray`, is untested.
@@ -222,10 +264,10 @@ Other-platform runtime validation remains pending.
 
 ## Next implementation sequence
 
-1. A probe grid for the hybrid's dynamic part: light actors and the view weapon
-   from runtime lights plus bounce, and carry moving and weapon light into bounce.
-2. Shadow casting for actors and moving brush models, redrawing only the cubes
+1. Shadow casting for actors and moving brush models, redrawing only the cubes
    their bounds touch.
+2. Probe visibility weighting against wall leaks, and a cache for bounce/probes
+   so map load does not repeat the gather.
 3. Implement the staged [light reconstruction](LIGHT_RECONSTRUCTION.md): retain
    style-layer evidence, compare the runtime prediction, estimate only
    identifiable parameters, and report residual/confidence data.

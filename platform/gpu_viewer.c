@@ -134,9 +134,26 @@ static int EnhancedLightTest(lq_view *view, char *error, size_t size)
     view->runtime_lights[0].color_strength[1] = view->runtime_lights[0].color_strength[2] = 1;
     view->runtime_lights[0].color_strength[3] = 0.5f;
     if (!LQ_GPURender(gpu,view,640,480,error,size) || !CenterColor(64,0,error,size)) goto done;
+    {
+        /* An actor over the same spot: Enhanced lights it from the runtime light
+         * (palette row 31, half-lit blue); Classic keeps its vertex shade. */
+        lq_vertex actor[3]; memcpy(actor, fixture.vertices, sizeof(actor));
+        uint32_t order[] = {0,1,2}; uint8_t blue = 202;
+        for (int i = 0; i < 3; ++i) actor[i].shade = 0;
+        lq_material skin = {.indices={1,1,1,&blue},.resource_id=46};
+        lq_draw draw = {0,3,0,LQ_SURFACE_MODEL|LQ_SURFACE_ACTOR,{255,255,255,255}};
+        lq_frame frame = {actor,order,&draw,&skin,3,3,1,1};
+        view->runtime_lights[0].color_strength[0] = 1;
+        int lit = LQ_GPUFrame(gpu,&frame,error,size) && LQ_GPURender(gpu,view,640,480,error,size) &&
+            CenterColor(0,127,error,size);
+        view->enhanced_lighting = 0;
+        lit = lit && LQ_GPURender(gpu,view,640,480,error,size) && CenterColor(0,255,error,size);
+        view->enhanced_lighting = 1; frame.draw_count = 0;
+        if (!lit || !LQ_GPUFrame(gpu,&frame,error,size)) goto done;
+    }
     view->enhanced_lighting = 0; view->runtime_light_count = 0;
     if (!LQ_GPURender(gpu,view,640,480,error,size) || !CenterColor(255,0,error,size)) goto done;
-    puts("PASS Enhanced normal/distance/style point lighting and Classic isolation");
+    puts("PASS Enhanced normal/distance/style point lighting, Enhanced actors and Classic isolation");
     good = 1;
 done:
     view->lightstyles[0] = saved_style;
@@ -473,6 +490,13 @@ int LQ_GPUViewer(int argc, char **argv)
         printf("Enhanced bounce: %u samples, %ld rays each, %u workers, %.2f s; style-0 mean %.1f, peak %.0f brightness\n",
             scene.sample_count, rays, LQ_JobsWorkerCount(), (double)(SDL_GetTicksNS() - started) / 1e9,
             texels ? total / texels : 0, peak);
+        if (scene.probe_static) {
+            size_t probes = (size_t)scene.probe_size[0] * scene.probe_size[1] * scene.probe_size[2], valid = 0;
+            for (size_t i = 0; i < probes; ++i) valid += scene.probe_valid[i];
+            printf("Enhanced probes: %ux%ux%u at %.0f units, %zu in open space; styles %u %u %u %u\n",
+                scene.probe_size[0], scene.probe_size[1], scene.probe_size[2], scene.probe_spacing, valid,
+                scene.probe_styles[0], scene.probe_styles[1], scene.probe_styles[2], scene.probe_styles[3]);
+        }
     }
     int fixed_camera = Has(argc, argv, "--fixed-camera");
     active = 0;

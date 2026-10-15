@@ -21,6 +21,14 @@ struct lq_gpu {
     SDL_GPUBuffer *vertices, *indices;
     SDL_GPUTexture **textures, *colormap, *lightmap, *bounce, *color, *depth, *overlay;
     float bounce_ratio; /* lightmap rows per bounce layer row */
+    /* Enhanced irradiance probes: static layers per style, and a dynamic layer
+     * rewritten each frame around gameplay lights. */
+    SDL_GPUTexture *probe_static, *probe_dynamic;
+    SDL_GPUTransferBuffer *probe_transfer;
+    uint32_t probe_dynamic_bytes;
+    float probe_origin[4], probe_size[3];
+    uint8_t probe_styles[4];
+    int probe_dynamic_active;
     uint32_t texture_count, draw_count, width, height;
     lq_draw *draws;
     SDL_GPUBuffer *frame_vertices, *frame_indices;
@@ -52,6 +60,9 @@ typedef struct {
     float shape[LQ_MAX_RUNTIME_LIGHTS][4]; /* inner cosine, source radius */
     uint32_t parameters[4];
     float tuning[4]; /* exposure, bounce layer ratio, bounce enabled, bounce gain */
+    float probe_origin[4]; /* xyz, spacing */
+    float probe_size[4]; /* probes per axis; w: 1 static, 2 dynamic */
+    float probe_weights[4]; /* live style per static layer */
 } lq_light_uniforms;
 typedef struct { float face_projection[16], light_origin[4]; } lq_shadow_uniforms;
 #define LQ_SHADOW_NEAR 2.0f
@@ -75,7 +86,7 @@ static SDL_GPUShader *ShaderCode(lq_gpu *g, const unsigned char *spv, size_t spv
 static SDL_GPUShader *Shader(lq_gpu *g, int fragment, int overlay)
 {
     if (overlay) return fragment ? SHADER(g, lq_overlay_frag, 1, 1, 0) : SHADER(g, lq_overlay_vert, 0, 0, 0);
-    return fragment ? SHADER(g, lq_world_frag, 1, 6, 2) : SHADER(g, lq_world_vert, 0, 0, 1);
+    return fragment ? SHADER(g, lq_world_frag, 1, 8, 2) : SHADER(g, lq_world_vert, 0, 0, 1);
 }
 static SDL_GPUTexture *CubeArray(lq_gpu *g, uint32_t size, uint32_t cubes)
 {
@@ -278,6 +289,30 @@ static SDL_GPUTexture *UploadImage(lq_gpu *g, const lq_image *image)
     if (transfer) SDL_ReleaseGPUTransferBuffer(g->device, transfer);
     return texture;
 }
+static SDL_GPUTexture *Upload3D(lq_gpu *g, uint32_t w, uint32_t h, uint32_t d, const uint8_t *pixels)
+{
+    SDL_GPUTextureCreateInfo info = {0};
+    info.type = SDL_GPU_TEXTURETYPE_3D; info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER; info.width = w; info.height = h;
+    info.layer_count_or_depth = d; info.num_levels = 1; info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    SDL_GPUTexture *texture = SDL_CreateGPUTexture(g->device, &info);
+    uint32_t bytes = w * h * d * 4;
+    uint8_t *zeros = pixels ? NULL : calloc(bytes, 1);
+    SDL_GPUTransferBuffer *transfer = texture && (pixels || zeros) ?
+        Transfer(g, bytes, SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, pixels ? pixels : zeros) : NULL;
+    free(zeros);
+    SDL_GPUCommandBuffer *command = transfer ? SDL_AcquireGPUCommandBuffer(g->device) : NULL;
+    if (command) {
+        SDL_GPUCopyPass *pass = SDL_BeginGPUCopyPass(command);
+        SDL_GPUTextureTransferInfo source = {transfer, 0, w, h};
+        SDL_GPUTextureRegion dest = {0};
+        dest.texture = texture; dest.w = w; dest.h = h; dest.d = d;
+        SDL_UploadToGPUTexture(pass, &source, &dest, false); SDL_EndGPUCopyPass(pass);
+        if (!SDL_SubmitGPUCommandBuffer(command)) { SDL_ReleaseGPUTexture(g->device, texture); texture = NULL; }
+    } else if (texture) { SDL_ReleaseGPUTexture(g->device, texture); texture = NULL; }
+    if (transfer) SDL_ReleaseGPUTransferBuffer(g->device, transfer);
+    return texture;
+}
 /* Indexed textures require color-aware mip generation, not hardware averaging
  * of palette numbers. Shaders filter the resulting palette colors explicitly. */
 static SDL_GPUTexture *UploadIndexed(lq_gpu *g, const lq_image *image)
@@ -377,6 +412,11 @@ static void ReleaseScene(lq_gpu *g)
     if (g->lightmap) SDL_ReleaseGPUTexture(g->device, g->lightmap);
     if (g->bounce) SDL_ReleaseGPUTexture(g->device, g->bounce);
     g->bounce = NULL; g->bounce_ratio = 0;
+    if (g->probe_static) SDL_ReleaseGPUTexture(g->device, g->probe_static);
+    if (g->probe_dynamic) SDL_ReleaseGPUTexture(g->device, g->probe_dynamic);
+    if (g->probe_transfer) SDL_ReleaseGPUTransferBuffer(g->device, g->probe_transfer);
+    g->probe_static = g->probe_dynamic = NULL; g->probe_transfer = NULL;
+    g->probe_dynamic_bytes = 0; g->probe_dynamic_active = 0; g->probe_origin[3] = 0;
     free(g->textures); free(g->draws);
     g->textures = NULL; g->draws = NULL; g->vertices = g->indices = NULL;
     g->colormap = g->lightmap = NULL; g->texture_count = g->draw_count = 0;
@@ -433,7 +473,7 @@ int LQ_GPUFrame(lq_gpu *g, const lq_frame *f, char *error, size_t size)
     }
     for (uint32_t i = 0; i < f->draw_count; ++i) {
         lq_draw d = f->draws[i];
-        if (d.flags & ~(LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_MODEL|LQ_SURFACE_MASKED|LQ_SURFACE_WEAPON) ||
+        if (d.flags & ~(LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_MODEL|LQ_SURFACE_MASKED|LQ_SURFACE_WEAPON|LQ_SURFACE_ACTOR) ||
             d.material >= f->material_count || d.first_index > f->index_count ||
             d.index_count > f->index_count - d.first_index || !d.index_count || d.index_count % 3) {
             SDL_SetError("invalid frame triangle range"); return Error(error, size, "GPU frame draws");
@@ -488,6 +528,18 @@ int LQ_GPUUpload(lq_gpu *g, const lq_scene *s, char *error, size_t size)
     g->bounce = UploadImage(g, s->bounce.pixels ? &s->bounce : &none);
     g->bounce_ratio = s->bounce.pixels ? (float)s->lightmap.height / s->atlas_height : 0;
     if (!g->vertices || !g->indices || !g->colormap || !g->lightmap || !g->bounce) goto failed;
+    if (s->probe_static) {
+        const uint32_t *n = s->probe_size;
+        g->probe_static = Upload3D(g, n[0], n[1], n[2] * 24, s->probe_static);
+        g->probe_dynamic = Upload3D(g, n[0], n[1], n[2] * 6, NULL);
+        memcpy(g->probe_origin, s->probe_origin, sizeof(s->probe_origin)); g->probe_origin[3] = s->probe_spacing;
+        for (int k = 0; k < 3; ++k) g->probe_size[k] = (float)n[k];
+        memcpy(g->probe_styles, s->probe_styles, 4);
+        g->probe_dynamic_bytes = n[0] * n[1] * n[2] * 6 * 4;
+    } else {
+        g->probe_static = Upload3D(g, 1, 1, 1, NULL); g->probe_dynamic = Upload3D(g, 1, 1, 1, NULL);
+    }
+    if (!g->probe_static || !g->probe_dynamic) goto failed;
     /* Every opaque world face may occlude; water and similar liquids do not. */
     uint32_t *casters = malloc((size_t)s->index_count * sizeof(*casters));
     if (!casters) { SDL_SetError("out of memory"); goto failed; }
@@ -538,6 +590,10 @@ static void SurfaceUniforms(lq_surface_uniforms *uniforms, const lq_gpu *g,
     memset(uniforms,0,sizeof(*uniforms));
     memcpy(uniforms->dynamic,view->dynamic_lights,sizeof(uniforms->dynamic));
     uniforms->bits[0] = draw->light_bits;
+    if (view->enhanced_lighting && (draw->flags & LQ_SURFACE_ACTOR)) { /* every slot; range culls in the shader */
+        uint32_t count = view->runtime_light_count > LQ_MAX_RUNTIME_LIGHTS ? LQ_MAX_RUNTIME_LIGHTS : view->runtime_light_count;
+        uniforms->bits[0] = count >= 32 ? UINT32_MAX : (1u << count) - 1;
+    }
     uniforms->parameters[0] = view->time; uniforms->parameters[1] = (float)draw->flags;
     uniforms->parameters[2] = (float)g->smooth; uniforms->parameters[3] = (float)g->mipmaps;
     memcpy(uniforms->camera,view->origin,sizeof(view->origin)); uniforms->camera[3] = (float)g->anisotropy;
@@ -566,6 +622,12 @@ static void LightUniforms(lq_light_uniforms *uniforms, const lq_gpu *g, const lq
     uniforms->tuning[1] = g->bounce_ratio;
     uniforms->tuning[2] = view->enhanced_lighting && g->bounce_ratio > 0 && !view->disable_bounce;
     uniforms->tuning[3] = view->bounce_gain > 0 ? view->bounce_gain : 1;
+    memcpy(uniforms->probe_origin, g->probe_origin, sizeof(uniforms->probe_origin));
+    for (int k = 0; k < 3; ++k) uniforms->probe_size[k] = g->probe_size[k];
+    uniforms->probe_size[3] = view->enhanced_lighting && !view->disable_bounce && g->probe_origin[3] > 0 ?
+        1.0f + (g->probe_dynamic_active ? 2.0f : 0.0f) : 0.0f;
+    for (int k = 0; k < 4; ++k)
+        uniforms->probe_weights[k] = g->probe_styles[k] == 255 ? 0 : view->lightstyles[g->probe_styles[k]];
 }
 /* Reversed-depth 90-degree face projection. Faces follow the cube-map table
  * (+X,-X,+Y,-Y,+Z,-Z; screen right/up per face) used by sampling hardware,
@@ -626,6 +688,31 @@ static void RenderShadows(lq_gpu *g, SDL_GPUCommandBuffer *command, const lq_vie
     }
 }
 uint32_t LQ_GPUShadowUpdates(const lq_gpu *g) { return g ? g->shadow_updates : 0; }
+size_t LQ_GPUDynamicProbeBytes(const lq_gpu *g) { return g ? g->probe_dynamic_bytes : 0; }
+int LQ_GPUDynamicProbes(lq_gpu *g, const uint8_t *pixels, char *error, size_t size)
+{
+    g->probe_dynamic_active = 0;
+    if (!pixels || !g->probe_dynamic_bytes) return 1;
+    if (!g->probe_transfer) {
+        SDL_GPUTransferBufferCreateInfo info = {SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, g->probe_dynamic_bytes, 0};
+        g->probe_transfer = SDL_CreateGPUTransferBuffer(g->device, &info);
+        if (!g->probe_transfer) return Error(error, size, "GPU probe transfer");
+    }
+    void *mapped = SDL_MapGPUTransferBuffer(g->device, g->probe_transfer, true);
+    if (!mapped) return Error(error, size, "GPU probe map");
+    memcpy(mapped, pixels, g->probe_dynamic_bytes);
+    SDL_UnmapGPUTransferBuffer(g->device, g->probe_transfer);
+    SDL_GPUCommandBuffer *command = SDL_AcquireGPUCommandBuffer(g->device);
+    if (!command) return Error(error, size, "GPU probe command");
+    SDL_GPUCopyPass *pass = SDL_BeginGPUCopyPass(command);
+    SDL_GPUTextureTransferInfo source = {g->probe_transfer, 0, (uint32_t)g->probe_size[0], (uint32_t)g->probe_size[1]};
+    SDL_GPUTextureRegion dest = {0};
+    dest.texture = g->probe_dynamic; dest.w = (uint32_t)g->probe_size[0]; dest.h = (uint32_t)g->probe_size[1];
+    dest.d = (uint32_t)g->probe_size[2] * 6;
+    SDL_UploadToGPUTexture(pass, &source, &dest, true); SDL_EndGPUCopyPass(pass);
+    if (!SDL_SubmitGPUCommandBuffer(command)) return Error(error, size, "GPU probe submit");
+    g->probe_dynamic_active = 1; return 1;
+}
 int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, char *error, size_t size)
 {
     SDL_GPUCommandBuffer *command;
@@ -682,9 +769,10 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
         SurfaceUniforms(&uniforms,g,v,d);
         SDL_GPUTextureSamplerBinding samplers[] = {
             {g->textures[d->material], g->repeat}, {g->colormap, g->point}, {g->lightmap, g->linear},
-            {shadows, g->shadow_sampler}, {shadows, g->depth_sampler}, {g->bounce, g->linear}
+            {shadows, g->shadow_sampler}, {shadows, g->depth_sampler}, {g->bounce, g->linear},
+            {g->probe_static, g->linear}, {g->probe_dynamic, g->linear}
         };
-        SDL_BindGPUFragmentSamplers(pass, 0, samplers, 6);
+        SDL_BindGPUFragmentSamplers(pass, 0, samplers, 8);
         SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
         SDL_DrawGPUIndexedPrimitives(pass, d->index_count, 1, d->first_index, 0, 0);
     }
@@ -701,9 +789,10 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
             SurfaceUniforms(&uniforms,g,v,d);
             SDL_GPUTextureSamplerBinding samplers[] = {
                 {g->frame_textures[d->material], g->repeat}, {g->colormap, g->point}, {g->lightmap, g->linear},
-                {shadows, g->shadow_sampler}, {shadows, g->depth_sampler}, {g->bounce, g->linear}
+                {shadows, g->shadow_sampler}, {shadows, g->depth_sampler}, {g->bounce, g->linear},
+                {g->probe_static, g->linear}, {g->probe_dynamic, g->linear}
             };
-            SDL_BindGPUFragmentSamplers(pass, 0, samplers, 6);
+            SDL_BindGPUFragmentSamplers(pass, 0, samplers, 8);
             SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
             SDL_DrawGPUIndexedPrimitives(pass, d->index_count, 1, d->first_index, 0, 0);
         }

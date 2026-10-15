@@ -18,10 +18,12 @@ the world only from runtime lights:
 - cached cube shadow maps with emitter-sized soft penumbrae;
 - static-world bounce gathered at map load from those same lights;
 - weapon light: rockets, muzzle flashes, explosions and other gameplay dlights,
-  each a shadowed, warm-tinted runtime light.
+  each a shadowed, warm-tinted runtime light;
+- an irradiance probe grid that lights monsters and the view weapon from those
+  lights plus bounce, and carries weapon light onto nearby surfaces each frame.
 
 Darkness comes from falloff and occlusion, never from the baked lightmap.
-Actors still use Classic shading and neither receive nor cast Enhanced light.
+Actors receive Enhanced light but do not cast shadows yet.
 The standalone viewer (`luminousquake-gpu --enhanced`) has tuning flags. See
 [Enhanced renderer notes](docs/ENHANCED_RENDERER.md) for commands, evidence and
 next steps.

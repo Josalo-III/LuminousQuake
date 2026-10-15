@@ -143,8 +143,11 @@ static void Alias(entity_t *e, int weapon)
     ambient = fminf(ambient, 128); shade = fminf(shade, 192-ambient);
     for (int i = 1; i <= cl.maxclients; ++i)
         if (e == &cl_entities[i] && ambient < 8) { ambient = shade = 8; break; }
-    if (!strcmp(e->model->name, "progs/flame.mdl") || !strcmp(e->model->name, "progs/flame2.mdl")) ambient = 256, shade = 0;
-    Draw(model->numtris*3, material, LQ_SURFACE_MODEL | (weapon ? LQ_SURFACE_WEAPON : 0));
+    int flame = !strcmp(e->model->name, "progs/flame.mdl") || !strcmp(e->model->name, "progs/flame2.mdl");
+    if (flame) ambient = 256, shade = 0;
+    /* Enhanced lights actors from runtime lights and probes; flames stay
+     * fullbright emitters. Classic ignores the flag and uses `shade`. */
+    Draw(model->numtris*3, material, LQ_SURFACE_MODEL | (weapon ? LQ_SURFACE_WEAPON : 0) | (flame ? 0 : LQ_SURFACE_ACTOR));
     for (int i = 0; i < model->numtris; ++i) for (int j = 0; j < 3; ++j) {
         int p = triangles[i].vertindex[j];
         if (p < 0 || p >= model->numverts || points[p].lightnormalindex >= 162) Sys_Error("Invalid GPU alias vertex");
@@ -209,7 +212,7 @@ static void Brush(entity_t *e, const lq_scene *world)
             msurface_t *s = &model->surfaces[model->firstmodelsurface+i];
             texture_t *texture = R_TextureAnimation(s->texinfo->texture);
             uint32_t material = Material(texture,0,(byte *)texture+texture->offsets[0],texture->width,texture->height,NULL);
-            Draw((s->numedges-2)*3,material,LQ_SURFACE_MODEL);
+            Draw((s->numedges-2)*3,material,LQ_SURFACE_MODEL|LQ_SURFACE_ACTOR);
             float shade = model->lightdata ? fminf(fmaxf((255-R_LightPoint(e->origin))*0.25f,0),63) : 0;
             for (int triangle = 1; triangle < s->numedges-1; ++triangle) for (int corner = 0; corner < 3; ++corner) {
                 int p = corner == 0 ? 0 : triangle+corner-1;

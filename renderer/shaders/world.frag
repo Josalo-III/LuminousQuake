@@ -8,6 +8,8 @@ layout(set=2,binding=2) uniform sampler2D lightmap;
 layout(set=2,binding=3) uniform samplerCubeArrayShadow shadow_maps;
 layout(set=2,binding=4) uniform samplerCubeArray shadow_depths; // same cubes, raw depth
 layout(set=2,binding=5) uniform sampler2D bounce; // four stacked style layers, brightness/255
+layout(set=2,binding=6) uniform sampler3D probe_static; // depth: (layer*6 + direction)*nz + z
+layout(set=2,binding=7) uniform sampler3D probe_dynamic; // depth: direction*nz + z
 layout(set=3,binding=0,std140) uniform Surface {
     vec4 light_weights;
     vec4 parameters; // time, surface flags, smooth filter, mip mode
@@ -25,6 +27,9 @@ layout(set=3,binding=1,std140) uniform Lights {
     vec4 shape[32]; // inner cosine, emitter radius
     uvec4 parameters; // slot count, Enhanced enabled, shadow resolution, shadows enabled
     vec4 tuning; // exposure, lightmap-to-layer row ratio, bounce enabled, bounce gain
+    vec4 probe_origin; // xyz, spacing
+    vec4 probe_size; // probes per axis; w: 1 static, 2 dynamic (bits)
+    vec4 probe_weights; // live style value per static layer
 } lights;
 const float SHADOW_NEAR = 2.0;
 layout(location=0) in vec2 uv;
@@ -141,6 +146,22 @@ float shadowFactor(uint slot, vec3 origin, vec3 normal, float radius) {
     }
     return sum / 16.0;
 }
+// Ambient-cube irradiance toward n from one block group of a probe texture.
+// Trilinear filtering stays inside each direction block: z is clamped to its
+// probe centres before the block offset is added.
+vec3 probeCube(sampler3D probes, float blocks, float base, vec3 point, vec3 n) {
+    vec3 grid = clamp((point - lights.probe_origin.xyz) / lights.probe_origin.w, vec3(0.0), lights.probe_size.xyz - 1.0);
+    vec2 xy = (grid.xy + 0.5) / lights.probe_size.xy;
+    float layers = lights.probe_size.z * blocks;
+    vec3 weight = n * n;
+    vec3 face = vec3(n.x >= 0.0 ? 0.0 : 1.0, n.y >= 0.0 ? 2.0 : 3.0, n.z >= 0.0 ? 4.0 : 5.0);
+    vec3 sum = vec3(0.0);
+    for (int axis = 0; axis < 3; ++axis) {
+        float depth = ((base + face[axis]) * lights.probe_size.z + grid.z + 0.5) / layers;
+        sum += texture(probes, vec3(xy, depth)).rgb * weight[axis];
+    }
+    return sum * 255.0;
+}
 void main() {
     int flags = int(surface.parameters.y);
     vec2 sample_uv = uv;
@@ -161,7 +182,8 @@ void main() {
         index_value = texture(indices, sample_uv).r;
         if ((flags & 2) == 0) {
             float brightness = 0.0;
-            if (lights.parameters.y != 0u) {
+            bool actor = (flags & 32) != 0;
+            if (lights.parameters.y != 0u && ((flags & 4) == 0 || actor)) {
                 vec3 normal = normalize(world_normal);
                 vec3 illumination = vec3(0.0);
                 for (uint i = 0u; i < min(lights.parameters.x,32u); ++i) {
@@ -189,13 +211,25 @@ void main() {
                     illumination += lights.color_strength[i].rgb * direct;
                 }
                 // Static-world bounce from those lights, driven by live styles.
-                if (lights.tuning.z != 0.0) {
+                if (lights.tuning.z != 0.0 && (flags & 4) == 0) {
                     float row = light_uv.y * lights.tuning.y;
                     for (int k = 0; k < 4; ++k) if (surface.bounce_weights[k] > 0.0)
                         illumination += texture(bounce, vec2(light_uv.x, (row + float(k)) * 0.25)).rgb *
                             (255.0 * surface.bounce_weights[k] * lights.tuning.w);
                 }
+                // Probes: static bounce for actors; gameplay-light bounce for all.
+                int probes = int(lights.probe_size.w + 0.5);
+                if (probes != 0) {
+                    vec3 point = world_position + normal * (actor ? 0.0 : 8.0);
+                    if (actor && (probes & 1) != 0)
+                        for (int k = 0; k < 4; ++k) if (lights.probe_weights[k] > 0.0)
+                            illumination += probeCube(probe_static, 24.0, float(k * 6), point, normal) *
+                                (lights.probe_weights[k] * lights.tuning.w);
+                    if ((probes & 2) != 0)
+                        illumination += probeCube(probe_dynamic, 6.0, 0.0, point, normal) * lights.tuning.w;
+                }
                 illumination *= lights.tuning.x;
+                if ((flags & 16) != 0) illumination = max(illumination, vec3(24.0)); // Quake's view-weapon minimum
                 brightness = max(illumination.r,max(illumination.g,illumination.b));
                 if (brightness > 0.001) direct_tint = illumination/brightness;
             } else {
@@ -210,7 +244,7 @@ void main() {
     vec2 dx = dFdx(sample_uv), dy = dFdy(sample_uv);
     float index = floor(index_value * 255.0 + 0.5);
     if ((flags & 8) != 0 && index > 254.5) discard;
-    if ((flags & 4) != 0) grade = clamp(shade, 0.0, 63.0);
+    if ((flags & 4) != 0 && !(lights.parameters.y != 0u && (flags & 32) != 0)) grade = clamp(shade, 0.0, 63.0);
     color = texture(colormap, vec2((index + 0.5) / 256.0, (grade + 0.5) / 64.0));
     // Resolve colors before interpolation. Sky, masks and UI keep level zero.
     if ((flags & 9) == 0)

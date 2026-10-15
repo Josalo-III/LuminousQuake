@@ -13,6 +13,7 @@ void LQ_SceneFree(lq_scene *s)
     free(s->light_sources); free(s->light_visibility);
     free(s->bsp_nodes); free(s->leaf_pvs); free(s->light_leaves); free(s->leaf_contents);
     free(s->face_samples); free(s->sample_positions); free(s->bounce.pixels);
+    free(s->probe_static); free(s->probe_valid); free(s->draw_bounds);
     free(s->materials); free(s->vertices); free(s->indices); free(s->draws);
     free(s->colormap.pixels); free(s->lightmap.pixels); memset(s, 0, sizeof(*s));
 }
@@ -192,8 +193,31 @@ uint32_t LQ_BuildRuntimeLightsLimited(const lq_scene *scene, const float styles[
  * the shadow technique. A set bit means a light can reach the face by range,
  * facing and PVS; the shadow test still decides whether a caster blocks it.
  * The original baked samples are deliberately absent from this decision. */
+static void DrawBounds(const lq_scene *scene, const lq_draw *draw, float out[6])
+{
+    out[0] = out[1] = out[2] = INFINITY; out[3] = out[4] = out[5] = -INFINITY;
+    for (uint32_t j = 0; j < draw->index_count; ++j) {
+        const lq_vertex *v = &scene->vertices[scene->indices[draw->first_index+j]];
+        for (int axis = 0; axis < 3; ++axis) {
+            out[axis] = fminf(out[axis],v->position[axis]);
+            out[axis+3] = fmaxf(out[axis+3],v->position[axis]);
+        }
+    }
+}
+int LQ_SceneDrawBounds(lq_scene *scene)
+{
+    if (!scene || !scene->draw_count) return 0;
+    float (*bounds)[6] = malloc(scene->draw_count * sizeof(*bounds));
+    if (!bounds) return 0;
+    for (uint32_t d = 0; d < scene->draw_count; ++d) DrawBounds(scene, &scene->draws[d], bounds[d]);
+    free(scene->draw_bounds); scene->draw_bounds = bounds;
+    return 1;
+}
 uint32_t LQ_BuildLightInteractions(const lq_scene *scene,
     const lq_runtime_light *lights, uint32_t light_count, lq_draw *output)
+{ return LQ_BuildVisibleLightInteractions(scene, lights, light_count, NULL, output); }
+uint32_t LQ_BuildVisibleLightInteractions(const lq_scene *scene, const lq_runtime_light *lights,
+    uint32_t light_count, const lq_draw *visible, lq_draw *output)
 {
     uint32_t relationships = 0;
     if (!scene || !output || (!lights && light_count)) return 0;
@@ -203,16 +227,12 @@ uint32_t LQ_BuildLightInteractions(const lq_scene *scene,
         lq_draw *draw = &output[d];
         draw->light_bits = 0;
         if (draw->flags & (LQ_SURFACE_SKY | LQ_SURFACE_WATER) || draw->index_count < 3) continue;
-        float bounds_min[3] = {INFINITY,INFINITY,INFINITY};
-        float bounds_max[3] = {-INFINITY,-INFINITY,-INFINITY};
+        if (visible && !visible[d].index_count) continue;
+        float computed[6];
+        const float *bounds = scene->draw_bounds ? scene->draw_bounds[d] : computed;
+        if (!scene->draw_bounds) DrawBounds(scene, draw, computed);
+        const float *bounds_min = bounds, *bounds_max = bounds + 3;
         const lq_vertex *first = &scene->vertices[scene->indices[draw->first_index]];
-        for (uint32_t j = 0; j < draw->index_count; ++j) {
-            const lq_vertex *v = &scene->vertices[scene->indices[draw->first_index+j]];
-            for (int axis = 0; axis < 3; ++axis) {
-                bounds_min[axis] = fminf(bounds_min[axis],v->position[axis]);
-                bounds_max[axis] = fmaxf(bounds_max[axis],v->position[axis]);
-            }
-        }
         for (uint32_t i = 0; i < light_count; ++i) {
             const float *position = lights[i].position_radius;
             float toward[3], distance2 = 0;
@@ -276,6 +296,10 @@ int LQ_SceneCheck(const lq_scene *s, char *error, size_t size)
     REQUIRE(isfinite(s->bounce_scale) && s->bounce_scale >= 0, "invalid bounce scale");
     REQUIRE(!s->bounce.pixels || (s->face_samples && s->bounce.channels == 4 && s->bounce.width == s->lightmap.width &&
         s->bounce.height == 4 * s->atlas_height), "invalid bounce atlas");
+    REQUIRE(!s->probe_static || (s->probe_valid && s->probe_size[0] && s->probe_size[1] && s->probe_size[2] &&
+        s->probe_size[0] <= 2048 && s->probe_size[1] <= 2048 && s->probe_size[2] * 24 <= 2048 &&
+        isfinite(s->probe_spacing) && s->probe_spacing > 0 && isfinite(s->probe_origin[0]) &&
+        isfinite(s->probe_origin[1]) && isfinite(s->probe_origin[2])), "invalid irradiance probe grid");
     for (uint32_t i = 0; s->bsp_nodes && i < s->bsp_node_count; ++i)
         for (int j = 0; j < 2; ++j) {
             int32_t child = s->bsp_nodes[i].children[j];

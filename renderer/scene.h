@@ -9,7 +9,8 @@
 typedef struct { float position[3], uv[2], light_uv[2], shade, normal[3]; } lq_vertex;
 typedef struct { uint32_t width, height, channels; uint8_t *pixels; } lq_image;
 enum { LQ_SURFACE_SKY = 1, LQ_SURFACE_WATER = 2, LQ_SURFACE_MODEL = 4,
-       LQ_SURFACE_MASKED = 8, LQ_SURFACE_WEAPON = 16 };
+       LQ_SURFACE_MASKED = 8, LQ_SURFACE_WEAPON = 16,
+       LQ_SURFACE_ACTOR = 32 /* model lit by Enhanced lights/probes; Classic uses shade */ };
 typedef struct { lq_image indices; char name[17]; uint32_t resource_id; } lq_material;
 typedef struct {
     uint32_t first_index, index_count, material, flags;
@@ -83,6 +84,15 @@ typedef struct {
     /* Optional Enhanced bounce: four stacked RGBA layers of atlas_height rows,
      * brightness units, selected per draw by bounce_styles. */
     lq_image bounce;
+    /* Optional Enhanced irradiance probes: an ambient cube (irradiance toward
+     * +X,-X,+Y,-Y,+Z,-Z, brightness units) at each grid point. probe_static is
+     * RGBA, x-fastest, depth index (layer*6 + direction)*size[2] + z; each of
+     * the four layers belongs to probe_styles[layer] (255 unused). */
+    float probe_origin[3], probe_spacing;
+    uint32_t probe_size[3];
+    uint8_t probe_styles[4];
+    uint8_t *probe_static, *probe_valid;
+    float (*draw_bounds)[6]; /* optional per-draw min xyz, max xyz (LQ_SceneDrawBounds) */
 } lq_scene;
 /* Per-frame actor geometry is copied at submission. Texture IDs remain stable
  * for one uploaded map; upload/restart invalidates the backend texture cache. */
@@ -135,6 +145,12 @@ uint32_t LQ_SceneLeaf(const lq_scene *scene, const float point[3]);
 typedef void (*lq_range_fn)(void *context, size_t begin, size_t end);
 typedef void (*lq_range_runner)(size_t count, size_t grain, lq_range_fn function, void *context);
 int LQ_SceneComputeBounce(lq_scene *scene, uint32_t rays, lq_range_runner run, char *error, size_t size);
+/* Per-frame bounce from gameplay lights into the probe grid, near those lights
+ * only: rays from each probe find surfaces they light (BSP-occluded) and gather
+ * the reflected light. `output` holds size[0]*size[1]*size[2]*6 RGBA texels,
+ * depth index direction*size[2] + z. Returns 1 when any gameplay light wrote. */
+int LQ_SceneDynamicProbes(const lq_scene *scene, const lq_runtime_light *lights, uint32_t count,
+    uint32_t rays, lq_range_runner run, uint8_t *output);
 uint32_t LQ_BuildRuntimeLights(const lq_scene *scene, const float styles[256],
     const float camera[3], lq_runtime_light output[LQ_MAX_RUNTIME_LIGHTS]);
 /* As above, but map lights occupy only the first `slots` entries. */
@@ -146,6 +162,12 @@ void LQ_DynamicRuntimeLight(lq_runtime_light *light, const float origin[3], floa
     const float color[3], float source_radius, uint32_t key);
 uint32_t LQ_BuildLightInteractions(const lq_scene *scene,
     const lq_runtime_light *lights, uint32_t light_count, lq_draw *output);
+/* As above, for draws with nonzero index_count in `visible` only (others get
+ * no bits); `visible` may be NULL for all draws. */
+uint32_t LQ_BuildVisibleLightInteractions(const lq_scene *scene, const lq_runtime_light *lights,
+    uint32_t light_count, const lq_draw *visible, lq_draw *output);
+/* Cache per-draw bounds for per-frame interaction building. */
+int LQ_SceneDrawBounds(lq_scene *scene);
 void LQ_SceneFree(lq_scene *scene);
 void LQ_ViewMatrix(const lq_view *view, float aspect, float matrix[16]);
 int LQ_SceneCheck(const lq_scene *scene, char *error, size_t error_size);

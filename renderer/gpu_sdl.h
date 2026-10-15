@@ -16,6 +16,10 @@ int LQ_GPURender(lq_gpu *gpu, const lq_view *view, uint32_t width, uint32_t heig
 /* Shadow cube slots redrawn by the most recent render; unchanged slots reuse
  * their cached static-world shadows. */
 uint32_t LQ_GPUShadowUpdates(const lq_gpu *gpu);
+/* Dynamic probe layer for this map (see LQ_SceneDynamicProbes); NULL marks
+ * it inactive so shaders skip it. */
+size_t LQ_GPUDynamicProbeBytes(const lq_gpu *gpu);
+int LQ_GPUDynamicProbes(lq_gpu *gpu, const uint8_t *pixels, char *error, size_t size);
 int LQ_GPUReadPixels(lq_gpu *gpu, uint8_t **pixels, uint32_t *width, uint32_t *height, char *error, size_t size);
 void LQ_GPUDestroy(lq_gpu *gpu);
 #endif

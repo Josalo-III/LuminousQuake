@@ -23,6 +23,7 @@ static lq_draw *world_draws, *interaction_draws;
  * cached shadows; gameplay dlights take the last LQ_MAX_DYNAMIC_LIGHTS. */
 static qboolean enhanced;
 static lq_runtime_light runtime_lights[LQ_MAX_RUNTIME_LIGHTS];
+static uint8_t *dynamic_probes; /* per-frame gameplay-light bounce, GPU layout */
 static qboolean direct_frame;
 static void CaptureView(void);
 
@@ -40,6 +41,7 @@ void LQ_RenderBridgeShutdown(void)
 {
     LQ_EntitiesReset(); LQ_SceneFree(&map_scene); free(world_draws); world_draws = NULL;
     free(interaction_draws); interaction_draws = NULL; memset(runtime_lights, 0, sizeof(runtime_lights));
+    free(dynamic_probes); dynamic_probes = NULL;
     direct_frame = false;
     free(preserve); free(rgba);
     preserve = rgba = NULL; count = 0;
@@ -49,6 +51,7 @@ void LQ_RenderMapChanged(void) {
     loaded = false; captured_scene = direct_frame = false;
     LQ_EntitiesReset(); LQ_SceneFree(&map_scene); free(world_draws); world_draws = NULL;
     free(interaction_draws); interaction_draws = NULL; memset(runtime_lights, 0, sizeof(runtime_lights));
+    free(dynamic_probes); dynamic_probes = NULL;
 }
 void LQ_RenderBegin(void)
 {
@@ -85,10 +88,13 @@ void LQ_RenderBegin(void)
             else Con_Printf("Enhanced bounce unavailable: %s\n", error);
         }
         if (!LQ_GPUUpload(gpu, &map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }
+        if (enhanced && !LQ_SceneDrawBounds(&map_scene)) { LQ_FallbackRenderer("Cannot allocate draw bounds"); return; }
         world_draws = malloc(map_scene.draw_count*sizeof(*world_draws));
         interaction_draws = enhanced ? malloc(map_scene.draw_count*sizeof(*interaction_draws)) : NULL;
         if (!world_draws || (enhanced && !interaction_draws)) { LQ_FallbackRenderer("Cannot allocate world visibility"); return; }
         memset(runtime_lights, 0, sizeof(runtime_lights));
+        free(dynamic_probes); dynamic_probes = NULL;
+        if (enhanced && LQ_GPUDynamicProbeBytes(gpu)) dynamic_probes = malloc(LQ_GPUDynamicProbeBytes(gpu));
         loaded = true; palette_valid = false;
         Con_Printf("%s: copied live BSP world; map resources replaced.\n", enhanced ? "Enhanced (experimental)" : "Classic GPU");
     }
@@ -213,7 +219,7 @@ static void EnhancedLights(void)
     memcpy(view.runtime_lights, runtime_lights, sizeof(runtime_lights));
     view.runtime_light_count = count;
     view.enhanced_lighting = 1;
-    LQ_BuildLightInteractions(&map_scene, runtime_lights, count, interaction_draws);
+    LQ_BuildVisibleLightInteractions(&map_scene, runtime_lights, count, world_draws, interaction_draws);
     for (uint32_t i = 0; i < map_scene.draw_count; ++i)
         if (world_draws[i].index_count) world_draws[i].light_bits = interaction_draws[i].light_bits;
 }
@@ -269,6 +275,12 @@ qboolean LQ_RenderBridgePresent(void)
     }
     lq_image image = {overlay_width, overlay_height, 4, rgba};
     lq_frame empty = {0};
+    /* Gameplay lights bounce through the probe grid; recomputed around them each frame. */
+    if (enhanced && direct_frame && dynamic_probes) {
+        int active = LQ_SceneDynamicProbes(&map_scene, view.runtime_lights, view.runtime_light_count, 16,
+            LQ_JobsRunRange, dynamic_probes);
+        if (!LQ_GPUDynamicProbes(gpu, active ? dynamic_probes : NULL, error, sizeof(error))) goto failed;
+    }
     if (!LQ_GPUFrame(gpu, direct_frame ? LQ_EntitiesFrame() : &empty, error, sizeof(error)) ||
         !LQ_GPUOverlay(gpu, &image, error, sizeof(error)) ||
         !LQ_GPURender(gpu, &view, vid.width, vid.height, error, sizeof(error))) goto failed;
