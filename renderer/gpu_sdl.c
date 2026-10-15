@@ -18,6 +18,7 @@ struct lq_gpu {
     SDL_GPUTexture *multisample_color;
     int smooth, samples, mipmaps, anisotropy;
     uint8_t *submerged; /* per scene draw: the face lies inside a liquid volume */
+    float (*liquid_planes)[4]; /* per scene draw: liquid face normal and distance; zero otherwise */
     lq_mip_palette *mip_palette;
     SDL_GPUSampler *repeat, *point, *linear;
     SDL_GPUBuffer *vertices, *indices;
@@ -438,8 +439,8 @@ static void ReleaseScene(lq_gpu *g)
     if (g->probe_transfer) SDL_ReleaseGPUTransferBuffer(g->device, g->probe_transfer);
     g->probe_static = g->probe_dynamic = NULL; g->probe_transfer = NULL;
     g->probe_dynamic_bytes = 0; g->probe_dynamic_active = 0; g->probe_origin[3] = 0;
-    free(g->textures); free(g->draws); free(g->submerged);
-    g->textures = NULL; g->draws = NULL; g->submerged = NULL; g->vertices = g->indices = NULL;
+    free(g->textures); free(g->draws); free(g->submerged); free(g->liquid_planes);
+    g->textures = NULL; g->draws = NULL; g->submerged = NULL; g->liquid_planes = NULL; g->vertices = g->indices = NULL;
     g->colormap = g->lightmap = NULL; g->texture_count = g->draw_count = 0;
 }
 static int FrameBuffer(lq_gpu *g, SDL_GPUBuffer **buffer, uint32_t *capacity,
@@ -562,6 +563,15 @@ int LQ_GPUUpload(lq_gpu *g, const lq_scene *s, char *error, size_t size)
     /* A point just in front of each lit face tells whether it lies under a liquid. */
     g->submerged = calloc(s->draw_count ? s->draw_count : 1, 1);
     if (!g->submerged) { SDL_SetError("out of memory"); goto failed; }
+    /* Liquid faces come in coplanar front/back pairs; only the side facing the
+     * camera is drawn, as in Quake, or blending picks one per face at random. */
+    g->liquid_planes = calloc(s->draw_count ? s->draw_count : 1, sizeof(*g->liquid_planes));
+    if (!g->liquid_planes) { SDL_SetError("out of memory"); goto failed; }
+    for (uint32_t i = 0; i < s->draw_count; ++i) if (s->draws[i].flags & LQ_SURFACE_WATER) {
+        const lq_vertex *v = &s->vertices[s->indices[s->draws[i].first_index]];
+        memcpy(g->liquid_planes[i], v->normal, sizeof(v->normal));
+        g->liquid_planes[i][3] = v->normal[0]*v->position[0] + v->normal[1]*v->position[1] + v->normal[2]*v->position[2];
+    }
     for (uint32_t i = 0; i < s->draw_count && s->leaf_contents; ++i) {
         const lq_draw *d = &s->draws[i];
         if (d->flags & (LQ_SURFACE_SKY|LQ_SURFACE_WATER)) continue;
@@ -902,6 +912,10 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
             const lq_draw *d = v->world_draws && v->world_draw_count == g->draw_count ? &v->world_draws[i] : &g->draws[i];
             if (!d->index_count || d->material >= g->texture_count) continue;
             if (liquid && translucent != ((d->flags & LQ_SURFACE_WATER) != 0)) continue;
+            if (translucent && g->liquid_planes) {
+                const float *p = g->liquid_planes[i];
+                if (p[0]*v->origin[0] + p[1]*v->origin[1] + p[2]*v->origin[2] < p[3]) continue;
+            }
             DrawSurface(g, command, pass, v, d, g->submerged && g->submerged[i] ? LQ_SHADER_SUBMERGED : 0,
                 g->textures[d->material], shadows);
         }
