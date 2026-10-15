@@ -17,12 +17,15 @@ the world only from runtime lights:
 - original LIGHT/ericw-tools falloff formulas, spotlights and live styles;
 - cached cube shadow maps with emitter-sized soft penumbrae;
 - static-world bounce gathered at map load from those same lights;
-- weapon light: rockets, muzzle flashes, explosions and other gameplay dlights,
-  each a shadowed, warm-tinted runtime light;
+- weapon light: moving rockets, muzzle flashes and explosions, plus light
+  distributed along lightning beams and shared lights for spark collections;
 - an irradiance probe grid that lights monsters and the view weapon from those
   lights plus bounce, and carries weapon light onto nearby surfaces each frame.
 
-Darkness comes from falloff and occlusion, never from the baked lightmap.
+Enhanced particles vary in shape and scale; blood, smoke and bubbles receive scene
+lighting, while sparks and fire remain self-lit. Classic GPU is the lighting
+comparison reference. Darkness comes from falloff and occlusion, never from the
+baked lightmap.
 Monsters, items and moving doors cast Enhanced shadows from their live positions.
 The standalone viewer (`luminousquake-gpu --enhanced`) has tuning flags. See
 [Enhanced renderer notes](docs/ENHANCED_RENDERER.md) for commands, evidence and

@@ -47,6 +47,8 @@ typedef struct particle_s
 	float		ramp;
 	float		die;
 	ptype_t		type;
+	int			emissive; /* effect provenance, independent of palette color */
+	unsigned int visual_seed;
 } particle_t;
 
 #define PARTICLE_Z_CLIP	8.0

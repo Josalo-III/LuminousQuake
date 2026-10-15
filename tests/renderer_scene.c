@@ -2,11 +2,63 @@
 #include "scene.h"
 #include "scene_fixture.h"
 #include "indexed_mips.h"
+#include "effects.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #c); return 1; } } while (0)
+static int EffectTest(void)
+{
+    float corners[LQ_PARTICLE_MAX_SIDES][2], again[LQ_PARTICLE_MAX_SIDES][2], smallest = INFINITY, largest = 0;
+    float areas[LQ_PARTICLE_MAX_SIDES+1] = {0};
+    uint32_t counts[LQ_PARTICLE_MAX_SIDES+1] = {0};
+    for (uint32_t seed = 0; seed < 4096; ++seed) {
+        uint32_t count = LQ_ParticleCorners(seed, corners);
+        CHECK(count >= 3 && count <= LQ_PARTICLE_MAX_SIDES);
+        CHECK(LQ_ParticleCorners(seed, again) == count);
+        CHECK(!memcmp(corners, again, count*sizeof(*corners)));
+        float area = 0, center[2] = {0};
+        for (uint32_t i = 0; i < count; ++i) {
+            uint32_t j = (i+1)%count, k = (i+2)%count;
+            CHECK(isfinite(corners[i][0]) && isfinite(corners[i][1]));
+            CHECK((corners[j][0]-corners[i][0])*(corners[k][1]-corners[j][1]) -
+                  (corners[j][1]-corners[i][1])*(corners[k][0]-corners[j][0]) > 0);
+            area += corners[i][0]*corners[j][1] - corners[i][1]*corners[j][0];
+            center[0] += corners[i][0]; center[1] += corners[i][1];
+        }
+        CHECK(fabsf(center[0]) < 0.00001f && fabsf(center[1]) < 0.00001f);
+        smallest = fminf(smallest, area); largest = fmaxf(largest, area);
+        areas[count] += area * 0.5f; ++counts[count];
+    }
+    CHECK(largest > smallest*3); /* Visible size variation, stable frame to frame. */
+    for (uint32_t sides = 3; sides <= LQ_PARTICLE_MAX_SIDES; ++sides) {
+        CHECK(counts[sides] > 768 && counts[sides] < 1280); /* Every outline occurs frequently. */
+        CHECK(areas[sides]/counts[sides] > 0.35f && areas[sides]/counts[sides] < 0.65f);
+    } /* Mean area stays close to Classic's 0.5 for every side count. */
+    lq_runtime_light samples[LQ_BEAM_LIGHTS];
+    float start[3] = {0,0,0}, end[3] = {600,0,0};
+    uint32_t count = LQ_BeamRuntimeLights(start, end, 100, samples);
+    CHECK(count == LQ_BEAM_LIGHTS);
+    /* Every part of a beam illuminates a receiver 64 units alongside it. */
+    for (int x = 0; x <= 600; x += 10) {
+        float value = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            float dx = samples[i].position_radius[0] - x;
+            float distance = sqrtf(dx*dx + 64*64);
+            value += fmaxf(samples[i].falloff[0] - samples[i].falloff[1]*distance, 0) * samples[i].color_strength[3];
+            CHECK(samples[i].source_index == (LQ_DYNAMIC_LIGHT_SOURCE | (100+i)));
+            CHECK(samples[i].color_strength[2] > samples[i].color_strength[0]);
+        }
+        CHECK(value > 40 && value < 200);
+    }
+    end[0] = 0;
+    CHECK(LQ_BeamRuntimeLights(start, end, 100, samples) == 1);
+    CHECK(samples[0].position_radius[0] == 0);
+    end[0] = NAN; CHECK(!LQ_BeamRuntimeLights(start, end, 100, samples));
+    puts("PASS stable convex 3-6 sided particle flakes, varied scale and continuous beam-light coverage");
+    return 0;
+}
 /* A closed 256-unit white room lit from its center: one wall per BSP node,
  * a single empty leaf inside. Every wall receives direct light, so bounce at
  * each sample is the mean exitance of the walls its hemisphere sees. */
@@ -295,5 +347,6 @@ int main(void)
     LQ_SceneFree(&selection);
     puts("PASS deterministic bounded runtime-light selection, stable shadow slots and PVS reach");
     CHECK(BounceRoomTest() == 0);
+    CHECK(EffectTest() == 0);
     puts("PASS renderer scene ownership, invalid geometry rejection and Quake/GPU camera projection"); return 0;
 }

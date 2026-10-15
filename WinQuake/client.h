@@ -69,6 +69,8 @@ typedef struct
 #define	SIGNONS		4			// signon messages to receive before connected
 
 #define	MAX_DLIGHTS		32
+typedef enum { LQ_DLIGHT_GENERIC, LQ_DLIGHT_MUZZLE, LQ_DLIGHT_ROCKET,
+    LQ_DLIGHT_EXPLOSION, LQ_DLIGHT_GLOW } lq_dlight_kind;
 typedef struct
 {
 	vec3_t	origin;
@@ -77,6 +79,7 @@ typedef struct
 	float	decay;				// drop this each second
 	float	minlight;			// don't add when contributing less
 	int		key;
+	lq_dlight_kind kind; /* local presentation metadata; no protocol change */
 #ifdef QUAKE2
 	qboolean	dark;			// subtracts light instead of adding
 #endif

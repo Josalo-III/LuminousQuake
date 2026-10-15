@@ -197,6 +197,7 @@ void CL_ParseTEnt (void)
 		pos[2] = MSG_ReadCoord ();
 		R_ParticleExplosion (pos);
 		dl = CL_AllocDlight (0);
+		dl->kind = LQ_DLIGHT_EXPLOSION;
 		VectorCopy (pos, dl->origin);
 		dl->radius = 350;
 		dl->die = cl.time + 0.5;
@@ -253,6 +254,7 @@ void CL_ParseTEnt (void)
 		colorLength = MSG_ReadByte ();
 		R_ParticleExplosion2 (pos, colorStart, colorLength);
 		dl = CL_AllocDlight (0);
+		dl->kind = LQ_DLIGHT_EXPLOSION;
 		VectorCopy (pos, dl->origin);
 		dl->radius = 350;
 		dl->die = cl.time + 0.5;
@@ -280,6 +282,7 @@ void CL_ParseTEnt (void)
 		R_RocketTrail (pos, endpos, 0+128);
 		R_ParticleExplosion (endpos);
 		dl = CL_AllocDlight (-1);
+		dl->kind = LQ_DLIGHT_EXPLOSION;
 		VectorCopy (endpos, dl->origin);
 		dl->radius = 350;
 		dl->die = cl.time + 0.5;

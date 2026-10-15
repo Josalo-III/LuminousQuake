@@ -102,8 +102,8 @@ const vec2 DISK[16] = vec2[](
 float majorAxis(vec3 v) { return max(max(abs(v.x), abs(v.y)), abs(v.z)); }
 // Reversed depth the receiving plane would have along a tap direction. Wide
 // filters then compare like with like on tilted receivers instead of meeting
-// the far side of the receiver's own wall. Negative: the tap leaves the plane
-// toward the light, so it cannot be shadowed by anything behind the receiver.
+// the far side of the receiver's own wall. Negative: this direction cannot
+// reach the receiving plane in front of the light and contributes no light.
 float planeReference(vec3 tap, vec3 origin, vec3 normal, vec3 point) {
     float toward = dot(normal, tap);
     if (toward >= -1e-4) return -1.0;
@@ -119,6 +119,9 @@ float shadowFactor(uint slot, vec3 origin, vec3 normal, float radius) {
     vec3 point = world_position + normal * texel;
     vec3 ray = point - origin;
     float distance = length(ray), major = majorAxis(ray);
+    // Spark particles can coincide with their collection's source. The cube
+    // cannot contain a blocker inside its near plane; avoid a zero ray basis.
+    if (distance < SHADOW_NEAR) return 1.0;
     vec3 side = normalize(cross(ray, abs(ray.z) < 0.9 * distance ? vec3(0,0,1) : vec3(1,0,0)));
     vec3 up = normalize(cross(ray, side));
     // A world-anchored rotation turns sampling bands into stable fine grain.
@@ -144,7 +147,9 @@ float shadowFactor(uint slot, vec3 origin, vec3 normal, float radius) {
         vec2 offset = rotation * DISK[i] * width;
         vec3 tap = ray + side * offset.x + up * offset.y;
         float reference = planeReference(tap, origin, normal, point);
-        sum += reference < 0.0 ? 1.0 : texture(shadow_maps, vec4(tap, float(slot)), reference * 1.0005);
+        // A grazing tap that cannot reach the receiver is not an unoccluded
+        // light sample: counting it as lit opens bright seams at sealed joins.
+        sum += reference < 0.0 ? 0.0 : texture(shadow_maps, vec4(tap, float(slot)), reference * 1.0005);
     }
     return sum / 16.0;
 }
@@ -164,8 +169,16 @@ vec4 probeCube(sampler3D probes, float blocks, float base, vec3 point, vec3 n) {
     }
     return vec4(sum.rgb * 255.0, sum.a);
 }
+vec4 effectProbe(sampler3D probes, float blocks, float base, vec3 point, vec3 n, bool diffuse) {
+    if (!diffuse) return probeCube(probes, blocks, base, point, n);
+    vec3 diagonal = vec3(0.57735027);
+    return 0.5 * (probeCube(probes, blocks, base, point, diagonal) +
+                  probeCube(probes, blocks, base, point, -diagonal));
+}
 void main() {
     int flags = int(surface.parameters.y);
+    bool diffuse_effect = lights.parameters.y != 0u && (flags & 128) != 0;
+    vec3 effect_light = vec3(0.0);
     vec2 sample_uv = uv;
     float index_value, grade = 0;
     vec3 direct_tint = vec3(1.0);
@@ -201,7 +214,7 @@ void main() {
                     float distance = length(direction);
                     if (distance >= origin.w) continue;
                     direction = distance > 0.001 ? direction/distance : normal;
-                    float facing = dot(normal,direction);
+                    float facing = diffuse_effect ? 1.0 : dot(normal,direction);
                     if (facing <= 0.0) continue; // LIGHT rejects sources behind a face
                     vec4 f = lights.falloff[i];
                     /* LIGHT's softened incidence: half the value at grazing. */
@@ -222,7 +235,7 @@ void main() {
                     direct *= lights.color_strength[i].w;
                     if (!liquid && opacity > 0.0 && submerged != (lights.shape[i].z > 0.5)) direct *= 1.0 - opacity;
                     if (direct < 0.01) continue;
-                    direct *= shadowFactor(i,origin.xyz,normal,lights.shape[i].y);
+                    direct *= shadowFactor(i,origin.xyz,diffuse_effect ? direction : normal,lights.shape[i].y);
                     illumination += lights.color_strength[i].rgb * direct;
                 }
                 // Static-world bounce from those lights, driven by live styles.
@@ -239,7 +252,7 @@ void main() {
                 if (sky && (flags & 4) == 0 && !liquid)
                     illumination += texture(bounce, vec2(light_uv.x, row * 0.25)).a * lights.sky.rgb * through;
                 else if (sky && (actor || liquid) && lights.probe_origin.w > 0.0)
-                    illumination += probeCube(probe_static, 24.0, 0.0, world_position + normal * (actor ? 0.0 : 8.0), normal).a *
+                    illumination += effectProbe(probe_static, 24.0, 0.0, world_position + normal * (actor ? 0.0 : 8.0), normal, diffuse_effect).a *
                         lights.sky.rgb;
                 // Probes: static bounce for actors; gameplay-light bounce for all.
                 int probes = int(lights.probe_size.w + 0.5);
@@ -248,12 +261,13 @@ void main() {
                     // Liquids have no lightmap or bounce texels; the static probes stand in.
                     if ((actor || liquid) && (probes & 1) != 0)
                         for (int k = 0; k < 4; ++k) if (lights.probe_weights[k] > 0.0)
-                            illumination += probeCube(probe_static, 24.0, float(k * 6), point, normal).rgb *
+                            illumination += effectProbe(probe_static, 24.0, float(k * 6), point, normal, diffuse_effect).rgb *
                                 (lights.probe_weights[k] * lights.tuning.w);
                     if ((probes & 2) != 0)
-                        illumination += probeCube(probe_dynamic, 6.0, 0.0, point, normal).rgb * lights.tuning.w;
+                        illumination += effectProbe(probe_dynamic, 6.0, 0.0, point, normal, diffuse_effect).rgb * lights.tuning.w;
                 }
                 illumination *= lights.tuning.x;
+                effect_light = illumination / 128.0;
                 if ((flags & 16) != 0) illumination = max(illumination, vec3(24.0)); // Quake's view-weapon minimum
                 brightness = max(illumination.r,max(illumination.g,illumination.b));
                 if (brightness > 0.001) direct_tint = illumination/brightness;
@@ -274,5 +288,10 @@ void main() {
     // Resolve colors before interpolation. Sky, masks and UI keep level zero.
     if ((flags & 9) == 0)
         color = filteredColor(sample_uv, dx, dy, grade);
-    if (lights.parameters.y != 0u && index < 224.0) color.rgb *= direct_tint;
+    if (diffuse_effect) {
+        // Unlit blood, smoke and bubbles go dark even if their palette entries
+        // belong to Quake's fullbright range. Emission follows effect provenance.
+        color = texture(colormap, vec2((index + 0.5) / 256.0, 0.5 / 64.0));
+        color.rgb *= effect_light;
+    } else if (lights.parameters.y != 0u && index < 224.0) color.rgb *= direct_tint;
 }

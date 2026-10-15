@@ -1,9 +1,12 @@
 # Enhanced renderer — October 15, 2026
 
-Enhanced lighting inputs are part of the shared renderer scene. The standalone
-viewer lights the world from runtime lights with falloff and soft shadows, but
-the Enhanced menu choice stays disabled. Classic GPU remains the playable
-reference; its implementation is the starting point for the upgraded renderer.
+Enhanced is an experimental playable renderer (`lq_renderer 2`), using runtime
+lights, soft shadows, bounce, probes and sky illumination. **Classic GPU is the
+gold standard for testing lighting:** compare the same map, camera, lightstyle
+and gameplay event against it to judge composition, darkness and effect timing.
+Synthetic scenes test individual mechanisms; they complement the Classic GPU
+comparison. Enhanced's additional shadows and colored light need not match every
+Classic pixel, but changes must preserve the readability of its lighting.
 
 ## Shared and replaceable components
 
@@ -87,9 +90,11 @@ comes from each light's falloff and from occlusion.
   selected source keeps its slot, and so its cached shadow cube, while it stays
   selected, including while its style is momentarily dark.
 - **Occlusion.** Each slot owns a 512² reversed-depth (`near / distance`) D32 cube
-  in a cube-array texture. The sealed BSP world casts with the faces turned away
-  from the light, so receivers never compare against themselves and no large
-  depth bias is needed. Water does not cast. A cube is redrawn in full only when
+  in a cube-array texture. Both sides of occluders cast, retaining the nearest
+  wall surface instead of only its exit face. This seals grazing joins such as
+  the first E1M1 lift entrance. Receiver-plane comparisons and a one-texel normal
+  offset keep the receiving face from shadowing itself. Water does not cast.
+  A cube is redrawn in full only when
   its slot's light or position changes.
 - **Moving casters.** In game, actors cast with their live geometry: monsters,
   items and ammo/health boxes, and also moving brush models (doors, lifts,
@@ -105,9 +110,10 @@ comes from each light's falloff and from occlusion.
   `radius × (receiver − blocker) / blocker`, so contact shadows stay sharp and
   distant occluders soften. Taps use the receiving plane's own depth, so tilted
   surfaces do not shadow themselves. A point source (radius 0) gives the hard
-  geometric shadows that motivated this.
+  geometric shadows that motivated this. Grazing taps that cannot reach the
+  receiver contribute no light; treating them as unoccluded opens bright seams.
 
-Commands (standalone viewer only; `lq_renderer 2` is not connected):
+Commands (standalone viewer; the playable client uses `lq_renderer 2`):
 
 ```sh
 ./build/luminousquake-gpu -basedir "$PWD/quake-complete/Quake" -map e1m3 --enhanced
@@ -173,14 +179,85 @@ take the last eight:
 - powerup glows (quad/pentagram, `EF_DIMLIGHT`/`EF_BRIGHTLIGHT`).
 
 Each dlight keeps Quake's radius as its value and range, so a surface facing it
-gets the same `radius − distance` as Classic. It has a 4-unit emitter and a warm
-fire tint, since Quake dlights carry no color. Its shadow cube is redrawn every
-frame as it moves.
+gets the same `radius − distance` as Classic. Local presentation metadata now
+distinguishes muzzle flashes, rockets/lava balls, explosions and powerup glows:
+warm flashes/fire, orange projectiles, and neutral powerup glow. Most emitters
+have a 4-unit radius; explosions use 12 units. Their shadow cubes follow the
+live light positions. Classic retains the original dlight calculation.
 
 Scripted E1M1 captures (rocket launcher fired from the start) show the muzzle
 flash, the rocket in flight and its explosion lighting the corridor. An ASan
 build ran the same session without reports. Switching between Classic and
 Enhanced rebuilds the map for the new mode.
+
+### Particles, sprites and travelling weapon light
+
+Enhanced particles use centred irregular polygons with three to six sides and
+deterministic variations in rotation, aspect and scale. Side counts are mixed
+evenly, with area normalized so extra sides do not make a particle larger.
+A particle keeps its shape as it moves; generating
+the variation does not consume the gameplay random stream. Classic GPU retains
+its original triangles.
+
+Particle emission is recorded when an effect spawns, independently of palette
+color. Blood (including gib trails), tar blobs and smoke receive runtime direct
+light, static/sky probes and moving-light bounce. They become dark with zero
+illumination, including palette entries that Quake normally treats as fullbright.
+Small particles and non-emitting sprites gather light from every direction so
+their lighting does not depend on their billboard facing the camera.
+
+| Effect | Self-lit appearance | Illumination source |
+| --- | --- | --- |
+| Rocket / lava ball | Lava ball self-lit; rocket body receives light | Existing moving projectile dlight, with shadows and bounce |
+| Lightning (`bolt.mdl`, `bolt2.mdl`, `bolt3.mdl`) | Yes | Up to six blue-white sources distributed along each live beam |
+| Bullet/nail impacts, wizard/knight sparks | Yes | One palette-colored source per impact collection, fading over 0.2 s |
+| Explosion particles / `s_explod.spr` | Yes | Existing explosion dlight; generic particle-message explosions get a collection light |
+| Flames / `s_light.spr` | Yes | Retained authored map-light sources |
+| `s_bubble.spr`, blood, tar and smoke | No | Receive scene light; create no light |
+| Tracer trails, lava/teleport particles, laser model | Yes | Existing gameplay/authored lights where supplied; no per-particle lights |
+
+Rocket models and luminous projectile/beam models do not cast shadows: a source
+inside its own closed mesh would otherwise shadow the surrounding world. Monsters
+and walls still occlude the travelling light. The bright part of a rocket trail
+is self-lit; as its ramp becomes smoke it receives scene lighting instead.
+
+Lightning sources cover the beam between its current endpoints and disappear
+when the beam expires. They and spark collections share the existing eight
+dynamic shadow slots with gameplay dlights; heavy simultaneous effects can
+exceed that budget. Spark lights use a separate bounded event queue, preserving
+the Classic dlight pool. Map changes clear the queue.
+
+Validation for this change (October 15): native arm64 Debug and ASan/UBSan
+suites each pass all 21 tests, including Metal readback and socket checks. The
+GPU tests cover lit-effect darkness, unoriented illumination, fullbright
+emission, fullbright palette entries on non-emitting effects, non-casting
+luminous models, and Classic isolation. CPU checks cover particle convexity,
+stable variation across 4,096 seeds, all four side counts, mean coverage near
+Classic's triangle area for each side count, and continuous
+light coverage alongside a 600-unit beam.
+
+Paired 800×600 Classic GPU / Enhanced gameplay captures cover idle, a rocket in
+flight, lightning and shotgun sparks in E1M1. Each uses `host_framerate 0.02`,
+the same input sequence, and a paused capture state with fresh temporary settings.
+Saved player and rocket states matched between the original renderer pairs.
+Mean particle area stays close to Classic's triangle while outline and scale
+vary. The polygon checks pass in Debug and ASan/UBSan. A further Enhanced rocket
+capture verified rendering with the three-to-six-side mixture; its camera moved,
+so it is not a matched comparison against Classic.
+Enhanced shows warm travelling rocket illumination and colored
+lighting along the live lightning beam. These bounded samples do not establish
+full-campaign lighting equivalence or GPU performance.
+
+The first button-operated lift's left entrance seam reproduces at
+`--camera "144 576 88 -5 205"`. Classic has no bright seam; Enhanced's leak
+persists without bounce. Isolating the spotlight at `-120 504 144` confirms that
+direct light crosses a BSP-solid wall. Keeping both sides in the shadow map and
+rejecting unreachable grazing taps removes the seam in the repeated capture.
+The earlier view at `680 512 110` targeted a different lift.
+Playable captures also compare Classic, the previous Enhanced build and the
+corrected build from the lower landing looking back up, with the lift at
+`0 0 -232`. Saved player origins/view angles and lift positions match across all
+three captures. A bright sliver at the underside join disappears after the fix.
 
 ## Probe grid: actors and moving-light bounce
 
@@ -259,8 +336,7 @@ and dynamic probes.
 
 Current limits:
 
-- Particles and sprites keep Classic shading. Actor silhouettes cast from back
-  faces chosen per vertex normal, which can thin shadows at grazing angles.
+- Actor silhouettes cast from back faces chosen per vertex normal, which can thin shadows at grazing angles.
   Brush-model faces are lit and gather bounce at their compiled positions.
 - Sky light is diffuse only, one color per map, baked visibility (no sun,
   no occlusion by moving objects).
@@ -315,7 +391,11 @@ light, a closed box hidden from the camera and a receiving wall. Readback checks
 that the shadow falls at the diagonally offset position (a face flip on either
 axis would fail), moves with the light, reuses the cached cube when nothing
 changes and disappears beyond range. It also checks that a point source gives a
-hard edge and a 32-unit emitter a graded penumbra. Both native suites (normal and
+hard edge and a 32-unit emitter a graded penumbra. Penumbra checks average several
+locations because the world-anchored 16-tap pattern varies at individual pixels.
+A separate sealed-corner fixture uses a grazing eight-unit emitter behind a
+thick wall, mirrored vertically: blocked receivers stay dark above and below,
+while disabling shadows illuminates the same samples. Both native suites (normal and
 ASan/UBSan) pass all 21 tests, and an E1M3 Enhanced run is sanitizer-clean.
 Other-platform runtime validation remains pending.
 
@@ -326,9 +406,9 @@ Other-platform runtime validation remains pending.
 3. Implement the staged [light reconstruction](LIGHT_RECONSTRUCTION.md): retain
    style-layer evidence, compare the runtime prediction, estimate only
    identifiable parameters, and report residual/confidence data.
-4. Enable an explicitly experimental in-game Enhanced path, keeping Classic for
-   comparison. Normal/specular inputs and deliberate atmosphere adjustments
-   follow. A map-local static composition patch is a last resort, used only
+4. Refine the experimental in-game Enhanced path against Classic GPU.
+   Normal/specular inputs and deliberate atmosphere adjustments follow.
+   A map-local static composition patch is a last resort, used only
    where falloff, occlusion and authored controls cannot recover a scene.
 
 No normal-map, specular or fog claim follows from this checkpoint. Enhanced asset

@@ -5,3 +5,4 @@
 # Local game assets; never include in source control.
 /quake-complete/
 *.pak
+__pycache__/

@@ -549,6 +549,7 @@ void CL_RelinkEntities (void)
 			vec3_t		fv, rv, uv;
 
 			dl = CL_AllocDlight (i);
+			dl->kind = LQ_DLIGHT_MUZZLE;
 			VectorCopy (ent->origin,  dl->origin);
 			dl->origin[2] += 16;
 			AngleVectors (ent->angles, fv, rv, uv);
@@ -561,6 +562,7 @@ void CL_RelinkEntities (void)
 		if (ent->effects & EF_BRIGHTLIGHT)
 		{			
 			dl = CL_AllocDlight (i);
+			dl->kind = LQ_DLIGHT_GLOW;
 			VectorCopy (ent->origin,  dl->origin);
 			dl->origin[2] += 16;
 			dl->radius = 400 + (rand()&31);
@@ -569,6 +571,7 @@ void CL_RelinkEntities (void)
 		if (ent->effects & EF_DIMLIGHT)
 		{			
 			dl = CL_AllocDlight (i);
+			dl->kind = LQ_DLIGHT_GLOW;
 			VectorCopy (ent->origin,  dl->origin);
 			dl->radius = 200 + (rand()&31);
 			dl->die = cl.time + 0.001;
@@ -603,6 +606,7 @@ void CL_RelinkEntities (void)
 		{
 			R_RocketTrail (oldorg, ent->origin, 0);
 			dl = CL_AllocDlight (i);
+			dl->kind = LQ_DLIGHT_ROCKET;
 			VectorCopy (ent->origin, dl->origin);
 			dl->radius = 200;
 			dl->die = cl.time + 0.01;

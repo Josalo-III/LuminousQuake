@@ -10,7 +10,10 @@ typedef struct { float position[3], uv[2], light_uv[2], shade, normal[3]; } lq_v
 typedef struct { uint32_t width, height, channels; uint8_t *pixels; } lq_image;
 enum { LQ_SURFACE_SKY = 1, LQ_SURFACE_WATER = 2, LQ_SURFACE_MODEL = 4,
        LQ_SURFACE_MASKED = 8, LQ_SURFACE_WEAPON = 16,
-       LQ_SURFACE_ACTOR = 32 /* model lit by Enhanced lights/probes; Classic uses shade */ };
+       LQ_SURFACE_ACTOR = 32, /* model lit by Enhanced lights/probes; Classic uses shade */
+       /* 64 is reserved for the GPU's submerged-world-face flag. */
+       LQ_SURFACE_DIFFUSE_EFFECT = 128, /* small, unoriented lit particles/sprites */
+       LQ_SURFACE_NOSHADOW = 256 /* luminous projectiles must not occlude their own source */ };
 typedef struct { lq_image indices; char name[17]; uint32_t resource_id; } lq_material;
 typedef struct {
     uint32_t first_index, index_count, material, flags;

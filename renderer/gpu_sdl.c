@@ -75,7 +75,7 @@ typedef struct {
     float liquid[4]; /* translucent liquid opacity; zero when liquids are opaque or unlit */
     float sky[4]; /* sky brightness at full visibility; zero without baked sky visibility */
 } lq_light_uniforms;
-typedef struct { float face_projection[16], light_origin[4]; } lq_shadow_uniforms;
+typedef struct { float face_projection[16]; } lq_shadow_uniforms;
 #define LQ_SHADOW_NEAR 2.0f
 #define LQ_SHADOW_SIZE 512
 static int Error(char *error, size_t size, const char *what)
@@ -113,14 +113,13 @@ static int ShadowPipeline(lq_gpu *g)
 {
     SDL_GPUVertexBufferDescription buffer = {0, sizeof(lq_vertex), SDL_GPU_VERTEXINPUTRATE_VERTEX, 0};
     SDL_GPUVertexAttribute attributes[] = {
-        {0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(lq_vertex, position)},
-        {4, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(lq_vertex, normal)}
+        {0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(lq_vertex, position)}
     };
     SDL_GPUGraphicsPipelineCreateInfo info = {0};
     info.vertex_shader = SHADER(g, lq_shadow_vert, 0, 0, 1);
     info.fragment_shader = SHADER(g, lq_shadow_frag, 1, 0, 0);
     if (info.vertex_shader && info.fragment_shader) {
-        info.vertex_input_state = (SDL_GPUVertexInputState){&buffer, 1, attributes, 2};
+        info.vertex_input_state = (SDL_GPUVertexInputState){&buffer, 1, attributes, 1};
         info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
         info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
         info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
@@ -503,7 +502,7 @@ int LQ_GPUFrame(lq_gpu *g, const lq_frame *f, char *error, size_t size)
     g->frame_caster_count = 0;
     for (uint32_t i = 0; i < f->draw_count; ++i) {
         lq_draw d = f->draws[i];
-        if (d.flags & ~(LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_MODEL|LQ_SURFACE_MASKED|LQ_SURFACE_WEAPON|LQ_SURFACE_ACTOR) ||
+        if (d.flags & ~(LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_MODEL|LQ_SURFACE_MASKED|LQ_SURFACE_WEAPON|LQ_SURFACE_ACTOR|LQ_SURFACE_DIFFUSE_EFFECT|LQ_SURFACE_NOSHADOW) ||
             d.material >= f->material_count || d.first_index > f->index_count ||
             d.index_count > f->index_count - d.first_index || !d.index_count || d.index_count % 3) {
             SDL_SetError("invalid frame triangle range"); return Error(error, size, "GPU frame draws");
@@ -512,7 +511,7 @@ int LQ_GPUFrame(lq_gpu *g, const lq_frame *f, char *error, size_t size)
         /* Actors and moving brush faces cast; the view weapon, particles,
          * sprites, flames and liquids do not. */
         int brush = !(d.flags & LQ_SURFACE_MODEL), actor = (d.flags & LQ_SURFACE_ACTOR) != 0;
-        if ((brush || actor) && !(d.flags & (LQ_SURFACE_WEAPON|LQ_SURFACE_MASKED|LQ_SURFACE_SKY|LQ_SURFACE_WATER))) {
+        if ((brush || actor) && !(d.flags & (LQ_SURFACE_WEAPON|LQ_SURFACE_MASKED|LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_DIFFUSE_EFFECT|LQ_SURFACE_NOSHADOW))) {
             struct lq_caster *c = &g->frame_casters[g->frame_caster_count++];
             c->draw = i;
             for (int k = 0; k < 3; ++k) { c->min[k] = INFINITY; c->max[k] = -INFINITY; }
@@ -775,7 +774,7 @@ static void RenderShadows(lq_gpu *g, SDL_GPUCommandBuffer *command, const lq_vie
         }
         uint8_t redraw = changed ? 0x3f : (uint8_t)(touched | g->shadow_dynamic_faces[slot]);
         if (!redraw) continue;
-        lq_shadow_uniforms uniforms = {{0}, {light->position_radius[0], light->position_radius[1], light->position_radius[2], 1}};
+        lq_shadow_uniforms uniforms = {{0}};
         for (int face = 0; face < 6; ++face) {
             if (!(redraw & (1 << face))) continue;
             SDL_GPUDepthStencilTargetInfo depth = {0};

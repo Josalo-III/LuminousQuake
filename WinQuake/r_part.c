@@ -20,6 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "r_local.h"
+#include "render_bridge.h"
 
 #define MAX_PARTICLES			2048	// default max # of particles at one
 										//  time
@@ -83,6 +84,7 @@ void R_DarkFieldParticles (entity_t *ent)
 				if (!free_particles)
 					return;
 				p = free_particles;
+				p->emissive = 1;
 				free_particles = p->next;
 				p->next = active_particles;
 				active_particles = p;
@@ -160,6 +162,7 @@ avelocities[0][i] = (rand()&255) * 0.01;
 		if (!free_particles)
 			return;
 		p = free_particles;
+		p->emissive = 1;
 		free_particles = p->next;
 		p->next = active_particles;
 		active_particles = p;
@@ -187,8 +190,10 @@ void R_ClearParticles (void)
 	free_particles = &particles[0];
 	active_particles = NULL;
 
-	for (i=0 ;i<r_numparticles ; i++)
+	for (i=0 ;i<r_numparticles ; i++) {
 		particles[i].next = &particles[i+1];
+		particles[i].visual_seed = (unsigned int)i;
+	}
 	particles[r_numparticles-1].next = NULL;
 }
 
@@ -226,6 +231,7 @@ void R_ReadPointFile_f (void)
 			break;
 		}
 		p = free_particles;
+		p->emissive = 1;
 		free_particles = p->next;
 		p->next = active_particles;
 		active_particles = p;
@@ -284,6 +290,7 @@ void R_ParticleExplosion (vec3_t org)
 		if (!free_particles)
 			return;
 		p = free_particles;
+		p->emissive = 1;
 		free_particles = p->next;
 		p->next = active_particles;
 		active_particles = p;
@@ -329,6 +336,7 @@ void R_ParticleExplosion2 (vec3_t org, int colorStart, int colorLength)
 		if (!free_particles)
 			return;
 		p = free_particles;
+		p->emissive = 1;
 		free_particles = p->next;
 		p->next = active_particles;
 		active_particles = p;
@@ -362,6 +370,7 @@ void R_BlobExplosion (vec3_t org)
 		if (!free_particles)
 			return;
 		p = free_particles;
+		p->emissive = 0;
 		free_particles = p->next;
 		p->next = active_particles;
 		active_particles = p;
@@ -402,11 +411,16 @@ void R_RunParticleEffect (vec3_t org, vec3_t dir, int color, int count)
 	int			i, j;
 	particle_t	*p;
 	
+	/* One short-lived source per spark collection; blood colors do not emit. */
+	if (count > 0 && (count == 1024 || color == 0 || color == 20 || color == 226))
+		LQ_RenderSpark(org, color == 0 || count == 1024 ? 111 : color);
+
 	for (i=0 ; i<count ; i++)
 	{
 		if (!free_particles)
 			return;
 		p = free_particles;
+		p->emissive = count == 1024 || color == 0 || color == 20 || color == 226;
 		free_particles = p->next;
 		p->next = active_particles;
 		active_particles = p;
@@ -470,6 +484,7 @@ void R_LavaSplash (vec3_t org)
 				if (!free_particles)
 					return;
 				p = free_particles;
+				p->emissive = 1;
 				free_particles = p->next;
 				p->next = active_particles;
 				active_particles = p;
@@ -512,6 +527,7 @@ void R_TeleportSplash (vec3_t org)
 				if (!free_particles)
 					return;
 				p = free_particles;
+				p->emissive = 1;
 				free_particles = p->next;
 				p->next = active_particles;
 				active_particles = p;
@@ -560,6 +576,7 @@ void R_RocketTrail (vec3_t start, vec3_t end, int type)
 		if (!free_particles)
 			return;
 		p = free_particles;
+		p->emissive = type == 0 || type == 3 || type == 5 || type == 6;
 		free_particles = p->next;
 		p->next = active_particles;
 		active_particles = p;

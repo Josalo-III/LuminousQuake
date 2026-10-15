@@ -56,7 +56,8 @@ D_DrawParticle
 void D_DrawParticle (particle_t *pparticle)
 {
 #ifdef LQ_PORTABLE
-	if (LQ_RenderGPUParticle(pparticle->org, (int)pparticle->color)) return;
+	if (LQ_RenderGPUParticle(pparticle->org, (int)pparticle->color,
+		pparticle->emissive && !(pparticle->type == pt_fire && pparticle->ramp >= 2), pparticle->visual_seed)) return;
 #endif
 	vec3_t	local, transformed;
 	float	zi;

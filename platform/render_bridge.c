@@ -9,6 +9,7 @@
 #include "quake_scene.h"
 #include "scene_fixture.h"
 #include "gpu_entities.h"
+#include "effects.h"
 #include "jobs.h"
 extern cvar_t r_waterwarp;
 extern mleaf_t *r_viewleaf;
@@ -23,6 +24,18 @@ static lq_draw *world_draws, *interaction_draws;
  * cached shadows; gameplay dlights take the last LQ_MAX_DYNAMIC_LIGHTS. */
 static qboolean enhanced;
 static lq_runtime_light runtime_lights[LQ_MAX_RUNTIME_LIGHTS];
+/* Spark events live outside Quake's dlight pool so effects cannot evict
+ * gameplay lights or change Classic/Software presentation. */
+static struct { float origin[3]; double born; int color, active; } spark_lights[16];
+static uint32_t next_spark;
+void LQ_RenderSpark(const float origin[3], int color)
+{
+    if (Cvar_VariableValue("lq_renderer") != 2) return;
+    uint32_t slot = next_spark++ % 16;
+    memcpy(spark_lights[slot].origin, origin, sizeof(vec3_t));
+    spark_lights[slot].born = cl.time; spark_lights[slot].color = color & 255;
+    spark_lights[slot].active = 1;
+}
 static uint8_t *dynamic_probes; /* per-frame gameplay-light bounce, GPU layout */
 /* Translucent liquids (r_wateralpha) must show what lies across the surface.
  * Without water vis a compiled PVS stops at the leaves touching it, so the
@@ -66,6 +79,7 @@ void LQ_RenderBridgeShutdown(void)
     LQ_EntitiesReset(); LQ_SceneFree(&map_scene); free(world_draws); world_draws = NULL;
     free(interaction_draws); interaction_draws = NULL; memset(runtime_lights, 0, sizeof(runtime_lights));
     free(dynamic_probes); dynamic_probes = NULL;
+    memset(spark_lights, 0, sizeof(spark_lights)); next_spark = 0;
     direct_frame = false;
     free(preserve); free(rgba);
     preserve = rgba = NULL; count = 0;
@@ -73,6 +87,7 @@ void LQ_RenderBridgeShutdown(void)
 }
 void LQ_RenderMapChanged(void) {
     loaded = false; captured_scene = direct_frame = false;
+    memset(spark_lights, 0, sizeof(spark_lights)); next_spark = 0;
     LQ_EntitiesReset(); LQ_SceneFree(&map_scene); free(world_draws); world_draws = NULL;
     free(interaction_draws); interaction_draws = NULL; memset(runtime_lights, 0, sizeof(runtime_lights));
     free(dynamic_probes); dynamic_probes = NULL;
@@ -158,10 +173,10 @@ int LQ_RenderGPUView(void)
     CaptureView();
     return 1;
 }
-int LQ_RenderGPUParticle(const float origin[3], int color)
+int LQ_RenderGPUParticle(const float origin[3], int color, int emissive, unsigned int seed)
 {
     if (!direct_frame) return 0;
-    LQ_EntitiesParticle(origin, color); return 1;
+    LQ_EntitiesParticle(origin, color, emissive, seed); return 1;
 }
 void LQ_RenderUIRegion(int x, int y, int width, int height, const byte *pixels, int stride, int transparent)
 {
@@ -211,32 +226,65 @@ static void ConvertOverlayRows(void *opaque_context, size_t begin, size_t end)
         rgba_pixel[3] = painted ? 255 : context->menu ? 128 : 0;
     }
 }
-/* Map lights with stable slots, then the nearest live gameplay dlights. The
- * world draws visible this frame take their runtime-light bits. */
+/* Keep nearby effects within the eight dynamic shadow slots, weighted by range. */
+static void SelectEffect(const lq_runtime_light *candidate, lq_runtime_light selected[LQ_MAX_DYNAMIC_LIGHTS],
+    float scores[LQ_MAX_DYNAMIC_LIGHTS], uint32_t *count)
+{
+    vec3_t delta; VectorSubtract(candidate->position_radius, view.origin, delta);
+    float score = Length(delta) - candidate->position_radius[3];
+    uint32_t at = *count;
+    while (at && score < scores[at-1]) --at;
+    if (at >= LQ_MAX_DYNAMIC_LIGHTS) return;
+    if (*count < LQ_MAX_DYNAMIC_LIGHTS) ++*count;
+    memmove(selected+at+1, selected+at, (*count-at-1)*sizeof(*selected));
+    memmove(scores+at+1, scores+at, (*count-at-1)*sizeof(*scores));
+    selected[at] = *candidate; scores[at] = score;
+}
 static void EnhancedLights(void)
 {
-    static const float fire[3] = {1.0f, 0.85f, 0.65f};
+    static const float colors[][3] = {
+        {1.0f, 0.85f, 0.65f}, /* unclassified legacy light */
+        {1.0f, 0.85f, 0.55f}, /* muzzle flash */
+        {1.0f, 0.6f, 0.25f},  /* rocket / lava ball */
+        {1.0f, 0.7f, 0.35f},  /* explosion */
+        {1.0f, 1.0f, 1.0f}    /* powerup glow */
+    };
     LQ_BuildRuntimeLightsLimited(&map_scene, view.lightstyles, view.origin, runtime_lights,
         LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS);
-    int chosen[LQ_MAX_DYNAMIC_LIGHTS]; float scores[LQ_MAX_DYNAMIC_LIGHTS]; uint32_t dynamic = 0;
+    lq_runtime_light selected[LQ_MAX_DYNAMIC_LIGHTS], candidate;
+    float scores[LQ_MAX_DYNAMIC_LIGHTS]; uint32_t dynamic = 0;
     for (int i = 0; i < MAX_DLIGHTS; ++i) {
         const dlight_t *light = &cl_dlights[i];
         if (light->die < cl.time || light->radius <= 0) continue;
-        vec3_t delta; VectorSubtract(light->origin, view.origin, delta);
-        float score = Length(delta) - light->radius;
-        uint32_t at = dynamic;
-        while (at && score < scores[at-1]) --at;
-        if (at >= LQ_MAX_DYNAMIC_LIGHTS) continue;
-        if (dynamic < LQ_MAX_DYNAMIC_LIGHTS) ++dynamic;
-        memmove(chosen+at+1, chosen+at, (dynamic-at-1)*sizeof(*chosen));
-        memmove(scores+at+1, scores+at, (dynamic-at-1)*sizeof(*scores));
-        chosen[at] = i; scores[at] = score;
+        unsigned kind = (unsigned)light->kind;
+        if (kind >= sizeof(colors)/sizeof(colors[0])) kind = LQ_DLIGHT_GENERIC;
+        LQ_DynamicRuntimeLight(&candidate, light->origin, light->radius, colors[kind],
+            kind == LQ_DLIGHT_EXPLOSION ? 12 : 4, (uint32_t)i);
+        SelectEffect(&candidate, selected, scores, &dynamic);
+    }
+    for (uint32_t i = 0; i < MAX_BEAMS; ++i) {
+        const beam_t *beam = &cl_beams[i];
+        if (!beam->model || beam->endtime < cl.time ||
+            (strcmp(beam->model->name, "progs/bolt.mdl") && strcmp(beam->model->name, "progs/bolt2.mdl") &&
+             strcmp(beam->model->name, "progs/bolt3.mdl"))) continue;
+        lq_runtime_light samples[LQ_BEAM_LIGHTS];
+        uint32_t n = LQ_BeamRuntimeLights(beam->start, beam->end, 0x1000 + i*LQ_BEAM_LIGHTS, samples);
+        for (uint32_t j = 0; j < n; ++j) SelectEffect(&samples[j], selected, scores, &dynamic);
+    }
+    for (uint32_t i = 0; i < 16; ++i) {
+        if (!spark_lights[i].active) continue;
+        double age = cl.time - spark_lights[i].born;
+        if (age < 0 || age >= 0.2) { spark_lights[i].active = 0; continue; }
+        unsigned palette = d_8to24table[spark_lights[i].color];
+        float color[3] = {(palette >> 16 & 255)/255.0f, (palette >> 8 & 255)/255.0f, (palette & 255)/255.0f};
+        LQ_DynamicRuntimeLight(&candidate, spark_lights[i].origin, 96, color, 8, 0x2000 + i);
+        candidate.color_strength[3] = (float)(1 - age/0.2);
+        SelectEffect(&candidate, selected, scores, &dynamic);
     }
     uint32_t base = LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS;
     for (uint32_t i = 0; i < LQ_MAX_DYNAMIC_LIGHTS; ++i) {
         lq_runtime_light *slot = &runtime_lights[base + i];
-        if (i < dynamic) LQ_DynamicRuntimeLight(slot, cl_dlights[chosen[i]].origin, cl_dlights[chosen[i]].radius,
-            fire, 4, (uint32_t)chosen[i]);
+        if (i < dynamic) *slot = selected[i];
         else memset(slot, 0, sizeof(*slot));
         slot->submerged = i < dynamic && Liquid(Mod_PointInLeaf(slot->position_radius, cl.worldmodel)->contents);
     }

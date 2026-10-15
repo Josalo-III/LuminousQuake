@@ -114,7 +114,14 @@ static int EnhancedLightTest(lq_view *view, char *error, size_t size)
 {
     lq_scene fixture = {0}; int good = 0;
     float saved_style = view->lightstyles[0];
-    if (!LQ_SceneFixture(&fixture) || !LQ_GPUUpload(gpu,&fixture,error,size)) goto done;
+    if (!LQ_SceneFixture(&fixture)) goto done;
+    /* A palette entry that is fullbright in every colormap row must still go
+     * dark when it belongs to a non-emitting effect. */
+    for (int row = 0; row < 64; ++row) {
+        fixture.colormap.pixels[(row*256 + 224)*4 + 2] = 255;
+        fixture.colormap.pixels[(row*256 + 224)*4 + 3] = 255;
+    }
+    if (!LQ_GPUUpload(gpu,&fixture,error,size)) goto done;
     fixture.draws[0].light_bits = fixture.draws[1].light_bits = 1;
     view->world_draws = fixture.draws; view->world_draw_count = fixture.draw_count;
     view->lightstyles[0] = 1;
@@ -148,12 +155,30 @@ static int EnhancedLightTest(lq_view *view, char *error, size_t size)
             CenterColor(0,127,error,size);
         view->enhanced_lighting = 0;
         lit = lit && LQ_GPURender(gpu,view,640,480,error,size) && CenterColor(0,255,error,size);
+        /* Non-emitting particles receive light from either side and go dark
+         * with no light. A luminous particle stays bright in the same scene. */
+        view->enhanced_lighting = 1;
+        draw.flags |= LQ_SURFACE_DIFFUSE_EFFECT;
+        view->runtime_lights[0].position_radius[0] = 128;
+        lit = lit && LQ_GPUFrame(gpu,&frame,error,size) && LQ_GPURender(gpu,view,640,480,error,size) &&
+            CenterColor(0,255,error,size);
+        blue = 224; skin.resource_id = 48;
+        view->runtime_lights[0].color_strength[3] = 0.125f;
+        lit = lit && LQ_GPUFrame(gpu,&frame,error,size) && LQ_GPURender(gpu,view,640,480,error,size) &&
+            CenterColor(0,64,error,size);
+        view->runtime_lights[0].color_strength[3] = 0;
+        lit = lit && LQ_GPURender(gpu,view,640,480,error,size) && CenterColor(0,0,error,size);
+        draw.flags = LQ_SURFACE_MODEL;
+        lit = lit && LQ_GPUFrame(gpu,&frame,error,size) && LQ_GPURender(gpu,view,640,480,error,size) &&
+            CenterColor(0,255,error,size);
+        view->enhanced_lighting = 0;
+        lit = lit && LQ_GPURender(gpu,view,640,480,error,size) && CenterColor(0,255,error,size);
         view->enhanced_lighting = 1; frame.draw_count = 0;
         if (!lit || !LQ_GPUFrame(gpu,&frame,error,size)) goto done;
     }
     view->enhanced_lighting = 0; view->runtime_light_count = 0;
     if (!LQ_GPURender(gpu,view,640,480,error,size) || !CenterColor(255,0,error,size)) goto done;
-    puts("PASS Enhanced normal/distance/style point lighting, Enhanced actors and Classic isolation");
+    puts("PASS Enhanced point/actor lighting, diffuse effects, fullbright emission, darkness and Classic isolation");
     good = 1;
 done:
     view->lightstyles[0] = saved_style;
@@ -276,13 +301,20 @@ static int ShadowTest(lq_view *view, char *error, size_t size)
             LQ_BuildLightInteractions(&fixture, view->runtime_lights, view->runtime_light_count, interactions);
             interactions[1].index_count = 0;
             if (!LQ_GPURender(gpu, view, 640, 480, error, size)) goto done;
-            float inside[3], outside[3]; int umbra, rim;
-            for (int j = 0; j < 3; ++j) {
-                inside[j] = origin[j] + 256*a[j] + 59*u[j] + 48*v[j];
-                outside[j] = origin[j] + 256*a[j] + 43*u[j] + 48*v[j];
+            /* Average three locations on each side: the world-anchored 16-tap
+             * pattern is intentionally noisy at any single penumbra pixel. */
+            int umbra = 0, rim = 0;
+            for (int sample = 0; sample < 3; ++sample) {
+                float inside[3], outside[3]; int dark, bright;
+                for (int j = 0; j < 3; ++j) {
+                    inside[j] = origin[j] + 256*a[j] + (80 + 10*sample)*u[j] + 48*v[j];
+                    outside[j] = origin[j] + 256*a[j] + (10*sample)*u[j] + 48*v[j];
+                }
+                if (!ScreenRed(view, inside, &dark, error, size) || !ScreenRed(view, outside, &bright, error, size)) goto done;
+                umbra += dark; rim += bright;
             }
-            if (!ScreenRed(view, inside, &umbra, error, size) || !ScreenRed(view, outside, &rim, error, size)) goto done;
-            int ok = radius ? umbra > 20 && rim < 130 && rim > umbra + 10 : umbra < 16 && rim > 140;
+            umbra /= 3; rim /= 3;
+            int ok = radius ? umbra > 20 && rim < 240 && rim > umbra + 20 : umbra < 16 && rim > 140;
             if (!ok) {
                 snprintf(error, size, "penumbra axis %d radius %d: inside red %d, outside red %d", axis, radius, umbra, rim);
                 goto done;
@@ -301,11 +333,12 @@ static int ShadowTest(lq_view *view, char *error, size_t size)
         lq_material skin = {.indices={1,1,1,&skin_pixel},.resource_id=47};
         lq_draw box_draw = {0,36,0,LQ_SURFACE_MODEL|LQ_SURFACE_ACTOR,{255,255,255,255}};
         lq_frame moving = {actor,order,&box_draw,&skin,24,36,1,1};
-        for (int step = 0; step < 5; ++step) {
+        for (int step = 0; step < 6; ++step) {
             /* 0: new cube; 1: touched face only; 2: box moved -60u; 3: box gone; 4: nothing to redraw. */
             if (step == 2) for (int i = 0; i < 24; ++i) for (int j = 0; j < 3; ++j) actor[i].position[j] -= 60*u[j];
             if (step == 3) moving.draw_count = 0;
-            if (step <= 3 && !LQ_GPUFrame(gpu, &moving, error, size)) goto done;
+            if (step == 5) { moving.draw_count = 1; box_draw.flags |= LQ_SURFACE_NOSHADOW; }
+            if ((step <= 3 || step == 5) && !LQ_GPUFrame(gpu, &moving, error, size)) goto done;
             view->runtime_light_count = LQ_BuildRuntimeLights(&fixture, view->lightstyles, view->origin, view->runtime_lights);
             LQ_BuildLightInteractions(&fixture, view->runtime_lights, view->runtime_light_count, interactions);
             view->world_draws = interactions; view->world_draw_count = 1;
@@ -321,7 +354,7 @@ static int ShadowTest(lq_view *view, char *error, size_t size)
                 !ScreenRed(view, lit, &lit_red, error, size)) goto done;
             int ok = lit_red > 100 && (step < 2 ? old_red < 16 && new_red > 100 :
                 step == 2 ? old_red > 100 && new_red < 16 : old_red > 100 && new_red > 100);
-            uint32_t expected = step == 0 ? 6 : step == 4 ? 0 : 1;
+            uint32_t expected = step == 0 ? 6 : step >= 4 ? 0 : 1;
             if (!ok || faces != expected) {
                 snprintf(error, size, "moving caster axis %d step %d: old %d new %d lit %d, %u faces redrawn",
                     axis, step, old_red, new_red, lit_red, faces);
@@ -342,6 +375,70 @@ done:
     free(interactions); LQ_SceneFree(&fixture);
     return good;
 }
+/* A thick wall meets a grazing receiver at a sealed corner, as at E1M1's
+ * first lift. The source's entire eight-unit emitter is behind the wall.
+ * Mirror vertically to cover the same join viewed from below. */
+static int ContactShadowTest(lq_view *view, char *error, size_t size)
+{
+    int good = 0;
+    lq_scene fixture = {0};
+    lq_view saved = *view;
+    lq_draw interactions[2];
+    for (int mirror = -1; mirror <= 1; mirror += 2) {
+        LQ_SceneFree(&fixture);
+        if (!LQ_SceneFixture(&fixture)) goto done;
+        free(fixture.vertices); free(fixture.indices);
+        fixture.vertices = calloc(28, sizeof(*fixture.vertices));
+        fixture.indices = calloc(42, sizeof(*fixture.indices));
+        fixture.light_sources = calloc(1, sizeof(*fixture.light_sources));
+        if (!fixture.vertices || !fixture.indices || !fixture.light_sources) goto done;
+        for (int row = 0; row < 64; ++row) fixture.colormap.pixels[(row*256 + 201)*4] = (uint8_t)(255 - 4*row);
+        shadow_mesh mesh = {fixture.vertices, fixture.indices, 0, 0};
+        float receiver[3] = {240,-8,-64*mirror}, u[3] = {1,0,0}, v[3] = {0,0,1}, n[3] = {0,1,0};
+        ShadowQuad(&mesh, receiver, u, v, 56, 64, n);
+        float box[3] = {112,-64,-64*mirror}, half[3] = {72,72,128};
+        for (int face = 0; face < 6; ++face) {
+            float normal[3] = {0}, fu[3] = {0}, fv[3] = {0}, center[3];
+            int axis = face/2, ua = (axis+1)%3, va = (axis+2)%3;
+            normal[axis] = face & 1 ? -1 : 1; fu[ua] = fv[va] = 1;
+            for (int j = 0; j < 3; ++j) center[j] = box[j] + half[j]*normal[j];
+            ShadowQuad(&mesh, center, fu, fv, half[ua], half[va], normal);
+        }
+        fixture.vertex_count = mesh.vertex_count; fixture.index_count = mesh.index_count;
+        fixture.draws[0] = (lq_draw){0,6,0,0,{255,255,255,255},0};
+        fixture.draws[1] = (lq_draw){6,36,0,0,{255,255,255,255},0};
+        fixture.light_source_count = 1;
+        LQ_LightSourceDefaults(fixture.light_sources);
+        fixture.light_sources[0].intensity = 600; fixture.light_sources[0].source_radius = 8;
+        if (!LQ_GPUUpload(gpu, &fixture, error, size)) goto done;
+        memset(view, 0, sizeof(*view));
+        view->horizontal_fov = 90; view->enhanced_lighting = 1; view->lightstyles[0] = 1;
+        view->origin[0] = 240; view->origin[1] = 80; view->origin[2] = -64*mirror; view->angles[1] = 270;
+        view->runtime_light_count = LQ_BuildRuntimeLights(&fixture, view->lightstyles, view->origin, view->runtime_lights);
+        LQ_BuildLightInteractions(&fixture, view->runtime_lights, view->runtime_light_count, interactions);
+        interactions[1].index_count = 0; /* hidden, but still casts */
+        view->world_draws = interactions; view->world_draw_count = 2;
+        for (int shadows = 0; shadows <= 1; ++shadows) {
+            view->disable_shadows = !shadows;
+            if (!LQ_GPURender(gpu, view, 640, 480, error, size)) goto done;
+            for (int x = 186; x <= 218; x += 8) {
+                float point[3] = {(float)x,-8,-64*mirror}; int red;
+                if (!ScreenRed(view, point, &red, error, size)) goto done;
+                if (shadows ? red >= 16 : red <= 80) {
+                    snprintf(error, size, "sealed corner mirror %d x %d shadows %d: red %d", mirror, x, shadows, red);
+                    goto done;
+                }
+            }
+        }
+    }
+    puts("PASS Enhanced sealed grazing corners above and below, with unshadowed controls");
+    good = 1;
+done:
+    if (!good && !*error) snprintf(error, size, "contact shadow fixture allocation");
+    *view = saved; LQ_SceneFree(&fixture);
+    return good;
+}
+
 static int MipmapTest(lq_view *view, char *error, size_t size)
 {
     lq_scene fixture = {0}; int good = 0;
@@ -589,6 +686,7 @@ int LQ_GPUViewer(int argc, char **argv)
         if (!FrameTest(&view, error, sizeof(error))) goto done;
         if (!EnhancedLightTest(&view, error, sizeof(error))) goto done;
         if (!ShadowTest(&view, error, sizeof(error))) goto done;
+        if (!ContactShadowTest(&view, error, sizeof(error))) goto done;
         if (!MipmapTest(&view, error, sizeof(error))) goto done;
         if (!LQ_GPURender(gpu, &view, 640, 480, error, sizeof(error))) goto done;
         if (capture && !SaveFrame(capture, error, sizeof(error))) goto done;
