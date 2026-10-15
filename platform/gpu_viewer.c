@@ -230,6 +230,15 @@ int LQ_GPUViewer(int argc, char **argv)
         memcpy(view.origin, scene.spawn_origin, sizeof(view.origin));
         memcpy(view.angles, scene.spawn_angles, sizeof(view.angles));
     }
+    if (Has(argc, argv, "--light-info")) {
+        for (uint32_t i = 0; i < scene.light_source_count; ++i) {
+            const lq_light_source *light = &scene.light_sources[i];
+            printf("Light entity %u: %s origin %.3f %.3f %.3f intensity %.3f style %u spawnflags %u cone %.3f target [%s] targetname [%s] flags %u\n",
+                light->entity_index,light->classname,light->origin[0],light->origin[1],light->origin[2],light->intensity,
+                light->style,light->spawnflags,light->cone_angle,light->target,light->targetname,light->flags);
+        }
+        result = 0; goto done;
+    }
     if (Has(argc, argv, "--scene-info")) { result = 0; goto done; }
     int fixed_camera = Has(argc, argv, "--fixed-camera");
     active = 0;

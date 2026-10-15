@@ -1,5 +1,25 @@
 # Source provenance
 
+## CPU profiling and worker jobs — October 14, 2026
+
+- `platform/frame_timing.*`, `platform/jobs.*`, the SDL range-worker integration,
+  profiling documentation and trace-summary tool are new LuminousQuake code.
+- The worker implementation uses SDL3's public thread, mutex and condition APIs;
+  no ioquake3, Doom 3, dhewm3 or Tenebrae worker code was copied.
+- Row conversion changes adapt existing LuminousQuake UI and Classic GPU bridge
+  code. QuakeC, gameplay state, window operations and GPU submission remain on
+  their existing owners.
+
+## Enhanced lighting foundations — October 14, 2026
+
+- Inspected original compiler semantics in id Software's Quake-Tools revision
+  `c0d1b91c74eb654365ac7755bc837e497caaca73`, `qutils/LIGHT/ENTITIES.C` and
+  `qutils/LIGHT/ENTITIES.H`: scalar light intensity, style/target metadata and
+  the default intensity of 300. No compiler implementation files were imported.
+- Scene light descriptions, style evaluation and normal propagation are local
+  GPL-2.0-or-later adaptations of the existing renderer/Quake loader boundary.
+  No Doom 3/dhewm3 or Tenebrae implementation has been imported in this slice.
+
 ## Rerelease QuakeC comparison — October 14, 2026
 
 - Inspected donor/reference: `https://github.com/id-Software/quake-rerelease-qc`,

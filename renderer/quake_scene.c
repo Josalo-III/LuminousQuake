@@ -31,14 +31,20 @@ static int Failure(lq_scene *s, char *error, size_t size, const char *message)
 {
     snprintf(error, size, "%s", message); LQ_SceneFree(s); return 0;
 }
-static void Spawn(model_t *world, lq_scene *scene)
+static void LightText(char *dest, size_t size, const char *value, lq_light_source *light)
+{
+    if (strlen(value) >= size) light->flags |= LQ_LIGHT_UNRESOLVED_PARAMETERS;
+    snprintf(dest,size,"%s",value);
+}
+static int Spawn(model_t *world, lq_scene *scene)
 {
     char *text = world->entities;
-    int found = 0;
+    int found = 0; uint32_t capacity = 0, entity_index = 0;
     memset(switched_off, 0, sizeof(switched_off));
     while (text && (text = COM_Parse(text)) && !strcmp(com_token, "{")) {
         char classname[128] = "", origin[128] = "", angles[128] = "", yaw[128] = "";
         int style = 0, spawnflags = 0;
+        lq_light_source light = {.entity_index=entity_index++};
         while ((text = COM_Parse(text)) && strcmp(com_token, "}")) {
             char key[1024]; snprintf(key, sizeof(key), "%s", com_token);
             text = COM_Parse(text); if (!text) break;
@@ -46,8 +52,44 @@ static void Spawn(model_t *world, lq_scene *scene)
             else if (!strcmp(key, "origin")) snprintf(origin, sizeof(origin), "%s", com_token);
             else if (!strcmp(key, "angles")) snprintf(angles, sizeof(angles), "%s", com_token);
             else if (!strcmp(key, "angle")) snprintf(yaw, sizeof(yaw), "%s", com_token);
-            else if (!strcmp(key, "style")) style = atoi(com_token);
+            else if (!strcmp(key, "style")) {
+                float value; char extra;
+                style = sscanf(com_token,"%f %c",&value,&extra) == 1 && isfinite(value) && value >= 0 && value < 255 ? (int)value : -1;
+            }
             else if (!strcmp(key, "spawnflags")) spawnflags = atoi(com_token);
+            else if (!strcmp(key, "target")) LightText(light.target,sizeof(light.target),com_token,&light);
+            else if (!strcmp(key, "targetname")) LightText(light.targetname,sizeof(light.targetname),com_token,&light);
+            else if (!strcmp(key, "light") || !strcmp(key,"_light") || !strcmp(key,"light_lev"))
+                LightText(light.light_value,sizeof(light.light_value),com_token,&light);
+            else if (!strcmp(key,"_color")) LightText(light.color_value,sizeof(light.color_value),com_token,&light);
+        }
+        if (!strncmp(classname,"light",5)) {
+            LightText(light.classname,sizeof(light.classname),classname,&light);
+            light.style = style; light.spawnflags = spawnflags;
+            if (style < 0 || style >= 255 ||
+                sscanf(origin,"%f %f %f",&light.origin[0],&light.origin[1],&light.origin[2]) != 3 ||
+                !isfinite(light.origin[0]) || !isfinite(light.origin[1]) || !isfinite(light.origin[2])) {
+                Con_Printf("Light inventory: skipping invalid source entity %u.\n",light.entity_index);
+            } else {
+                char extra; float intensity = 0;
+                if (light.light_value[0] && (sscanf(light.light_value,"%f %c",&intensity,&extra) != 1 || !isfinite(intensity))) {
+                    light.flags |= LQ_LIGHT_UNRESOLVED_PARAMETERS; intensity = 0;
+                }
+                /* Original LIGHT/entities.c uses 300 for absent/zero light. */
+                light.intensity = light.flags ? 0 : intensity == 0 ? 300 : intensity;
+                if (yaw[0] && (sscanf(yaw,"%f %c",&light.cone_angle,&extra) != 1 || !isfinite(light.cone_angle))) {
+                    light.cone_angle = 0; light.flags |= LQ_LIGHT_UNRESOLVED_PARAMETERS;
+                }
+                if (light.color_value[0]) light.flags |= LQ_LIGHT_UNRESOLVED_PARAMETERS;
+                if (scene->light_source_count == capacity) {
+                    if (capacity == 4096) return 0;
+                    capacity = capacity ? capacity*2 : 32;
+                    lq_light_source *sources = realloc(scene->light_sources,capacity*sizeof(*sources));
+                    if (!sources) return 0;
+                    scene->light_sources = sources;
+                }
+                scene->light_sources[scene->light_source_count++] = light;
+            }
         }
         if (style >= 32 && style < 255 && !strncmp(classname, "light", 5))
             switched_off[style] = (spawnflags & 1) != 0;
@@ -59,6 +101,7 @@ static void Spawn(model_t *world, lq_scene *scene)
             }
         }
     }
+    return 1;
 }
 int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char *error, size_t size)
 {
@@ -183,6 +226,8 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
             if (vertex >= world->numvertexes) FAIL("Vertex outside BSP");
             lq_vertex *v = &s->vertices[s->vertex_count++];
             memcpy(v->position, world->vertexes[vertex].position, sizeof(v->position));
+            for (int k = 0; k < 3; ++k)
+                v->normal[k] = f->plane->normal[k] * (f->flags & SURF_PLANEBACK ? -1 : 1);
             for (int k = 0; k < 2; ++k) {
                 float coord = DotProduct(v->position, f->texinfo->vecs[k]) + f->texinfo->vecs[k][3];
                 v->uv[k] = coord / (k ? texture->height : texture->width);
@@ -212,10 +257,19 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
         memcpy(m->indices.pixels, (byte *)texture+texture->offsets[0], (size_t)texture->width*texture->height);
         memcpy(m->name, texture->name, 16); m->name[16] = 0;
     }
-    free(texture_sources); Spawn(world, s);
+    free(texture_sources);
+    if (!Spawn(world, s)) return Failure(s,error,size,"Cannot retain map light inventory (allocation/4096-source limit)");
     if (!LQ_SceneCheck(s, error, size)) { LQ_SceneFree(s); return 0; }
     printf("GPU scene: %u triangles, %u draws, %u indexed materials, %dx%d lightmap atlas\n",
         s->index_count / 3, s->draw_count, s->material_count, ATLAS_SIZE, ATLAS_SIZE);
+    uint32_t targeted = 0, styled = 0, unresolved = 0;
+    for (uint32_t i = 0; i < s->light_source_count; ++i) {
+        targeted += s->light_sources[i].target[0] != 0;
+        styled += s->light_sources[i].style != 0;
+        unresolved += s->light_sources[i].flags != 0;
+    }
+    printf("Light inventory: %u sources, %u targeted, %u styled, %u unresolved; runtime illumination pending\n",
+        s->light_source_count,targeted,styled,unresolved);
     return 1;
 #undef FAIL
 }

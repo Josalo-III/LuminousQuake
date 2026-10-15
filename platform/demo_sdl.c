@@ -4,6 +4,7 @@
 #include "d_local.h"
 #include "sdl_backend.h"
 #include "render_bridge.h"
+#include "jobs.h"
 extern cvar_t scr_fov;
 #include <stdalign.h>
 
@@ -16,6 +17,13 @@ extern int sound_started, soundtime;
 static byte font[128 * 128];
 static sfx_t demo_sound;
 static float demo_depth[8];
+
+typedef struct { unsigned *values; } job_test_context;
+static void TestJobRange(void *opaque_context, size_t begin, size_t end)
+{
+    job_test_context *context = opaque_context;
+    for (size_t i = begin; i < end; ++i) context->values[i] = (unsigned)(i ^ 0x5a5a);
+}
 
 #define VERIFY(condition) do { if (!(condition)) { \
     fprintf(stderr, "FAIL SDL %s:%d: %s\n", __FILE__, __LINE__, #condition); return 1; \
@@ -188,6 +196,25 @@ static int TestPlatform(qboolean no_audio)
         puts("PASS native startup keyboard focus (no synthetic focus event)");
     }
     LQ_PumpEvents(); LQ_SetFocus(true);
+    {
+        unsigned values[1003] = {0};
+        job_test_context context = {values};
+        Cvar_SetValue("lq_workers", 4);
+        LQ_JobsRunRange(1003, 37, TestJobRange, &context);
+        VERIFY(LQ_JobsWorkerCount() > 0 && LQ_JobsWorkerCount() <= 4);
+        for (size_t i = 0; i < 1003; ++i) VERIFY(values[i] == (unsigned)(i ^ 0x5a5a));
+        memset(values, 0, sizeof(values));
+        LQ_JobsRunRange(10, 37, TestJobRange, &context);
+        for (size_t i = 0; i < 10; ++i) VERIFY(values[i] == (unsigned)(i ^ 0x5a5a));
+        for (size_t i = 10; i < 1003; ++i) VERIFY(values[i] == 0);
+        memset(values, 0, sizeof(values));
+        Cvar_SetValue("lq_workers", 0);
+        LQ_JobsRunRange(1003, 37, TestJobRange, &context);
+        VERIFY(LQ_JobsWorkerCount() == 0);
+        for (size_t i = 0; i < 1003; ++i) VERIFY(values[i] == (unsigned)(i ^ 0x5a5a));
+        Cvar_SetValue("lq_workers", -1);
+        puts("PASS parallel and forced-serial range jobs");
+    }
     { float old_yaw = cl.viewangles[YAW];
       SDL_Event motion;
       memset(&motion, 0, sizeof(motion)); motion.type = SDL_EVENT_MOUSE_MOTION;

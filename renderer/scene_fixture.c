@@ -19,6 +19,7 @@ int LQ_SceneFixture(lq_scene *s)
     s->vertex_count = 7; s->index_count = 9; s->draw_count = s->material_count = 2;
     for (int i = 0; i < 7; ++i) {
         memcpy(s->vertices[i].position, positions[i], sizeof(positions[i]));
+        s->vertices[i].normal[0] = -1;
         s->vertices[i].uv[0] = s->vertices[i].uv[1] = 0.5f;
         s->vertices[i].light_uv[0] = s->vertices[i].light_uv[1] = 0.5f;
     }

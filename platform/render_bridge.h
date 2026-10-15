@@ -9,6 +9,7 @@ int LQ_RenderGPUView(void);
 int LQ_RenderGPUParticle(const float origin[3], int color);
 void LQ_RenderUIRegion(int x, int y, int width, int height, const unsigned char *pixels, int stride, int transparent);
 int LQ_RenderUIPainted(int x, int y);
+const unsigned char *LQ_RenderUICoverage(void);
 void LQ_UIBegin(void);
 void LQ_UIEnd(void);
 int LQ_UIScale(void);

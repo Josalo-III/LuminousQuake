@@ -85,7 +85,7 @@ add_library(quake_core OBJECT
     WinQuake/wad.c
     WinQuake/world.c
     WinQuake/cd_null.c
-    WinQuake/net_bsd.c platform/net_udp.c platform/diagnostics.c platform/user_paths.c platform/localization.c
+    WinQuake/net_bsd.c platform/net_udp.c platform/diagnostics.c platform/user_paths.c platform/localization.c platform/frame_timing.c
 )
 target_include_directories(quake_core PUBLIC WinQuake platform)
 target_link_libraries(quake_core PUBLIC ZLIB::ZLIB)
@@ -107,7 +107,7 @@ if(LQ_BUILD_CLIENT)
     find_package(SDL3 3.4 CONFIG REQUIRED)
     add_executable(luminousquake platform/sys_portable.c
         platform/vid_sdl.c platform/in_sdl.c platform/snd_sdl.c platform/demo_sdl.c
-        platform/render_bridge.c platform/ui_scale.c platform/gpu_entities.c renderer/quake_scene.c renderer/gpu_sdl.c
+        platform/render_bridge.c platform/ui_scale.c platform/jobs_sdl.c platform/gpu_entities.c renderer/quake_scene.c renderer/gpu_sdl.c
         WinQuake/snd_dma.c WinQuake/snd_mem.c WinQuake/snd_mix.c)
     target_compile_definitions(luminousquake PRIVATE LQ_SDL=1 SDL_MAIN_HANDLED)
     target_link_libraries(luminousquake PRIVATE SDL3::SDL3 lq_scene)

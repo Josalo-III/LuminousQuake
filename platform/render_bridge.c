@@ -9,6 +9,7 @@
 #include "quake_scene.h"
 #include "scene_fixture.h"
 #include "gpu_entities.h"
+#include "jobs.h"
 extern cvar_t r_waterwarp;
 extern mleaf_t *r_viewleaf;
 extern entity_t *currententity;
@@ -137,6 +138,35 @@ int LQ_RenderUIPainted(int x, int y)
     return x >= 0 && y >= 0 && x < (int)vid.width && y < (int)vid.height &&
         preserve[(size_t)y*vid.width+x];
 }
+const byte *LQ_RenderUICoverage(void) { return direct_frame ? preserve : NULL; }
+
+typedef struct {
+    const byte *source, *coverage;
+    byte *output;
+    uint32_t source_width, output_width, scale;
+    int viewport[4];
+    unsigned palette[256];
+    qboolean opaque, menu;
+} lq_overlay_rows;
+
+static void ConvertOverlayRows(void *opaque_context, size_t begin, size_t end)
+{
+    lq_overlay_rows *context = opaque_context;
+    for (size_t row = begin; row < end; ++row) for (uint32_t col = 0; col < context->output_width; ++col) {
+        uint32_t x = col * context->scale, y = (uint32_t)row * context->scale;
+        size_t source_pixel = (size_t)y * context->source_width + x;
+        size_t output_pixel = row * context->output_width + col;
+        unsigned color = context->palette[context->source[source_pixel]];
+        byte *rgba_pixel = context->output + output_pixel * 4;
+        rgba_pixel[0] = color >> 16; rgba_pixel[1] = color >> 8; rgba_pixel[2] = color;
+        qboolean outside = x < (uint32_t)context->viewport[0] || y < (uint32_t)context->viewport[1] ||
+            x >= (uint32_t)(context->viewport[0] + context->viewport[2]) ||
+            y >= (uint32_t)(context->viewport[1] + context->viewport[3]);
+        qboolean painted = context->opaque || outside || context->coverage[source_pixel];
+        if (!painted && context->menu) rgba_pixel[0] = rgba_pixel[1] = rgba_pixel[2] = 0;
+        rgba_pixel[3] = painted ? 255 : context->menu ? 128 : 0;
+    }
+}
 static void CaptureView(void)
 {
     if (!direct_frame) return;
@@ -170,20 +200,11 @@ qboolean LQ_RenderBridgePresent(void)
     uint32_t scale = direct_frame ? LQ_UIScale() : 1;
     uint32_t overlay_width = (vid.width+scale-1)/scale;
     uint32_t overlay_height = (vid.height+scale-1)/scale;
-    for (uint32_t row = 0; row < overlay_height; ++row) for (uint32_t col = 0; col < overlay_width; ++col) {
-        uint32_t x = col*scale, y = row*scale;
-        size_t i = (size_t)y * vid.width + x;
-        size_t pixel = (size_t)row*overlay_width+col;
-        unsigned color = d_8to24table[vid.buffer[i]];
-        rgba[pixel * 4] = color >> 16; rgba[pixel * 4 + 1] = color >> 8; rgba[pixel * 4 + 2] = color;
-        qboolean outside = x < view.viewport[0] || y < view.viewport[1] ||
-            x >= view.viewport[0] + view.viewport[2] || y >= view.viewport[1] + view.viewport[3];
-        qboolean painted = opaque || outside || preserve[i];
-        if (!painted && key_dest == key_menu) {
-            rgba[pixel*4] = rgba[pixel*4+1] = rgba[pixel*4+2] = 0;
-        }
-        rgba[pixel * 4 + 3] = painted ? 255 : key_dest == key_menu ? 128 : 0;
-    }
+    lq_overlay_rows conversion = {vid.buffer, preserve, rgba, vid.width, overlay_width, scale,
+        {view.viewport[0], view.viewport[1], view.viewport[2], view.viewport[3]}, {0}, opaque,
+        key_dest == key_menu};
+    memcpy(conversion.palette, d_8to24table, sizeof(conversion.palette));
+    LQ_JobsRunRange(overlay_height, 16, ConvertOverlayRows, &conversion);
     if (loaded && (!palette_valid || memcmp(palette_cache, d_8to24table, sizeof(palette_cache)))) {
         byte colors[256 * 64 * 4];
         for (int i = 0; i < 256 * 64; ++i) {

@@ -35,6 +35,23 @@ int main(void)
     puts("PASS color-aware indexed mips, fullbrights, odd and 1x1 sizes, bounds");
     lq_scene scene; lq_view view = {0}; char error[256]; float matrix[16];
     CHECK(LQ_SceneFixture(&scene)); CHECK(LQ_SceneCheck(&scene, error, sizeof(error)));
+    scene.light_sources = calloc(1,sizeof(*scene.light_sources)); CHECK(scene.light_sources);
+    scene.light_source_count = 1;
+    lq_light_source *source = scene.light_sources;
+    source->intensity = 300; source->style = 32; source->spawnflags = 1;
+    float styles[256] = {0};
+    CHECK(LQ_LightSourceIntensity(source,styles) == 0);
+    styles[32] = 0.5f; CHECK(LQ_LightSourceIntensity(source,styles) == 150);
+    styles[32] = 1; CHECK(LQ_LightSourceIntensity(source,styles) == 300); /* live style overrides initial off flag */
+    source->flags = LQ_LIGHT_UNRESOLVED_PARAMETERS;
+    CHECK(LQ_LightSourceIntensity(source,styles) == 0); source->flags = 0;
+    source->style = 255; CHECK(!LQ_SceneCheck(&scene,error,sizeof(error)));
+    source->style = 32; source->origin[0] = NAN;
+    CHECK(!LQ_SceneCheck(&scene,error,sizeof(error))); source->origin[0] = 0;
+    scene.vertices[0].normal[0] = NAN;
+    CHECK(!LQ_SceneCheck(&scene,error,sizeof(error))); scene.vertices[0].normal[0] = -1;
+    CHECK(LQ_SceneCheck(&scene,error,sizeof(error)));
+    puts("PASS owned light inventory, animated/switchable styles and normal validation");
     scene.indices[0] = scene.vertex_count;
     CHECK(!LQ_SceneCheck(&scene, error, sizeof(error))); scene.indices[0] = 0;
     scene.draws[0].index_count = 0xffffffff;

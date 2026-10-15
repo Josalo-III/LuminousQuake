@@ -10,8 +10,18 @@ void LQ_SceneFree(lq_scene *s)
 {
     if (!s) return;
     for (uint32_t i = 0; i < s->material_count; ++i) free(s->materials[i].indices.pixels);
+    free(s->light_sources);
     free(s->materials); free(s->vertices); free(s->indices); free(s->draws);
     free(s->colormap.pixels); free(s->lightmap.pixels); memset(s, 0, sizeof(*s));
+}
+/* Resolve live style state independently of the immutable map description.
+ * No baked lightmap or initial spawnflag is multiplied into runtime styles. */
+float LQ_LightSourceIntensity(const lq_light_source *source, const float styles[256])
+{
+    if (!source || !styles || source->style >= 255 || source->flags ||
+        !isfinite(source->intensity) || !isfinite(styles[source->style])) return 0;
+    float value = source->intensity * fmaxf(styles[source->style], 0);
+    return isfinite(value) ? value : 0;
 }
 static int ImageCheck(const lq_image *image, uint32_t channels)
 {
@@ -32,9 +42,18 @@ int LQ_SceneCheck(const lq_scene *s, char *error, size_t size)
         REQUIRE(ImageCheck(&s->materials[i].indices, 1), "invalid indexed texture");
     for (int j = 0; j < 3; ++j)
         REQUIRE(isfinite(s->spawn_origin[j]) && isfinite(s->spawn_angles[j]), "nonfinite spawn camera");
+    REQUIRE(s->light_source_count <= 4096 && (!s->light_source_count || s->light_sources), "invalid light source inventory");
+    for (uint32_t i = 0; i < s->light_source_count; ++i) {
+        const lq_light_source *light = &s->light_sources[i];
+        REQUIRE(!(light->flags & ~LQ_LIGHT_UNRESOLVED_PARAMETERS) && light->style < 255 && isfinite(light->intensity) && isfinite(light->cone_angle), "invalid light source parameters");
+        for (int j = 0; j < 3; ++j) REQUIRE(isfinite(light->origin[j]), "nonfinite light source origin");
+        REQUIRE(memchr(light->classname,0,sizeof(light->classname)) && memchr(light->target,0,sizeof(light->target)) &&
+            memchr(light->targetname,0,sizeof(light->targetname)) && memchr(light->light_value,0,sizeof(light->light_value)) &&
+            memchr(light->color_value,0,sizeof(light->color_value)), "unterminated light source metadata");
+    }
     for (uint32_t i = 0; i < s->vertex_count; ++i) {
         const lq_vertex *v = &s->vertices[i];
-        for (int j = 0; j < 3; ++j) REQUIRE(isfinite(v->position[j]), "nonfinite position");
+        for (int j = 0; j < 3; ++j) REQUIRE(isfinite(v->position[j]) && isfinite(v->normal[j]), "nonfinite position/normal");
         for (int j = 0; j < 2; ++j)
             REQUIRE(isfinite(v->uv[j]) && isfinite(v->light_uv[j]), "nonfinite texture coordinate");
         REQUIRE(isfinite(v->shade), "nonfinite vertex shading");

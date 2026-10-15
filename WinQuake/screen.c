@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "r_local.h"
 #ifdef LQ_PORTABLE
 #include "render_bridge.h"
+#include "frame_timing.h"
 extern cvar_t crosshair, cl_crossx, cl_crossy;
 #endif
 
@@ -918,13 +919,16 @@ void SCR_UpdateScreen (void)
 #ifdef LQ_PORTABLE
 	LQ_RenderBegin ();
 #endif
+	LQ_ProfileBegin (LQ_PROFILE_SCENE);
 	V_RenderView ();
+	LQ_ProfileEnd (LQ_PROFILE_SCENE);
 
 	VID_UnlockBuffer ();
 
 	D_EnableBackBufferAccess ();	// of all overlay stuff if drawing directly
 
 #ifdef LQ_PORTABLE
+	LQ_ProfileBegin (LQ_PROFILE_UI);
 	LQ_UIBegin();
 	if (!con_forcedup && crosshair.value) {
 		int scale = LQ_UIScale();
@@ -973,6 +977,7 @@ void SCR_UpdateScreen (void)
 									//  for linear writes all the time
 #ifdef LQ_PORTABLE
 	LQ_UIEnd();
+	LQ_ProfileEnd (LQ_PROFILE_UI);
 #endif
 	if (pconupdate)
 	{
@@ -985,6 +990,7 @@ void SCR_UpdateScreen (void)
 // update one of three areas
 //
 
+	LQ_ProfileBegin (LQ_PROFILE_PRESENT);
 	if (scr_copyeverything)
 	{
 		vrect.x = 0;
@@ -1015,6 +1021,7 @@ void SCR_UpdateScreen (void)
 	
 		VID_Update (&vrect);
 	}
+	LQ_ProfileEnd (LQ_PROFILE_PRESENT);
 }
 
 

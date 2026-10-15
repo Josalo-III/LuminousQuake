@@ -323,7 +323,8 @@ int LQ_GPUFrame(lq_gpu *g, const lq_frame *f, char *error, size_t size)
         const lq_vertex *v = &f->vertices[i];
         if (!isfinite(v->shade) || !isfinite(v->position[0]) || !isfinite(v->position[1]) ||
             !isfinite(v->position[2]) || !isfinite(v->uv[0]) || !isfinite(v->uv[1]) ||
-            !isfinite(v->light_uv[0]) || !isfinite(v->light_uv[1])) {
+            !isfinite(v->light_uv[0]) || !isfinite(v->light_uv[1]) ||
+            !isfinite(v->normal[0]) || !isfinite(v->normal[1]) || !isfinite(v->normal[2])) {
             SDL_SetError("nonfinite frame vertex"); return Error(error,size,"GPU frame");
         }
     }

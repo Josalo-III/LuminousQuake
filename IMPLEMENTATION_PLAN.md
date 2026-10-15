@@ -8,6 +8,10 @@ See [Classic GPU checkpoint](docs/CLASSIC_GPU_CHECKPOINT.md). General CPU jobs,
 broader content/platform validation, remaining Phase 3A delivery checks and
 Enhanced rendering remain pending.
 
+Enhanced development has begun with shared world/model normals and an owned
+BSP light inventory; see [Enhanced foundations](docs/ENHANCED_RENDERER.md).
+These inputs do not yet change visible lighting or enable Enhanced mode.
+
 Classic GPU texture filtering now includes saved mipmap and anisotropy options.
 See the [texture-filtering checkpoint](docs/CLASSIC_GPU_CHECKPOINT.md) for the
 palette-aware approach, validation and limitations. Rerelease fog and broader
@@ -225,27 +229,33 @@ This is the next implementation milestone, before expanding renderer features.
 ## Phase 4A: CPU jobs and measured parallelism
 
 Multithreading is an explicit engine requirement, introduced alongside the GPU
-migration and before the costlier Enhanced lighting work. It is planned here;
-the general worker pool is not yet implemented. SDL audio already runs through
-its callback path, which is not evidence that rendering or simulation is parallel.
+migration and before the costlier Enhanced lighting work. The first bounded
+worker pool and measured conversion jobs are implemented. SDL audio also runs
+through its callback path; rendering simulation and QuakeC remain serial.
 
 ### Work and order
 
-1. Add CPU stage timings for simulation, scene preparation, software rendering,
-   UI/compositing, uploads and presentation waits. Measure GPU time separately
-   where supported; CPU submission duration is not GPU execution duration.
-2. Introduce a persistent, bounded, cross-platform worker pool with range jobs,
+See [profiling method](docs/PROFILING.md) for the controlled workload matrix
+and the evidence required before parallelizing a stage.
+
+1. CPU stage timings are implemented for input/commands, networking, simulation,
+   client processing, scene preparation, UI/compositing, presentation/submission,
+   audio and the total frame. They are opt-in through `lq_profile`; the report
+   explicitly distinguishes CPU presentation/submission time from GPU execution.
+   Add GPU timing where supported before making GPU performance claims.
+2. A persistent, bounded SDL worker pool now provides range jobs,
    completion barriers, orderly shutdown and a single-thread mode. Avoid creating
-   threads per frame. Size it from available CPUs, initially reserving two CPU
-   slots and capping at eight workers; compare smaller counts on the M1 Max rather
-   than assuming its ten cores provide equal throughput. Allow an override for
-   testing and slower machines. Use portable threading primitives; keep Apple
-   scheduling refinements optional.
-3. Prove the pool on palette-to-RGBA conversion into disjoint framebuffer rows,
-   with the palette/input buffers fixed until completion. This has a clear serial
-   reference and serves the software baseline as well as interim GPU compositing.
-   Dispatch only above a measured size threshold. Remove temporary GPU compositor
-   jobs when explicit GPU actor/effect/UI submissions replace that bridge.
+   threads per frame. Automatic sizing reserves main/driver/OS capacity and caps
+   at eight; measurements selected six workers on the ten-core M1 Max. The
+   archived `lq_workers` override accepts `-1` for automatic, `0` for serial and
+   1–8 for an explicit count. Keep Apple scheduling refinements optional.
+3. The first pool workload covers UI downsampling/compositing and Classic GPU
+   palette-to-RGBA overlay conversion in disjoint rows. Palette, input and
+   coverage data remain fixed until the completion barrier, and the main thread
+   participates. The serial path remains the correctness/performance reference.
+   Remove temporary compositor jobs when explicit GPU UI submissions replace
+   that bridge. Software presentation conversion remains a candidate only after
+   its separate measurements justify the change.
 4. Move CPU-side texture conversion and mip preparation into jobs using owned
    asset buffers. Workers do not call the Quake hunk/cache allocators or mutate
    model state. The render owner commits completed resources and performs GPU
@@ -257,9 +267,9 @@ its callback path, which is not evidence that rendering or simulation is paralle
    designated owner initially. Move particles only when ownership is similarly
    explicit.
 
-Removing the duplicate full software world render from Classic GPU remains a
-priority. Threading that duplicate work would conceal a larger architectural
-cost. Do not parallelize the original global-state rasterizer, QuakeC VM or
+The duplicate full software world render has been removed from normal Classic
+GPU frames. Do not reintroduce it as parallel work or parallelize the original
+global-state rasterizer, QuakeC VM or
 gameplay simulation without a separate compatibility and ownership design.
 
 ### Exit criteria
@@ -276,6 +286,12 @@ gameplay simulation without a separate compatibility and ownership design.
   reported separately from native arm64 results.
 
 ## Phase 5: dynamic lighting, shadows, and atmosphere
+
+First foundation slice implemented: renderer-owned light descriptions from
+retained BSP entity text and world-space normals for world/brush/MDL geometry.
+See [Enhanced foundations](docs/ENHANCED_RENDERER.md). Runtime illumination,
+target resolution, shadows and material upgrades remain pending. Classic GPU
+services remain shared unless a specific Enhanced implementation supersedes them.
 
 ### Work
 

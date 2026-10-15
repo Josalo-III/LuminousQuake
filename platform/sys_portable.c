@@ -13,6 +13,7 @@
 #include <errno.h>
 #include "quakedef.h"
 #include "diagnostics.h"
+#include "frame_timing.h"
 #ifdef LQ_SDL
 #include "sdl_backend.h"
 #ifdef __APPLE__
@@ -180,8 +181,9 @@ int main(int argc, char **argv)
     quakeparms_t parms = {0};
     char *engine_argv[MAX_NUM_ARGVS + 1];
     char installation[MAX_OSPATH] = "";
-    double previous, run_start, run_seconds = 0;
+    double previous, run_start, run_seconds = 0, profile_warmup = -1;
     const char *capture_path = NULL;
+    qboolean profile_report = false, profile_reset = false;
     int i, engine_argc = 0;
 #ifdef LQ_SDL
     atexit(PlatformExit);
@@ -218,6 +220,7 @@ int main(int argc, char **argv)
                  "       [-basedir PATH] [-game MOD] [-dedicated] [Quake arguments]\n"
                  "The SDL client supports --platform-demo (no assets needed) and --platform-test.\n"
                  "Use --run-seconds N for a bounded smoke run; --screenshot PATH saves a BMP.\n"
+                 "--profile-warmup-seconds N resets enabled CPU timing after startup.\n"
                  "Original Quake game data is required for engine startup.");
 #endif
             return 0;
@@ -300,17 +303,31 @@ int main(int argc, char **argv)
         if (i + 1 >= com_argc) Sys_Error("--screenshot requires a path");
         capture_path = com_argv[i + 1];
     }
+    profile_report = COM_CheckParm("--profile-report") != 0;
+    i = COM_CheckParm("--profile-warmup-seconds");
+    if (i) {
+        char *end;
+        if (i + 1 >= com_argc) Sys_Error("--profile-warmup-seconds requires a duration");
+        profile_warmup = strtod(com_argv[i + 1], &end);
+        if (*end || !isfinite(profile_warmup) || profile_warmup < 0 ||
+            (run_seconds > 0 && profile_warmup >= run_seconds))
+            Sys_Error("--profile-warmup-seconds must be non-negative and shorter than --run-seconds");
+    }
     run_start = previous = Sys_FloatTime();
     for (;;) {
         double now = Sys_FloatTime();
         Host_Frame(now - previous);
         previous = now;
+        if (!profile_reset && profile_warmup >= 0 && now - run_start >= profile_warmup) {
+            LQ_ProfileReset(); profile_reset = true;
+        }
         if (run_seconds > 0 && now - run_start >= run_seconds) {
 #ifdef LQ_SDL
             if (capture_path && !LQ_SaveFrame(capture_path)) Sys_Error("Cannot save screenshot");
 #else
             (void)capture_path;
 #endif
+            if (profile_report) LQ_ProfileReport();
             Sys_Quit();
         }
         Sys_Sleep();

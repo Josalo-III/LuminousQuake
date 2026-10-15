@@ -18,6 +18,13 @@ def run(root, *arguments, expected=0):
 
 lumps = [b''] * 15
 lumps[0] = b'{\n"classname" "worldspawn"\n}\n{\n"classname" "info_player_start"\n"origin" "0 0 0"\n}\n\0'
+lumps[0] = lumps[0][:-1] + (
+    b'{"classname" "light" "origin" "8 16 32" "light" "500" "style" "32" '
+    b'"spawnflags" "1" "targetname" "switch" "target" "aim" "angle" "25"}\n'
+    b'{"classname" "light_torch_small_walltorch" "origin" "0 0 8"}\n'
+    b'{"classname" "light" "origin" "0 0 9" "_light" "1 0.5 0.25 400"}\n'
+    b'{"classname" "light" "origin" "nan 0 9"}\n'
+    b'{"classname" "light" "origin" "0 0 9" "style" "99999999999999"}\n\0')
 lumps[1] = struct.pack('<4fi', 1, 0, 0, 128, 0)
 texture = struct.pack('<16s6I', b'fixture', 16, 16, 40, 296, 360, 376) + bytes([128]) * 340
 lumps[2] = struct.pack('<2i', 1, 8) + texture
@@ -57,6 +64,12 @@ with tempfile.TemporaryDirectory(prefix='lq-bsp-') as temporary:
     (root / 'id1/pak0.pak').write_bytes(struct.pack('<4sii', b'PACK', 12 + len(payload), len(directory)) + payload + directory)
     output = run(root, '-map', 'fixture')
     assert '2 triangles, 1 draws, 1 indexed materials' in output, output
+    assert 'Light inventory: 3 sources, 1 targeted, 1 styled, 1 unresolved' in output, output
+    output = run(root, '-map', 'fixture', '--light-info')
+    assert 'origin 8.000 16.000 32.000 intensity 500.000 style 32 spawnflags 1 cone 25.000 target [aim] targetname [switch]' in output, output
+    assert 'light_torch_small_walltorch origin 0.000 0.000 8.000 intensity 300.000' in output, output
+    assert 'intensity 0.000 style 0 spawnflags 0 cone 0.000 target [] targetname [] flags 1' in output, output
+    assert 'skipping invalid source entity' in output, output
     output = run(root, '-map', '../escape', expected=1)
     assert 'without a path or extension' in output, output
     output = run(root, '--run-seconds', 'nan', expected=1)

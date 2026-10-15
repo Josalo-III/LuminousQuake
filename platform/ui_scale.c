@@ -3,6 +3,7 @@
  * GPL-2.0-or-later. */
 #include "quakedef.h"
 #include "render_bridge.h"
+#include "jobs.h"
 static viddef_t saved;
 static byte *canvas, *background;
 static size_t allocated;
@@ -10,6 +11,36 @@ static int active, scale = 1;
 static float console_current, console_lines;
 static int status_lines;
 extern int con_notifylines;
+typedef struct {
+    const byte *source, *background, *coverage;
+    byte *destination;
+    size_t source_stride, destination_stride;
+    unsigned width, height, scale, console_height, hud_height;
+    qboolean menu;
+} lq_ui_rows;
+
+static void DownsampleRows(void *opaque_context, size_t begin, size_t end)
+{
+    lq_ui_rows *context = opaque_context;
+    for (size_t y = begin; y < end; ++y) for (unsigned x = 0; x < context->width; ++x)
+        context->destination[y * context->destination_stride + x] =
+            context->source[y * context->scale * context->source_stride + x * context->scale];
+}
+
+static void CompositeRows(void *opaque_context, size_t begin, size_t end)
+{
+    lq_ui_rows *context = opaque_context;
+    for (size_t y = begin; y < end; ++y) for (unsigned x = 0; x < context->width; ++x) {
+        size_t logical = y * context->width + x;
+        size_t full = y * context->scale * context->destination_stride + x * context->scale;
+        if (context->source[logical] == context->background[logical] && y >= context->console_height &&
+            y < context->height - context->hud_height && !context->menu &&
+            (!context->coverage || !context->coverage[full])) continue;
+        for (unsigned row = 0; row < context->scale; ++row)
+            memset(context->destination + full + row * context->destination_stride,
+                context->source[logical], context->scale);
+    }
+}
 int LQ_UIScale(void)
 {
     if (active) return scale;
@@ -37,8 +68,9 @@ void LQ_UIBegin(void)
         if (!canvas || !background) Sys_Error("Cannot allocate scaled UI canvas");
         allocated = count;
     }
-    for (unsigned y = 0; y < height; ++y) for (unsigned x = 0; x < width; ++x)
-        canvas[(size_t)y * width + x] = saved.buffer[(size_t)(y * scale) * saved.rowbytes + x * scale];
+    lq_ui_rows rows = {saved.buffer, NULL, NULL, canvas, (size_t)saved.rowbytes, width,
+        width, height, (unsigned)scale, 0, 0, false};
+    LQ_JobsRunRange(height, 16, DownsampleRows, &rows);
     memcpy(background, canvas, count);
     vid.buffer = vid.conbuffer = canvas;
     vid.width = vid.conwidth = vid.rowbytes = vid.conrowbytes = width;
@@ -61,12 +93,9 @@ void LQ_UIEnd(void)
     sb_lines = status_lines;
     con_notifylines *= scale;
     /* Preserve full-resolution world pixels wherever the UI did not draw. */
-    for (unsigned y = 0; y < height; ++y) for (unsigned x = 0; x < width; ++x) {
-        size_t i = (size_t)y * width + x;
-        if (canvas[i] == background[i] && y >= console_height &&
-            y < height - hud_height && key_dest != key_menu && !LQ_RenderUIPainted(x*scale, y*scale)) continue;
-        for (int row = 0; row < scale; ++row)
-            memset(vid.buffer + (size_t)(y * scale + row) * vid.rowbytes + x * scale, canvas[i], scale);
-    }
+    lq_ui_rows rows = {canvas, background, LQ_RenderUICoverage(), vid.buffer, width,
+        (size_t)vid.rowbytes, width, height, (unsigned)scale, console_height, hud_height,
+        key_dest == key_menu};
+    LQ_JobsRunRange(height, 16, CompositeRows, &rows);
     active = 0;
 }

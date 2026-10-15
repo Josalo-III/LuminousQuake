@@ -5,6 +5,7 @@
 #include "sdl_backend.h"
 #include "gpu_sdl.h"
 #include "render_bridge.h"
+#include "jobs.h"
 
 viddef_t vid;
 unsigned short d_8to16table[256];
@@ -232,6 +233,7 @@ void VID_Init(unsigned char *palette)
     SDL_WindowFlags flags;
     if (window) return;
     if (!cvars_registered) {
+        LQ_JobsRegister();
         Cvar_RegisterVariable(&vid_width); Cvar_RegisterVariable(&vid_height);
         Cvar_RegisterVariable(&vid_fullscreen); Cvar_RegisterVariable(&vid_vsync);
         Cvar_RegisterVariable(&gpu_filter); Cvar_RegisterVariable(&gpu_msaa);
@@ -314,6 +316,7 @@ void VID_Shutdown(void)
     if (!window && !renderer) return;
     LQ_RenderBridgeShutdown(); LQ_GPUDestroy(gpu); gpu = NULL;
     LQ_UIShutdown();
+    LQ_JobsShutdown();
     backend_applied = false;
     startup_video_applied = false;
     IN_ClearStates();

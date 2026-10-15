@@ -24,6 +24,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifdef LQ_PORTABLE
 #include "render_bridge.h"
 #include "user_paths.h"
+#include "frame_timing.h"
 #endif
 
 /*
@@ -244,6 +245,7 @@ void Host_InitLocal (void)
 	Cvar_RegisterVariable (&temp1);
 	Cvar_RegisterVariable (&campaign);
 	Cvar_RegisterVariable (&lq_renderer);
+	LQ_ProfileInit ();
 
 	Host_FindMaxClients ();
 	
@@ -667,8 +669,10 @@ void _Host_Frame (float time)
 // decide the simulation time
 	if (!Host_FilterTime (time))
 		return;			// don't run too fast, or packets will flood out
+	LQ_ProfileBegin (LQ_PROFILE_FRAME);
 		
 // get new key events
+	LQ_ProfileBegin (LQ_PROFILE_INPUT_COMMANDS);
 	Sys_SendKeyEvents ();
 
 // allow mice or other external controllers to add commands
@@ -681,12 +685,15 @@ void _Host_Frame (float time)
 	 * the saved renderer only after that command pass, before the game frame. */
 	LQ_RenderAfterCommands ();
 #endif
+	LQ_ProfileEnd (LQ_PROFILE_INPUT_COMMANDS);
 
+	LQ_ProfileBegin (LQ_PROFILE_NETWORK);
 	NET_Poll();
 
 // if running the server locally, make intentions now
 	if (sv.active)
 		CL_SendCmd ();
+	LQ_ProfileEnd (LQ_PROFILE_NETWORK);
 	
 //-------------------
 //
@@ -697,8 +704,10 @@ void _Host_Frame (float time)
 // check for commands typed to the host
 	Host_GetConsoleCommands ();
 	
+	LQ_ProfileBegin (LQ_PROFILE_SIMULATION);
 	if (sv.active)
 		Host_ServerFrame ();
+	LQ_ProfileEnd (LQ_PROFILE_SIMULATION);
 
 //-------------------
 //
@@ -708,6 +717,7 @@ void _Host_Frame (float time)
 
 // if running the server remotely, send intentions now after
 // the incoming messages have been read
+	LQ_ProfileBegin (LQ_PROFILE_CLIENT);
 	if (!sv.active)
 		CL_SendCmd ();
 
@@ -718,6 +728,7 @@ void _Host_Frame (float time)
 	{
 		CL_ReadFromServer ();
 	}
+	LQ_ProfileEnd (LQ_PROFILE_CLIENT);
 
 // update video
 	if (host_speeds.value)
@@ -729,6 +740,7 @@ void _Host_Frame (float time)
 		time2 = Sys_FloatTime ();
 		
 // update audio
+	LQ_ProfileBegin (LQ_PROFILE_AUDIO);
 	if (cls.signon == SIGNONS)
 	{
 		S_Update (r_origin, vpn, vright, vup);
@@ -738,6 +750,7 @@ void _Host_Frame (float time)
 		S_Update (vec3_origin, vec3_origin, vec3_origin, vec3_origin);
 	
 	CDAudio_Update();
+	LQ_ProfileEnd (LQ_PROFILE_AUDIO);
 
 	if (host_speeds.value)
 	{
@@ -750,6 +763,7 @@ void _Host_Frame (float time)
 	}
 	
 	host_framecount++;
+	LQ_ProfileEnd (LQ_PROFILE_FRAME);
 }
 
 void Host_Frame (float time)

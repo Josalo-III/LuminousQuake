@@ -9,7 +9,26 @@ improved materials, and faithful asset improvements. See the
 The Classic GPU feature implementation milestone is reached as of October 14,
 2026, including mipmaps, anisotropic filtering and saved video options. Broader
 campaign/platform validation and rerelease fog remain open. The Phase 4A engine
-worker pool and Enhanced rendering have not been implemented.
+worker pool now handles measured row conversion work; Enhanced rendering remains
+unavailable.
+
+Enhanced development has started with shared scene normals and retained map
+light descriptions. These are foundations; visible rendering remains Classic
+and the Enhanced choice is still unavailable. See [Enhanced renderer notes](docs/ENHANCED_RENDERER.md)
+for the shared components and next steps.
+
+See [profiling method](docs/PROFILING.md) for the Instruments-led measurement
+method. CPU timing is opt-in: set `lq_profile 1`, then use `lq_profile_report` in the
+console. A timed command-line run can append `--profile-report`, for example
+`+lq_profile 1 +map e1m1 --run-seconds 20 --profile-warmup-seconds 5 --profile-report`. The report measures
+CPU stages only; GPU execution is not inferred from command submission.
+
+`lq_workers -1` selects the measured automatic worker count, `lq_workers 0`
+forces the serial reference path, and values from 1 through 8 select an explicit
+pool size. The setting is archived and takes effect on the next range job. The
+pool currently accelerates high-resolution UI scaling/compositing and the
+Classic GPU palette-overlay conversion; gameplay and GPU submission remain on
+their owning thread.
 
 The playable `luminousquake` executable supports **Software** and **Classic GPU**
 through Options. Classic GPU draws the world, animated models, moving brushes,

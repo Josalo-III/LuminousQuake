@@ -154,6 +154,7 @@ static void Alias(entity_t *e, int weapon)
         Transform(local, e, forward, right, up, v->position);
         const float *n = r_avertexnormals[points[p].lightnormalindex];
         for (int k = 0; k < 3; ++k) normal[k] = n[0]*forward[k]-n[1]*right[k]+n[2]*up[k];
+        VectorCopy(normal,v->normal);
         float brightness = ambient+shade*fmaxf(normal[0], 0);
         v->shade = fminf(fmaxf((255-brightness)*0.25f, 0), 63);
         float s = uv[p].s / 65536.0f;
@@ -216,6 +217,8 @@ static void Brush(entity_t *e, const lq_scene *world)
                 const float *position = model->vertexes[model->edges[abs(edge)].v[edge < 0]].position;
                 lq_vertex *v = &vertices[frame.vertex_count++]; memset(v,0,sizeof(*v));
                 Transform(position,e,forward,right,up,v->position); v->shade = shade;
+                float sign = s->flags & SURF_PLANEBACK ? -1 : 1;
+                for (int k = 0; k < 3; ++k) v->normal[k] = sign*(s->plane->normal[0]*forward[k]-s->plane->normal[1]*right[k]+s->plane->normal[2]*up[k]);
                 for (int axis = 0; axis < 2; ++axis)
                     v->uv[axis] = (DotProduct(position,s->texinfo->vecs[axis])+s->texinfo->vecs[axis][3])/
                         (axis ? texture->height : texture->width);
@@ -234,6 +237,7 @@ static void Brush(entity_t *e, const lq_scene *world)
             const lq_vertex *input = &world->vertices[world->indices[source->first_index+j]];
             lq_vertex *v = &vertices[frame.vertex_count++]; *v = *input;
             Transform(input->position, e, forward, right, up, v->position);
+            for (int k = 0; k < 3; ++k) v->normal[k] = input->normal[0]*forward[k]-input->normal[1]*right[k]+input->normal[2]*up[k];
         }
     }
 }
