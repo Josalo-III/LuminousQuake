@@ -31,6 +31,7 @@ layout(set=3,binding=1,std140) uniform Lights {
     vec4 probe_size; // probes per axis; w: 1 static, 2 dynamic (bits)
     vec4 probe_weights; // live style value per static layer
     vec4 liquid; // x: translucent liquid opacity; zero when liquids are opaque or unlit
+    vec4 sky; // rgb: sky brightness at full visibility (bounce/probe layer 0 alpha)
 } lights;
 const float SHADOW_NEAR = 2.0;
 layout(location=0) in vec2 uv;
@@ -147,21 +148,21 @@ float shadowFactor(uint slot, vec3 origin, vec3 normal, float radius) {
     }
     return sum / 16.0;
 }
-// Ambient-cube irradiance toward n from one block group of a probe texture.
-// Trilinear filtering stays inside each direction block: z is clamped to its
-// probe centres before the block offset is added.
-vec3 probeCube(sampler3D probes, float blocks, float base, vec3 point, vec3 n) {
+// Ambient-cube irradiance toward n from one block group of a probe texture
+// (alpha: sky visibility, unscaled). Trilinear filtering stays inside each
+// direction block: z is clamped to its probe centres before the block offset is added.
+vec4 probeCube(sampler3D probes, float blocks, float base, vec3 point, vec3 n) {
     vec3 grid = clamp((point - lights.probe_origin.xyz) / lights.probe_origin.w, vec3(0.0), lights.probe_size.xyz - 1.0);
     vec2 xy = (grid.xy + 0.5) / lights.probe_size.xy;
     float layers = lights.probe_size.z * blocks;
     vec3 weight = n * n;
     vec3 face = vec3(n.x >= 0.0 ? 0.0 : 1.0, n.y >= 0.0 ? 2.0 : 3.0, n.z >= 0.0 ? 4.0 : 5.0);
-    vec3 sum = vec3(0.0);
+    vec4 sum = vec4(0.0);
     for (int axis = 0; axis < 3; ++axis) {
         float depth = ((base + face[axis]) * lights.probe_size.z + grid.z + 0.5) / layers;
-        sum += texture(probes, vec3(xy, depth)).rgb * weight[axis];
+        sum += texture(probes, vec3(xy, depth)) * weight[axis];
     }
-    return sum * 255.0;
+    return vec4(sum.rgb * 255.0, sum.a);
 }
 void main() {
     int flags = int(surface.parameters.y);
@@ -226,12 +227,20 @@ void main() {
                 }
                 // Static-world bounce from those lights, driven by live styles.
                 // Bounce under a translucent liquid mostly arrived through its surface.
+                float row = light_uv.y * lights.tuning.y, through = submerged && opacity > 0.0 ? 1.0 - opacity : 1.0;
                 if (lights.tuning.z != 0.0 && (flags & 4) == 0 && !liquid) {
-                    float row = light_uv.y * lights.tuning.y, through = submerged && opacity > 0.0 ? 1.0 - opacity : 1.0;
                     for (int k = 0; k < 4; ++k) if (surface.bounce_weights[k] > 0.0)
                         illumination += texture(bounce, vec2(light_uv.x, (row + float(k)) * 0.25)).rgb *
                             (255.0 * surface.bounce_weights[k] * lights.tuning.w * through);
                 }
+                // Sky as a diffuse area light: baked cosine-weighted visibility
+                // times the sky's brightness. Actors and liquids use the probes.
+                bool sky = dot(lights.sky.rgb, vec3(1.0)) > 0.0;
+                if (sky && (flags & 4) == 0 && !liquid)
+                    illumination += texture(bounce, vec2(light_uv.x, row * 0.25)).a * lights.sky.rgb * through;
+                else if (sky && (actor || liquid) && lights.probe_origin.w > 0.0)
+                    illumination += probeCube(probe_static, 24.0, 0.0, world_position + normal * (actor ? 0.0 : 8.0), normal).a *
+                        lights.sky.rgb;
                 // Probes: static bounce for actors; gameplay-light bounce for all.
                 int probes = int(lights.probe_size.w + 0.5);
                 if (probes != 0) {
@@ -239,10 +248,10 @@ void main() {
                     // Liquids have no lightmap or bounce texels; the static probes stand in.
                     if ((actor || liquid) && (probes & 1) != 0)
                         for (int k = 0; k < 4; ++k) if (lights.probe_weights[k] > 0.0)
-                            illumination += probeCube(probe_static, 24.0, float(k * 6), point, normal) *
+                            illumination += probeCube(probe_static, 24.0, float(k * 6), point, normal).rgb *
                                 (lights.probe_weights[k] * lights.tuning.w);
                     if ((probes & 2) != 0)
-                        illumination += probeCube(probe_dynamic, 6.0, 0.0, point, normal) * lights.tuning.w;
+                        illumination += probeCube(probe_dynamic, 6.0, 0.0, point, normal).rgb * lights.tuning.w;
                 }
                 illumination *= lights.tuning.x;
                 if ((flags & 16) != 0) illumination = max(illumination, vec3(24.0)); // Quake's view-weapon minimum

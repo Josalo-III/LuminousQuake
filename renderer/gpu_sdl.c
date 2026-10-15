@@ -24,6 +24,7 @@ struct lq_gpu {
     SDL_GPUBuffer *vertices, *indices;
     SDL_GPUTexture **textures, *colormap, *lightmap, *bounce, *color, *depth, *overlay;
     float bounce_ratio; /* lightmap rows per bounce layer row */
+    float sky_light[3]; /* sky brightness at full visibility (bounce layer 0 alpha) */
     /* Enhanced irradiance probes: static layers per style, and a dynamic layer
      * rewritten each frame around gameplay lights. */
     SDL_GPUTexture *probe_static, *probe_dynamic;
@@ -72,6 +73,7 @@ typedef struct {
     float probe_size[4]; /* probes per axis; w: 1 static, 2 dynamic */
     float probe_weights[4]; /* live style per static layer */
     float liquid[4]; /* translucent liquid opacity; zero when liquids are opaque or unlit */
+    float sky[4]; /* sky brightness at full visibility; zero without baked sky visibility */
 } lq_light_uniforms;
 typedef struct { float face_projection[16], light_origin[4]; } lq_shadow_uniforms;
 #define LQ_SHADOW_NEAR 2.0f
@@ -433,7 +435,7 @@ static void ReleaseScene(lq_gpu *g)
     if (g->colormap) SDL_ReleaseGPUTexture(g->device, g->colormap);
     if (g->lightmap) SDL_ReleaseGPUTexture(g->device, g->lightmap);
     if (g->bounce) SDL_ReleaseGPUTexture(g->device, g->bounce);
-    g->bounce = NULL; g->bounce_ratio = 0;
+    g->bounce = NULL; g->bounce_ratio = 0; memset(g->sky_light, 0, sizeof(g->sky_light));
     if (g->probe_static) SDL_ReleaseGPUTexture(g->device, g->probe_static);
     if (g->probe_dynamic) SDL_ReleaseGPUTexture(g->device, g->probe_dynamic);
     if (g->probe_transfer) SDL_ReleaseGPUTransferBuffer(g->device, g->probe_transfer);
@@ -589,6 +591,7 @@ int LQ_GPUUpload(lq_gpu *g, const lq_scene *s, char *error, size_t size)
     lq_image none = {1, 1, 4, black};
     g->bounce = UploadImage(g, s->bounce.pixels ? &s->bounce : &none);
     g->bounce_ratio = s->bounce.pixels ? (float)s->lightmap.height / s->atlas_height : 0;
+    if (s->bounce.pixels) memcpy(g->sky_light, s->sky_light, sizeof(g->sky_light));
     if (!g->vertices || !g->indices || !g->colormap || !g->lightmap || !g->bounce) goto failed;
     if (s->probe_static) {
         const uint32_t *n = s->probe_size;
@@ -697,6 +700,7 @@ static void LightUniforms(lq_light_uniforms *uniforms, const lq_gpu *g, const lq
     for (int k = 0; k < 4; ++k)
         uniforms->probe_weights[k] = g->probe_styles[k] == 255 ? 0 : view->lightstyles[g->probe_styles[k]];
     uniforms->liquid[0] = view->enhanced_lighting && view->water_alpha > 0 && view->water_alpha < 1 ? view->water_alpha : 0;
+    if (view->enhanced_lighting && g->bounce_ratio > 0) memcpy(uniforms->sky, g->sky_light, sizeof(g->sky_light));
 }
 static const float shadow_basis[6][3][3] = { /* forward, right, up per cube face */
     {{1,0,0},{0,0,-1},{0,1,0}}, {{-1,0,0},{0,0,1},{0,1,0}},

@@ -108,7 +108,8 @@ void LQ_RenderBegin(void)
         if (enhanced) {
             double started = Sys_FloatTime();
             if (LQ_SceneComputeBounce(&map_scene, 64, LQ_JobsRunRange, error, sizeof(error)))
-                Con_Printf("Enhanced bounce: %u samples in %.2f s.\n", map_scene.sample_count, Sys_FloatTime() - started);
+                Con_Printf("Enhanced bounce: %u samples, sky light %.0f %.0f %.0f, in %.2f s.\n", map_scene.sample_count,
+                    map_scene.sky_light[0], map_scene.sky_light[1], map_scene.sky_light[2], Sys_FloatTime() - started);
             else Con_Printf("Enhanced bounce unavailable: %s\n", error);
         }
         if (!LQ_GPUUpload(gpu, &map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }

@@ -213,6 +213,31 @@ probe of about 105 in all six directions at 0.4 reflectance, and a muzzle-flash
 bounce inside its expected band. A GPU readback checks that an actor is lit by a
 runtime light in Enhanced and keeps its vertex shade in Classic.
 
+## Sky light
+
+The sky is a diffuse area light whose radiance is the mean color the map's sky
+material draws with (front layer over back, colormap row 0, area-weighted over
+sky faces). Brightness 128 shows a texture at its palette color, so a white
+surface under a fully open sky matches the sky's own color; E1M1's day sky
+gives 89/105/119, E1M2's dusk sky 43/24/29 (printed with the bounce timing at
+load). `LQ_SKY_LIGHT_GAIN` scales it.
+
+- **Baked visibility, live radiance.** At map load each bounce sample casts the
+  bounce pass's 64 cosine-weighted rays; the fraction reaching a sky leaf is its
+  irradiance from a unit-radiance sky over π. It is stored in the alpha of
+  bounce layer 0 and multiplied by the sky uniform in the shader, so the sky's
+  whole hemisphere lights a surface with its occlusion (eaves, canyon walls,
+  window wells) at the bounce atlas's 16-unit resolution. Static probes store
+  the same visibility per ambient-cube direction (layer 0 alpha) for actors
+  and translucent liquids.
+- **Sky bounce.** Sky-lit samples reflect `visibility × sky × albedo` into the
+  style 0 bounce, so open doors and windows spill sky light indoors.
+- **Tradeoff.** No per-pixel sky rays or sky shadow maps: a diffuse sky has no
+  sharp shadows, and a baked visibility term costs one texture tap per pixel.
+  The price is about 60–90% more bounce bake time (E1M1 debug build: 1.9 s →
+  3.5 s), no sky occlusion by moving brushes or actors, and one color per map
+  (no brighter sun direction in the sky texture).
+
 E1M1 profile while firing rockets (`lq_profile`, 7 s after warm-up, M1 Max,
 640×480):
 
@@ -237,6 +262,8 @@ Current limits:
 - Particles and sprites keep Classic shading. Actor silhouettes cast from back
   faces chosen per vertex normal, which can thin shadows at grazing angles.
   Brush-model faces are lit and gather bounce at their compiled positions.
+- Sky light is diffuse only, one color per map, baked visibility (no sun,
+  no occlusion by moving objects).
 - Face bounce is static. Weapon light reaches surfaces only through the probe
   grid, which is coarser than the bounce atlas. Probes do not test visibility,
   so light can leak through thin walls between probe cells.

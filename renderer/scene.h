@@ -40,6 +40,9 @@ enum { LQ_LIGHT_LINEAR, LQ_LIGHT_INVERSE, LQ_LIGHT_INVERSE2, LQ_LIGHT_INFINITE,
  * white). Enhanced scales their output so they draw the eye in a darker scene
  * without dominating it. Linear spotlights keep their compiler strength. */
 #define LQ_ACCENT_SPOT_GAIN 0.15f
+/* Enhanced sky light: brightness under an open sky per unit of the sky's mean
+ * displayed color times 128 (where a white surface matches the sky). */
+#define LQ_SKY_LIGHT_GAIN 1.0f
 float LQ_SpotFactor(const float to_light[3], float distance, const float axis[3],
     float outer, float inner, float source_radius);
 typedef struct {
@@ -95,12 +98,19 @@ typedef struct {
     uint32_t sample_count, atlas_height;
     float bounce_scale; /* worldspawn _bouncescale; 1 when absent */
     /* Optional Enhanced bounce: four stacked RGBA layers of atlas_height rows,
-     * brightness units, selected per draw by bounce_styles. */
+     * brightness units, selected per draw by bounce_styles. Layer 0 alpha is
+     * the sample's sky visibility (cosine-weighted fraction of rays reaching
+     * sky, 0-255) whatever its styles; sky light's own bounce is in style 0. */
     lq_image bounce;
+    /* Enhanced sky light: brightness a fully open, upward-facing sample
+     * receives, from the mean displayed color of the map's sky materials.
+     * Set by LQ_SceneComputeBounce; zero for maps without sky. */
+    float sky_light[3];
     /* Optional Enhanced irradiance probes: an ambient cube (irradiance toward
      * +X,-X,+Y,-Y,+Z,-Z, brightness units) at each grid point. probe_static is
      * RGBA, x-fastest, depth index (layer*6 + direction)*size[2] + z; each of
-     * the four layers belongs to probe_styles[layer] (255 unused). */
+     * the four layers belongs to probe_styles[layer] (255 unused). Layer 0
+     * alpha is sky visibility toward each direction (0-255), as in bounce. */
     float probe_origin[3], probe_spacing;
     uint32_t probe_size[3];
     uint8_t probe_styles[4];
