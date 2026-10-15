@@ -207,7 +207,7 @@ static int Spawn(model_t *world, lq_scene *scene)
                 }
                 if (!LightColor(&light)) light.flags |= LQ_LIGHT_UNRESOLVED_PARAMETERS;
                 float value;
-                light.angle_scale = angle_scale; light.output_scale = range_scale;
+                light.angle_scale = angle_scale; light.output_scale = light.output_base = range_scale;
                 light.attenuation = distance_scale;
                 if (delay[0]) {
                     if (Number(delay,&value) && value >= 0 && value < LQ_LIGHT_FORMULA_COUNT && value == floorf(value))
@@ -255,6 +255,7 @@ static int Spawn(model_t *world, lq_scene *scene)
     for (uint32_t i = 0; i < scene->light_source_count; ++i) {
         lq_light_source *light = &scene->light_sources[i];
         if (!light->flags) LightSpot(light,spots[i][0],spots[i][1],targets,target_count);
+        if (LQ_LightIsAccent(light)) { light->accent_gain = LQ_ACCENT_SPOT_GAIN; light->output_scale = light->output_base * LQ_ACCENT_SPOT_GAIN; }
     }
     free(targets); free(spots);
     return 1;
@@ -607,6 +608,8 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
     }
     free(texture_sources); texture_sources = NULL;
     s->atlas_height = (uint32_t)(atlas_y + row_height);
+    s->world_draw_begin = (uint32_t)world->firstmodelsurface;
+    s->world_draw_end = (uint32_t)(world->firstmodelsurface + world->nummodelsurfaces);
     if (!Spawn(world, s)) FAIL("Cannot retain map light inventory (allocation/4096-source limit)");
     if (!BuildBSP(world,s) || !BuildLightReach(world,s)) FAIL("Cannot build light reach");
     if (!BuildSampleGrids(world,s,face_atlas)) FAIL("Cannot build light sample grids");

@@ -23,7 +23,7 @@ the world only from runtime lights:
   lights plus bounce, and carries weapon light onto nearby surfaces each frame.
 
 Darkness comes from falloff and occlusion, never from the baked lightmap.
-Actors receive Enhanced light but do not cast shadows yet.
+Monsters, items and moving doors cast Enhanced shadows from their live positions.
 The standalone viewer (`luminousquake-gpu --enhanced`) has tuning flags. See
 [Enhanced renderer notes](docs/ENHANCED_RENDERER.md) for commands, evidence and
 next steps.

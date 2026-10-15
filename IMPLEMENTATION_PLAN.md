@@ -300,8 +300,8 @@ gathered at map load from the runtime lights, per light style. `lq_renderer 2`
 is an experimental in-game mode in which gameplay dlights (rockets, muzzle
 flashes, explosions) are shadowed runtime lights. An irradiance probe grid
 (static per style, plus a per-frame gameplay-light layer) lights actors and
-carries weapon light into bounce. Actor shadow casting and material upgrades
-remain pending. Classic GPU services remain shared unless a specific
+carries weapon light into bounce. Actors and moving brush models cast shadows,
+redrawing only the cube faces they touch. Material upgrades remain pending. Classic GPU services remain shared unless a specific
 Enhanced implementation supersedes them.
 
 The static-light reconstruction approach is documented in

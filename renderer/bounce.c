@@ -151,12 +151,8 @@ static void EmitFaces(void *opaque, size_t begin, size_t end)
                 if (facing <= 0) continue;
                 float value = LQ_LightFalloff(light, distance) *
                     ((1 - light->angle_scale) + light->angle_scale * facing) * light->output_scale;
-                if (light->spotlight) {
-                    float along = -Dot(toward, light->spot_direction);
-                    if (along <= light->spot_outer) continue;
-                    if (light->spot_inner > light->spot_outer)
-                        value *= fminf(fmaxf((along - light->spot_outer) / (light->spot_inner - light->spot_outer), 0), 1);
-                }
+                if (light->spotlight) value *= LQ_SpotFactor(toward, distance, light->spot_direction,
+                    light->spot_outer, light->spot_inner, light->source_radius);
                 if (value < 0.01f || !SegmentClear(s, 0, light->origin, point, 0)) continue;
                 if (slot == UINT32_MAX && (slot = Candidate(candidates, &candidate_count, (uint8_t)light->style)) == UINT32_MAX) break;
                 for (int k = 0; k < 3; ++k) {

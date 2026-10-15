@@ -42,8 +42,13 @@ struct lq_gpu {
     SDL_GPUGraphicsPipeline *shadow_pipeline;
     SDL_GPUTexture *shadow_maps, *shadow_dummy;
     SDL_GPUSampler *shadow_sampler, *depth_sampler;
-    SDL_GPUBuffer *casters;
-    uint32_t caster_count, shadow_size, shadow_updates;
+    SDL_GPUBuffer *casters; /* static world casters, then brush models at compiled positions */
+    uint32_t caster_count, caster_world_count, shadow_size, shadow_updates, shadow_face_updates;
+    /* Moving casters this frame (actors, brush models): bounds of frame draws. */
+    struct lq_caster { float min[3], max[3]; uint32_t draw; } *frame_casters;
+    uint32_t frame_caster_count, frame_caster_capacity;
+    uint8_t shadow_dynamic_faces[LQ_MAX_RUNTIME_LIGHTS]; /* faces last drawn with moving casters */
+    uint8_t shadow_brushes[LQ_MAX_RUNTIME_LIGHTS]; /* static_brush_shadows used for the cached cube */
     float shadow_keys[LQ_MAX_RUNTIME_LIGHTS][4];
     uint32_t shadow_sources[LQ_MAX_RUNTIME_LIGHTS];
     uint8_t shadow_valid[LQ_MAX_RUNTIME_LIGHTS];
@@ -404,7 +409,8 @@ static void ReleaseScene(lq_gpu *g)
     if (g->vertices) SDL_ReleaseGPUBuffer(g->device, g->vertices);
     if (g->indices) SDL_ReleaseGPUBuffer(g->device, g->indices);
     if (g->casters) SDL_ReleaseGPUBuffer(g->device, g->casters);
-    g->casters = NULL; g->caster_count = 0;
+    g->casters = NULL; g->caster_count = g->caster_world_count = 0;
+    memset(g->shadow_dynamic_faces, 0, sizeof(g->shadow_dynamic_faces));
     memset(g->shadow_valid, 0, sizeof(g->shadow_valid));
     for (uint32_t i = 0; i < g->texture_count; ++i)
         if (g->textures[i]) SDL_ReleaseGPUTexture(g->device, g->textures[i]);
@@ -435,7 +441,7 @@ static int FrameBuffer(lq_gpu *g, SDL_GPUBuffer **buffer, uint32_t *capacity,
 }
 int LQ_GPUFrame(lq_gpu *g, const lq_frame *f, char *error, size_t size)
 {
-    g->frame_draw_count = 0;
+    g->frame_draw_count = 0; g->frame_caster_count = 0;
     if (!f || !f->draw_count) return 1;
     if (!f->vertices || !f->indices || !f->draws || !f->materials ||
         !f->vertex_count || f->vertex_count > 2000000 || !f->index_count ||
@@ -471,6 +477,12 @@ int LQ_GPUFrame(lq_gpu *g, const lq_frame *f, char *error, size_t size)
         if (!next) { SDL_SetError("out of memory"); return Error(error, size, "GPU frame draws"); }
         g->frame_draws = next; g->frame_draw_capacity = f->draw_count;
     }
+    if (g->frame_caster_capacity < f->draw_count) {
+        struct lq_caster *next = realloc(g->frame_casters, f->draw_count * sizeof(*next));
+        if (!next) { SDL_SetError("out of memory"); return Error(error, size, "GPU frame casters"); }
+        g->frame_casters = next; g->frame_caster_capacity = f->draw_count;
+    }
+    g->frame_caster_count = 0;
     for (uint32_t i = 0; i < f->draw_count; ++i) {
         lq_draw d = f->draws[i];
         if (d.flags & ~(LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_MODEL|LQ_SURFACE_MASKED|LQ_SURFACE_WEAPON|LQ_SURFACE_ACTOR) ||
@@ -479,6 +491,18 @@ int LQ_GPUFrame(lq_gpu *g, const lq_frame *f, char *error, size_t size)
             SDL_SetError("invalid frame triangle range"); return Error(error, size, "GPU frame draws");
         }
         d.material = f->materials[d.material].resource_id; g->frame_draws[i] = d;
+        /* Actors and moving brush faces cast; the view weapon, particles,
+         * sprites, flames and liquids do not. */
+        int brush = !(d.flags & LQ_SURFACE_MODEL), actor = (d.flags & LQ_SURFACE_ACTOR) != 0;
+        if ((brush || actor) && !(d.flags & (LQ_SURFACE_WEAPON|LQ_SURFACE_MASKED|LQ_SURFACE_SKY|LQ_SURFACE_WATER))) {
+            struct lq_caster *c = &g->frame_casters[g->frame_caster_count++];
+            c->draw = i;
+            for (int k = 0; k < 3; ++k) { c->min[k] = INFINITY; c->max[k] = -INFINITY; }
+            for (uint32_t j = 0; j < d.index_count; ++j) {
+                const float *p = f->vertices[f->indices[d.first_index + j]].position;
+                for (int k = 0; k < 3; ++k) { c->min[k] = fminf(c->min[k], p[k]); c->max[k] = fmaxf(c->max[k], p[k]); }
+            }
+        }
     }
     uint32_t vb = f->vertex_count * sizeof(lq_vertex), ib = f->index_count * sizeof(uint32_t);
     if (!FrameBuffer(g, &g->frame_vertices, &g->frame_vertex_bytes, vb, SDL_GPU_BUFFERUSAGE_VERTEX) ||
@@ -543,9 +567,14 @@ int LQ_GPUUpload(lq_gpu *g, const lq_scene *s, char *error, size_t size)
     /* Every opaque world face may occlude; water and similar liquids do not. */
     uint32_t *casters = malloc((size_t)s->index_count * sizeof(*casters));
     if (!casters) { SDL_SetError("out of memory"); goto failed; }
-    for (uint32_t i = 0; i < s->draw_count; ++i) if (!(s->draws[i].flags & LQ_SURFACE_WATER)) {
-        memcpy(casters + g->caster_count, s->indices + s->draws[i].first_index, s->draws[i].index_count * sizeof(*casters));
-        g->caster_count += s->draws[i].index_count;
+    for (int brushes = 0; brushes < 2; ++brushes) {
+        for (uint32_t i = 0; i < s->draw_count; ++i) {
+            int world = !s->world_draw_end || (i >= s->world_draw_begin && i < s->world_draw_end);
+            if ((s->draws[i].flags & LQ_SURFACE_WATER) || world == brushes) continue;
+            memcpy(casters + g->caster_count, s->indices + s->draws[i].first_index, s->draws[i].index_count * sizeof(*casters));
+            g->caster_count += s->draws[i].index_count;
+        }
+        if (!brushes) g->caster_world_count = g->caster_count;
     }
     if (g->caster_count) g->casters = UploadBuffer(g, casters, g->caster_count * sizeof(*casters), SDL_GPU_BUFFERUSAGE_INDEX);
     free(casters);
@@ -629,17 +658,17 @@ static void LightUniforms(lq_light_uniforms *uniforms, const lq_gpu *g, const lq
     for (int k = 0; k < 4; ++k)
         uniforms->probe_weights[k] = g->probe_styles[k] == 255 ? 0 : view->lightstyles[g->probe_styles[k]];
 }
+static const float shadow_basis[6][3][3] = { /* forward, right, up per cube face */
+    {{1,0,0},{0,0,-1},{0,1,0}}, {{-1,0,0},{0,0,1},{0,1,0}},
+    {{0,1,0},{1,0,0},{0,0,-1}}, {{0,-1,0},{1,0,0},{0,0,1}},
+    {{0,0,1},{1,0,0},{0,1,0}}, {{0,0,-1},{-1,0,0},{0,1,0}}
+};
 /* Reversed-depth 90-degree face projection. Faces follow the cube-map table
  * (+X,-X,+Y,-Y,+Z,-Z; screen right/up per face) used by sampling hardware,
  * applied directly to Quake world directions. */
 static void ShadowFace(int face, const float origin[3], float out[16])
 {
-    static const float basis[6][3][3] = {
-        {{1,0,0},{0,0,-1},{0,1,0}}, {{-1,0,0},{0,0,1},{0,1,0}},
-        {{0,1,0},{1,0,0},{0,0,-1}}, {{0,-1,0},{1,0,0},{0,0,1}},
-        {{0,0,1},{1,0,0},{0,1,0}}, {{0,0,-1},{-1,0,0},{0,1,0}}
-    };
-    const float *forward = basis[face][0], *right = basis[face][1], *up = basis[face][2];
+    const float *forward = shadow_basis[face][0], *right = shadow_basis[face][1], *up = shadow_basis[face][2];
     memset(out, 0, 16 * sizeof(float));
     for (int j = 0; j < 3; ++j) {
         out[j * 4] = right[j]; out[j * 4 + 1] = up[j]; out[j * 4 + 3] = forward[j];
@@ -655,17 +684,56 @@ static int ShadowMaps(lq_gpu *g)
     g->shadow_size = LQ_SHADOW_SIZE; memset(g->shadow_valid, 0, sizeof(g->shadow_valid));
     return 1;
 }
+/* Cube faces a box can reach: inside the light's range and on the inner side
+ * of the face frustum's four planes through the light. */
+static uint8_t CasterFaces(const struct lq_caster *c, const float light[4])
+{
+    float outside = 0;
+    for (int k = 0; k < 3; ++k) {
+        float d = light[k] < c->min[k] ? c->min[k] - light[k] : light[k] > c->max[k] ? light[k] - c->max[k] : 0;
+        outside += d * d;
+    }
+    if (outside > light[3] * light[3]) return 0;
+    uint8_t faces = 0;
+    for (int face = 0; face < 6; ++face) {
+        const float *forward = shadow_basis[face][0], *right = shadow_basis[face][1], *up = shadow_basis[face][2];
+        int inside = 1;
+        for (int plane = 0; plane < 4 && inside; ++plane) {
+            const float *side = plane < 2 ? right : up;
+            float sign = plane & 1 ? 1.0f : -1.0f, normal[3], reach = 0;
+            for (int k = 0; k < 3; ++k) normal[k] = forward[k] + sign * side[k];
+            for (int k = 0; k < 3; ++k) reach += normal[k] * ((normal[k] >= 0 ? c->max[k] : c->min[k]) - light[k]);
+            inside = reach >= 0;
+        }
+        if (inside) faces |= (uint8_t)(1 << face);
+    }
+    return faces;
+}
+/* A slot's cube is redrawn in full when its light changes. Otherwise only the
+ * faces that moving casters touch now, or touched when last drawn, are redrawn
+ * (the latter to erase their old shadows); static world shadows persist. */
 static void RenderShadows(lq_gpu *g, SDL_GPUCommandBuffer *command, const lq_view *v)
 {
     uint32_t count = v->runtime_light_count > LQ_MAX_RUNTIME_LIGHTS ? LQ_MAX_RUNTIME_LIGHTS : v->runtime_light_count;
-    g->shadow_updates = 0;
+    uint8_t brushes = v->static_brush_shadows != 0;
+    g->shadow_updates = g->shadow_face_updates = 0;
     for (uint32_t slot = 0; slot < count; ++slot) {
         const lq_runtime_light *light = &v->runtime_lights[slot];
         if (light->position_radius[3] <= 0 || !g->casters) continue;
-        if (g->shadow_valid[slot] && g->shadow_sources[slot] == light->source_index &&
-            !memcmp(g->shadow_keys[slot], light->position_radius, sizeof(g->shadow_keys[slot]))) continue;
+        int changed = !g->shadow_valid[slot] || g->shadow_sources[slot] != light->source_index ||
+            g->shadow_brushes[slot] != brushes ||
+            memcmp(g->shadow_keys[slot], light->position_radius, sizeof(g->shadow_keys[slot]));
+        uint8_t touched = 0, caster_faces[64];
+        for (uint32_t i = 0; i < g->frame_caster_count; ++i) {
+            uint8_t faces = CasterFaces(&g->frame_casters[i], light->position_radius);
+            if (i < 64) caster_faces[i] = faces;
+            touched |= faces;
+        }
+        uint8_t redraw = changed ? 0x3f : (uint8_t)(touched | g->shadow_dynamic_faces[slot]);
+        if (!redraw) continue;
         lq_shadow_uniforms uniforms = {{0}, {light->position_radius[0], light->position_radius[1], light->position_radius[2], 1}};
         for (int face = 0; face < 6; ++face) {
+            if (!(redraw & (1 << face))) continue;
             SDL_GPUDepthStencilTargetInfo depth = {0};
             depth.texture = g->shadow_maps; depth.layer = (Uint8)(slot * 6 + face);
             depth.clear_depth = 0; depth.load_op = SDL_GPU_LOADOP_CLEAR; depth.store_op = SDL_GPU_STOREOP_STORE;
@@ -679,15 +747,28 @@ static void RenderShadows(lq_gpu *g, SDL_GPUCommandBuffer *command, const lq_vie
             SDL_BindGPUIndexBuffer(pass, &index, SDL_GPU_INDEXELEMENTSIZE_32BIT);
             ShadowFace(face, light->position_radius, uniforms.face_projection);
             SDL_PushGPUVertexUniformData(command, 0, &uniforms, sizeof(uniforms));
-            SDL_DrawGPUIndexedPrimitives(pass, g->caster_count, 1, 0, 0, 0);
+            SDL_DrawGPUIndexedPrimitives(pass, brushes ? g->caster_count : g->caster_world_count, 1, 0, 0, 0);
+            if (touched & (1 << face)) {
+                vertex = (SDL_GPUBufferBinding){g->frame_vertices, 0}; index = (SDL_GPUBufferBinding){g->frame_indices, 0};
+                SDL_BindGPUVertexBuffers(pass, 0, &vertex, 1);
+                SDL_BindGPUIndexBuffer(pass, &index, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                for (uint32_t i = 0; i < g->frame_caster_count; ++i) {
+                    if (i < 64 && !(caster_faces[i] & (1 << face))) continue;
+                    const lq_draw *d = &g->frame_draws[g->frame_casters[i].draw];
+                    SDL_DrawGPUIndexedPrimitives(pass, d->index_count, 1, d->first_index, 0, 0);
+                }
+            }
             SDL_EndGPURenderPass(pass);
+            ++g->shadow_face_updates;
         }
         memcpy(g->shadow_keys[slot], light->position_radius, sizeof(g->shadow_keys[slot]));
         g->shadow_sources[slot] = light->source_index; g->shadow_valid[slot] = 1;
+        g->shadow_brushes[slot] = brushes; g->shadow_dynamic_faces[slot] = touched;
         ++g->shadow_updates;
     }
 }
 uint32_t LQ_GPUShadowUpdates(const lq_gpu *g) { return g ? g->shadow_updates : 0; }
+uint32_t LQ_GPUShadowFaceUpdates(const lq_gpu *g) { return g ? g->shadow_face_updates : 0; }
 size_t LQ_GPUDynamicProbeBytes(const lq_gpu *g) { return g ? g->probe_dynamic_bytes : 0; }
 int LQ_GPUDynamicProbes(lq_gpu *g, const uint8_t *pixels, char *error, size_t size)
 {
@@ -880,5 +961,5 @@ void LQ_GPUDestroy(lq_gpu *g)
         if (g->claimed) SDL_ReleaseWindowFromGPUDevice(g->device, g->window);
         SDL_DestroyGPUDevice(g->device);
     }
-    free(g->mip_palette); free(g->frame_draws); free(g);
+    free(g->mip_palette); free(g->frame_draws); free(g->frame_casters); free(g);
 }

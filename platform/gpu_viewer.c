@@ -288,8 +288,50 @@ static int ShadowTest(lq_view *view, char *error, size_t size)
                 goto done;
             }
         }
+        /* Moving caster: the same box as an actor frame draw, with the static
+         * box removed. Only the touched cube face is redrawn while it stays;
+         * moving it moves the shadow, and removing it erases the old shadow. */
+        fixture.draw_count = 1; light->source_radius = 0;
+        if (!LQ_GPUUpload(gpu, &fixture, error, size)) goto done;
+        memset(view->runtime_lights, 0, sizeof(view->runtime_lights));
+        for (int j = 0; j < 3; ++j) view->origin[j] = origin[j] + 70*u[j]; /* sees past the box */
+        lq_vertex actor[24]; uint32_t order[36]; uint8_t skin_pixel = 201;
+        memcpy(actor, fixture.vertices + 4, sizeof(actor));
+        for (int i = 0; i < 36; ++i) order[i] = fixture.indices[6 + i] - 4;
+        lq_material skin = {.indices={1,1,1,&skin_pixel},.resource_id=47};
+        lq_draw box_draw = {0,36,0,LQ_SURFACE_MODEL|LQ_SURFACE_ACTOR,{255,255,255,255}};
+        lq_frame moving = {actor,order,&box_draw,&skin,24,36,1,1};
+        for (int step = 0; step < 5; ++step) {
+            /* 0: new cube; 1: touched face only; 2: box moved -60u; 3: box gone; 4: nothing to redraw. */
+            if (step == 2) for (int i = 0; i < 24; ++i) for (int j = 0; j < 3; ++j) actor[i].position[j] -= 60*u[j];
+            if (step == 3) moving.draw_count = 0;
+            if (step <= 3 && !LQ_GPUFrame(gpu, &moving, error, size)) goto done;
+            view->runtime_light_count = LQ_BuildRuntimeLights(&fixture, view->lightstyles, view->origin, view->runtime_lights);
+            LQ_BuildLightInteractions(&fixture, view->runtime_lights, view->runtime_light_count, interactions);
+            view->world_draws = interactions; view->world_draw_count = 1;
+            if (!LQ_GPURender(gpu, view, 640, 480, error, size)) goto done;
+            uint32_t faces = LQ_GPUShadowFaceUpdates(gpu);
+            float old_shadow[3], new_shadow[3], lit[3]; int old_red, new_red, lit_red;
+            for (int j = 0; j < 3; ++j) {
+                old_shadow[j] = origin[j] + 256*a[j] + 80*u[j] + 48*v[j];
+                new_shadow[j] = origin[j] + 256*a[j] - 40*u[j] + 48*v[j];
+                lit[j] = origin[j] + 256*a[j] - 80*u[j] - 48*v[j];
+            }
+            if (!ScreenRed(view, old_shadow, &old_red, error, size) || !ScreenRed(view, new_shadow, &new_red, error, size) ||
+                !ScreenRed(view, lit, &lit_red, error, size)) goto done;
+            int ok = lit_red > 100 && (step < 2 ? old_red < 16 && new_red > 100 :
+                step == 2 ? old_red > 100 && new_red < 16 : old_red > 100 && new_red > 100);
+            uint32_t expected = step == 0 ? 6 : step == 4 ? 0 : 1;
+            if (!ok || faces != expected) {
+                snprintf(error, size, "moving caster axis %d step %d: old %d new %d lit %d, %u faces redrawn",
+                    axis, step, old_red, new_red, lit_red, faces);
+                goto done;
+            }
+        }
+        memcpy(view->origin, origin, sizeof(origin));
+        fixture.draw_count = 2;
     }
-    puts("PASS Enhanced cube shadows on six axes, moving light, cached static shadows, range cutoff and emitter penumbrae");
+    puts("PASS Enhanced cube shadows on six axes, moving light, cached static shadows, range cutoff, emitter penumbrae and moving casters");
     good = 1;
 done:
     view->lightstyles[0] = saved_style;
@@ -409,6 +451,7 @@ int LQ_GPUViewer(int argc, char **argv)
     float seconds = 0;
     lq_view view = {0}; view.horizontal_fov = 90;
     view.disable_shadows = Has(argc, argv, "--no-shadows");
+    view.static_brush_shadows = 1; /* no gameplay: brush models stay where compiled */
     view.disable_bounce = Has(argc, argv, "--no-bounce");
     const char *exposure = Argument(argc, argv, "--exposure"), *bounce_rays = Argument(argc, argv, "--bounce-rays");
     const char *bounce_gain = Argument(argc, argv, "--bounce-gain");
@@ -446,6 +489,14 @@ int LQ_GPUViewer(int argc, char **argv)
         if (!LQ_QuakeSceneLoad(argc, argv, map, &scene, error, sizeof(error))) goto done;
         memcpy(view.origin, scene.spawn_origin, sizeof(view.origin));
         memcpy(view.angles, scene.spawn_angles, sizeof(view.angles));
+    }
+    const char *spot_gain = Argument(argc, argv, "--accent-gain");
+    if (spot_gain) { /* replaces the default accent gain before bounce is gathered */
+        char *end; float gain = strtof(spot_gain, &end);
+        if (!*spot_gain || *end || !isfinite(gain) || gain <= 0 || gain > 4) {
+            fprintf(stderr, "--accent-gain needs 0 < gain <= 4\n"); return 1;
+        }
+        LQ_SceneSetAccentGain(&scene, gain);
     }
     const char *light_radius = Argument(argc, argv, "--light-radius");
     if (light_radius) {

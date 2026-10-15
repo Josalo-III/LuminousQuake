@@ -199,11 +199,17 @@ void main() {
                     /* LIGHT's softened incidence: half the value at grazing. */
                     float direct = lightValue(f,distance) * ((1.0 - f.z) + f.z * facing);
                     vec4 cone = lights.spot[i];
-                    if (cone.w >= -1.0) {
-                        float along = dot(-direction,cone.xyz);
-                        if (along <= cone.w) continue;
-                        float inner = lights.shape[i].x;
-                        if (inner > cone.w) direct *= clamp((along-cone.w)/(inner-cone.w),0.0,1.0);
+                    if (cone.w >= -1.0) { // see LQ_SpotFactor: world-space blur across the cone edge
+                        float along = dot(-direction,cone.xyz), spot = 1.0, inner = lights.shape[i].x;
+                        if (cone.w > 0.01) {
+                            float edge = distance * sqrt(max(1.0 - along*along, 0.0)) -
+                                distance * along * sqrt(max(1.0 - cone.w*cone.w, 0.0)) / cone.w;
+                            float blur = 16.0 + lights.shape[i].y;
+                            spot = along > 0.0 ? 1.0 - smoothstep(-blur, blur, edge) : 0.0;
+                        } else if (along <= cone.w) continue;
+                        if (inner > cone.w) spot *= smoothstep(cone.w,inner,along);
+                        if (spot <= 0.0) continue;
+                        direct *= spot;
                     }
                     direct *= lights.color_strength[i].w;
                     if (direct < 0.01) continue;

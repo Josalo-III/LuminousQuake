@@ -26,6 +26,7 @@ void LQ_LightSourceDefaults(lq_light_source *source)
     source->formula = LQ_LIGHT_LINEAR; source->spotlight = 0;
     source->spot_outer = source->spot_inner = -2;
     source->source_radius = LQ_LIGHT_DEFAULT_RADIUS;
+    source->accent_gain = 1; source->output_base = 0.5f;
     source->color[0] = source->color[1] = source->color[2] = 1;
 }
 static int DirectSource(const lq_light_source *source)
@@ -76,6 +77,43 @@ float LQ_LightSourceRange(const lq_light_source *source)
     default: range = LQ_LIGHT_MAX_RANGE; break;
     }
     return isfinite(range) && range > 0 ? fminf(range, LQ_LIGHT_MAX_RANGE) : 0;
+}
+/* Spotlight weight at a point: the cone edge is blurred over a world-space
+ * band at the receiver, and an authored inner cone fades in with smoothstep.
+ * to_light is the unit vector from the point to the light. */
+float LQ_SpotFactor(const float to_light[3], float distance, const float axis[3],
+    float outer, float inner, float source_radius)
+{
+    float along = -(to_light[0]*axis[0] + to_light[1]*axis[1] + to_light[2]*axis[2]);
+    float factor = 1;
+    if (outer > 0.01f) {
+        float axial = distance * along, radial = distance * sqrtf(fmaxf(1 - along*along, 0));
+        float edge = radial - axial * sqrtf(fmaxf(1 - outer*outer, 0)) / outer, blur = LQ_SPOT_EDGE_BLUR + source_radius;
+        float t = fminf(fmaxf((edge + blur) / (2 * blur), 0), 1);
+        factor = 1 - t * t * (3 - 2 * t);
+        if (along <= 0) factor = 0;
+    } else if (along <= outer) return 0;
+    if (inner > outer) {
+        float t = fminf(fmaxf((along - outer) / (inner - outer), 0), 1);
+        factor *= t * t * (3 - 2 * t);
+    }
+    return factor;
+}
+int LQ_LightIsAccent(const lq_light_source *source)
+{
+    return source && source->spotlight && source->formula != LQ_LIGHT_LINEAR &&
+        source->formula != LQ_LIGHT_LOCAL_MINLIGHT;
+}
+uint32_t LQ_SceneSetAccentGain(lq_scene *scene, float gain)
+{
+    uint32_t count = 0;
+    if (!scene || !isfinite(gain) || gain < 0) return 0;
+    for (uint32_t i = 0; i < scene->light_source_count; ++i) {
+        lq_light_source *light = &scene->light_sources[i];
+        if (!LQ_LightIsAccent(light)) continue;
+        light->accent_gain = gain; light->output_scale = light->output_base * gain; ++count;
+    }
+    return count;
 }
 uint32_t LQ_SceneLeaf(const lq_scene *scene, const float point[3])
 {
@@ -294,6 +332,7 @@ int LQ_SceneCheck(const lq_scene *s, char *error, size_t size)
             s->atlas_height <= s->lightmap.height), "invalid light sample grid");
     }
     REQUIRE(isfinite(s->bounce_scale) && s->bounce_scale >= 0, "invalid bounce scale");
+    REQUIRE(s->world_draw_begin <= s->world_draw_end && s->world_draw_end <= s->draw_count, "invalid world draw range");
     REQUIRE(!s->bounce.pixels || (s->face_samples && s->bounce.channels == 4 && s->bounce.width == s->lightmap.width &&
         s->bounce.height == 4 * s->atlas_height), "invalid bounce atlas");
     REQUIRE(!s->probe_static || (s->probe_valid && s->probe_size[0] && s->probe_size[1] && s->probe_size[2] &&

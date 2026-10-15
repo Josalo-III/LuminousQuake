@@ -223,7 +223,7 @@ void LQ_ApplyRenderer(void)
         gpu = LQ_GPUCreate(window, 0, error, sizeof(error));
         if (!gpu) { LQ_FallbackRenderer(error); return; }
         GPUOptions(); gpu_mode = (int)choice;
-        Con_Printf(choice == 2 ? "Enhanced (experimental): runtime lights, soft shadows, bounce and weapon lights; actors keep Classic shading.\n" :
+        Con_Printf(choice == 2 ? "Enhanced (experimental): runtime lights, soft shadows, bounce, probes and weapon lights.\n" :
             "Classic GPU enabled: GPU world, actors, brushes and effects.\n");
     } else if (gpu) LQ_FallbackRenderer("Software selected");
 }

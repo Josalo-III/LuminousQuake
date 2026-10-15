@@ -67,8 +67,20 @@ comes from each light's falloff and from occlusion.
   bounded at 16384 units. Local-minlight sources are not direct lights and stay
   out of this path.
 - **Spotlights.** `mangle` (yaw, pitch up) or a matched target aims a cone whose
-  full angle is `angle` (default 40°), with `_softangle` as a linear inner cone.
-  Unmatched targets remain point lights, as in LIGHT.
+  full angle is `angle` (default 40°). Unmatched targets remain point lights, as
+  in LIGHT. The cone edge is blurred over ±(16 + emitter radius) world units at
+  the receiver (`LQ_SpotFactor`, shared by shader and bounce). That matches the
+  softness the bake got from LIGHT's 16-unit lattice and filtering; without it,
+  accent spots on key items render as hard-edged discs. An authored `_softangle`
+  adds a smoothstep inner cone.
+- **Accent spotlights.** Spotlights using ericw's unbounded falloffs (`delay` 1,
+  2, 3 or 5) are the designers' accents on key items, and they run far past
+  saturation: `light 2500` unattenuated is about five times full white. Enhanced
+  scales their output by `LQ_ACCENT_SPOT_GAIN` (0.15) at load, so bounce and
+  probes dim with them. They then draw the eye in the darker scene without
+  dominating it. Linear spotlights, such as id's targeted fixtures, keep their
+  compiler strength. The viewer's `--accent-gain G` overrides the gain for
+  comparison; 0.3 still dominates the wall, and 0.08 nearly disappears.
 - **Selection.** Up to 32 sources are chosen per frame from those whose PVS reach
   (leaves their own leaf can see, within range) meets the camera's PVS. A
   selected source keeps its slot, and so its cached shadow cube, while it stays
@@ -76,8 +88,17 @@ comes from each light's falloff and from occlusion.
 - **Occlusion.** Each slot owns a 512² reversed-depth (`near / distance`) D32 cube
   in a cube-array texture. The sealed BSP world casts with the faces turned away
   from the light, so receivers never compare against themselves and no large
-  depth bias is needed. Water does not cast. A cube is redrawn only when its
-  slot's light or position changes; static world shadows are otherwise reused.
+  depth bias is needed. Water does not cast. A cube is redrawn in full only when
+  its slot's light or position changes.
+- **Moving casters.** In game, actors cast with their live geometry: monsters,
+  items and ammo/health boxes, and also moving brush models (doors, lifts,
+  plats). The view weapon, flames, particles and sprites do not cast. The static
+  caster buffer holds only the world model; the viewer adds brush models at their
+  compiled positions, since nothing moves there. Each frame, the bounds of every
+  moving caster are tested against each slot's range and its six face frusta.
+  Only the faces they touch are redrawn (static world plus those casters), along
+  with faces they touched when last drawn, so old shadows are erased. Static
+  shadows elsewhere stay cached.
 - **Penumbrae.** Lights have an emitter radius: ericw `_deviance` when present,
   otherwise 8 units. PCSS finds the mean blocker depth and filters over
   `radius × (receiver − blocker) / blocker`, so contact shadows stay sharp and
@@ -202,11 +223,19 @@ E1M1 profile while firing rockets (`lq_profile`, 7 s after warm-up, M1 Max,
 Enhanced figures include the dynamic probes. Interactions are built only for
 visible faces, using cached bounds. GPU time is not measured.
 
+The six-axis GPU test also drives a moving actor box. Exactly 6 faces are
+redrawn for a new cube, 1 while the box stays, 1 when it moves (and the shadow
+follows), 1 to erase it after removal, then none. In demo1, an explosion beside
+a monster throws the monster's silhouette across the wall and ceiling behind it.
+With monsters moving near lights, demo1 holds Classic's frame rate. Average
+presentation/submission CPU is 3.6 ms (9 ms at worst), covering shadow redraws
+and dynamic probes.
+
 Current limits:
 
-- Actors and moving brush models do not cast Enhanced shadows. Particles and
-  sprites keep Classic shading. Brush-model faces in the static scene are lit,
-  and cast, at their compiled positions.
+- Particles and sprites keep Classic shading. Actor silhouettes cast from back
+  faces chosen per vertex normal, which can thin shadows at grazing angles.
+  Brush-model faces are lit and gather bounce at their compiled positions.
 - Face bounce is static. Weapon light reaches surfaces only through the probe
   grid, which is coarser than the bounce atlas. Probes do not test visibility,
   so light can leak through thin walls between probe cells.
@@ -264,9 +293,7 @@ Other-platform runtime validation remains pending.
 
 ## Next implementation sequence
 
-1. Shadow casting for actors and moving brush models, redrawing only the cubes
-   their bounds touch.
-2. Probe visibility weighting against wall leaks, and a cache for bounce/probes
+1. Probe visibility weighting against wall leaks, and a cache for bounce/probes
    so map load does not repeat the gather.
 3. Implement the staged [light reconstruction](LIGHT_RECONSTRUCTION.md): retain
    style-layer evidence, compare the runtime prediction, estimate only

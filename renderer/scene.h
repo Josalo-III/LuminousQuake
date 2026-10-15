@@ -31,6 +31,17 @@ enum { LQ_LIGHT_LINEAR, LQ_LIGHT_INVERSE, LQ_LIGHT_INVERSE2, LQ_LIGHT_INFINITE,
  * Quake's flames and fixtures are roughly this size; a point source would
  * cast perfectly hard, geometric shadow edges. */
 #define LQ_LIGHT_DEFAULT_RADIUS 8.0f
+/* World-space blur either side of a spotlight's cone edge, plus the emitter
+ * radius: LIGHT's 16-unit lattice and bilinear filtering softened baked edges
+ * by about this much, while per-pixel evaluation would cut them razor sharp. */
+#define LQ_SPOT_EDGE_BLUR 16.0f
+/* Accent spotlights (ericw unbounded falloffs: delay 1, 2, 3 or 5) mark key
+ * items but run far past saturation (light 2500 unattenuated is ~5x full
+ * white). Enhanced scales their output so they draw the eye in a darker scene
+ * without dominating it. Linear spotlights keep their compiler strength. */
+#define LQ_ACCENT_SPOT_GAIN 0.15f
+float LQ_SpotFactor(const float to_light[3], float distance, const float axis[3],
+    float outer, float inner, float source_radius);
 typedef struct {
     float origin[3], intensity, cone_angle, color[3];
     float attenuation; /* "wait" distance multiplier */
@@ -38,6 +49,8 @@ typedef struct {
     float output_scale; /* compiler range scale applied to the final value */
     float spot_direction[3], spot_outer, spot_inner; /* cosines of half-angles */
     float source_radius; /* emitter size: penumbra width grows with it */
+    float accent_gain; /* applied output gain for accent spotlights; 1 otherwise */
+    float output_base; /* compiler output scale before any accent gain */
     uint32_t formula, spotlight;
     uint32_t style, spawnflags, entity_index, flags;
     char classname[64], target[64], targetname[64];
@@ -93,6 +106,9 @@ typedef struct {
     uint8_t probe_styles[4];
     uint8_t *probe_static, *probe_valid;
     float (*draw_bounds)[6]; /* optional per-draw min xyz, max xyz (LQ_SceneDrawBounds) */
+    /* Draws of the static world model; the rest are brush models (doors, lifts)
+     * at their compiled positions. world_draw_end 0 means every draw is world. */
+    uint32_t world_draw_begin, world_draw_end;
 } lq_scene;
 /* Per-frame actor geometry is copied at submission. Texture IDs remain stable
  * for one uploaded map; upload/restart invalidates the backend texture cache. */
@@ -128,12 +144,19 @@ typedef struct {
     uint32_t runtime_light_count;
     uint32_t enhanced_lighting;
     uint32_t disable_shadows; /* Enhanced diagnostic: falloff without occlusion */
+    /* Brush models cast from their compiled positions (the viewer); in game
+     * they move and cast as frame geometry instead. */
+    uint32_t static_brush_shadows;
     uint32_t disable_bounce; /* Enhanced diagnostic: direct light only */
     float exposure; /* Enhanced brightness scale; zero means 1 */
     float bounce_gain; /* Enhanced artistic bounce multiplier; zero means 1 */
     float water_warp;
 } lq_view;
 void LQ_LightSourceDefaults(lq_light_source *source);
+int LQ_LightIsAccent(const lq_light_source *source);
+/* Set every accent spotlight's output to output_base * gain (0 turns them
+ * off). Direct light follows at once; bounce needs LQ_SceneComputeBounce. */
+uint32_t LQ_SceneSetAccentGain(lq_scene *scene, float gain);
 float LQ_LightSourceIntensity(const lq_light_source *source, const float styles[256]);
 float LQ_LightFalloff(const lq_light_source *source, float distance);
 float LQ_LightSourceRange(const lq_light_source *source);
