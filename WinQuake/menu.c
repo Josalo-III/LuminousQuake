@@ -1260,7 +1260,7 @@ void M_Options_Draw (void)
 		else if (M_RendererChoice () == 1)
 			M_Print (16, 160, "Classic GPU world, actors/effects.");
 		else
-			M_Print (16, 160, "Enhanced integration pending.");
+			M_Print (16, 160, "Experimental: runtime light/shadow.");
 		M_Print (16, 168, "Restart or use vid_restart to apply.");
 	}
 

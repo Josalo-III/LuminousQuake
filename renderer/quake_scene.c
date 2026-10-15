@@ -132,10 +132,11 @@ static int Spawn(model_t *world, lq_scene *scene)
     light_target *targets = NULL;
     char (*spots)[2][128] = NULL;
     memset(switched_off, 0, sizeof(switched_off));
+    scene->bounce_scale = 1;
     while (text && (text = COM_Parse(text)) && !strcmp(com_token, "{")) {
         char classname[128] = "", origin[128] = "", angles[128] = "", yaw[128] = "";
         char delay[128] = "", wait[128] = "", mangle[128] = "", soft[128] = "", incidence[128] = "";
-        char world_range[128] = "", world_distance[128] = "", deviance[128] = "";
+        char world_range[128] = "", world_distance[128] = "", deviance[128] = "", bounce[128] = "";
         int style = 0, spawnflags = 0;
         lq_light_source light = {.entity_index=entity_index++};
         LQ_LightSourceDefaults(&light);
@@ -154,6 +155,7 @@ static int Spawn(model_t *world, lq_scene *scene)
                 snprintf(incidence, sizeof(incidence), "%s", com_token);
             else if (!strcmp(key, "_range")) snprintf(world_range, sizeof(world_range), "%s", com_token);
             else if (!strcmp(key, "_deviance")) snprintf(deviance, sizeof(deviance), "%s", com_token);
+            else if (!strcmp(key, "_bouncescale")) snprintf(bounce, sizeof(bounce), "%s", com_token);
             else if (!strcmp(key, "_dist")) snprintf(world_distance, sizeof(world_distance), "%s", com_token);
             else if (!strcmp(key, "style")) {
                 float value; char extra;
@@ -171,6 +173,7 @@ static int Spawn(model_t *world, lq_scene *scene)
             if (world_range[0] && Number(world_range,&value) && value > 0) range_scale = value;
             if (world_distance[0] && Number(world_distance,&value) && value > 0) distance_scale = value;
             if (incidence[0] && Number(incidence,&value) && value >= 0 && value <= 1) angle_scale = value;
+            if (bounce[0] && Number(bounce,&value) && value >= 0 && value <= 16) scene->bounce_scale = value;
         }
         if (light.targetname[0] && strncmp(classname,"light",5)) {
             if (target_count == target_capacity) {
@@ -256,27 +259,21 @@ static int Spawn(model_t *world, lq_scene *scene)
     free(targets); free(spots);
     return 1;
 }
-/* Conservative light reach from the compiled PVS: a source can only light
- * faces in leaves its own leaf can see, within its falloff range. Shadows, not
- * this table, decide occlusion; it only bounds per-frame light selection and
- * per-face work. Brush-model faces are kept for every source. */
-static int BuildLightReach(model_t *world, lq_scene *scene)
+/* Renderer-owned world BSP: nodes with their on-plane faces and leaf contents,
+ * for point lookup and Enhanced ray casts. */
+static int BuildBSP(model_t *world, lq_scene *scene)
 {
-    uint32_t leaves = (uint32_t)world->numleafs + 1, words = (leaves + 31) / 32;
-    uint64_t pairs = 0;
-    if (!world->nodes || world->numnodes <= 0 || world->numleafs <= 0 || !scene->light_source_count) return 1;
-    if ((uint64_t)leaves * words * sizeof(uint32_t) > 32u * 1024 * 1024) {
-        printf("Light reach: %u leaves exceed the PVS table budget; all lights stay eligible.\n",leaves);
-        return 1;
-    }
+    uint32_t leaves = (uint32_t)world->numleafs + 1;
+    if (!world->nodes || world->numnodes <= 0 || world->numleafs <= 0) return 1;
     scene->bsp_nodes = calloc((size_t)world->numnodes,sizeof(*scene->bsp_nodes));
-    scene->leaf_pvs = calloc((size_t)leaves*words,sizeof(uint32_t));
-    scene->light_leaves = calloc((size_t)scene->light_source_count*words,sizeof(uint32_t));
-    uint32_t source_words = (scene->light_source_count + 31) / 32;
-    scene->light_visibility = calloc((size_t)scene->draw_count*source_words,sizeof(uint32_t));
-    if (!scene->bsp_nodes || !scene->leaf_pvs || !scene->light_leaves || !scene->light_visibility) return 0;
-    scene->leaf_count = leaves; scene->leaf_words = words;
-    scene->light_visibility_words = source_words;
+    scene->leaf_contents = calloc(leaves,1);
+    if (!scene->bsp_nodes || !scene->leaf_contents) return 0;
+    scene->leaf_count = leaves;
+    for (uint32_t l = 0; l < leaves; ++l) {
+        int contents = l ? world->leafs[l].contents : CONTENTS_SOLID;
+        scene->leaf_contents[l] = contents == CONTENTS_EMPTY ? LQ_LEAF_EMPTY : contents == CONTENTS_SKY ? LQ_LEAF_SKY :
+            contents == CONTENTS_WATER || contents == CONTENTS_SLIME || contents == CONTENTS_LAVA ? LQ_LEAF_LIQUID : LQ_LEAF_SOLID;
+    }
     /* The node array also holds brush-model trees; keep only the world tree,
      * renumbered in discovery order from its root. */
     const mnode_t **order = malloc((size_t)world->numnodes * sizeof(*order));
@@ -289,6 +286,8 @@ static int BuildLightReach(model_t *world, lq_scene *scene)
         const mnode_t *node = order[i];
         lq_bsp_node *out = &scene->bsp_nodes[i];
         VectorCopy(node->plane->normal,out->normal); out->dist = node->plane->dist;
+        out->first_face = node->firstsurface; out->face_count = node->numsurfaces;
+        if ((uint64_t)out->first_face + out->face_count > scene->draw_count) out->face_count = 0;
         for (int j = 0; j < 2; ++j) {
             const mnode_t *child = node->children[j];
             if (child->contents < 0) {
@@ -304,6 +303,27 @@ static int BuildLightReach(model_t *world, lq_scene *scene)
     }
     free(order); free(remap);
     scene->bsp_node_count = count;
+    return 1;
+}
+/* Conservative light reach from the compiled PVS: a source can only light
+ * faces in leaves its own leaf can see, within its falloff range. Shadows, not
+ * this table, decide occlusion; it only bounds per-frame light selection and
+ * per-face work. Brush-model faces are kept for every source. */
+static int BuildLightReach(model_t *world, lq_scene *scene)
+{
+    uint32_t leaves = scene->leaf_count, words = (leaves + 31) / 32;
+    uint64_t pairs = 0;
+    if (!scene->bsp_nodes || !scene->light_source_count) return 1;
+    if ((uint64_t)leaves * words * sizeof(uint32_t) > 32u * 1024 * 1024) {
+        printf("Light reach: %u leaves exceed the PVS table budget; all lights stay eligible.\n",leaves);
+        return 1;
+    }
+    scene->leaf_pvs = calloc((size_t)leaves*words,sizeof(uint32_t));
+    scene->light_leaves = calloc((size_t)scene->light_source_count*words,sizeof(uint32_t));
+    uint32_t source_words = (scene->light_source_count + 31) / 32;
+    scene->light_visibility = calloc((size_t)scene->draw_count*source_words,sizeof(uint32_t));
+    if (!scene->leaf_pvs || !scene->light_leaves || !scene->light_visibility) return 0;
+    scene->leaf_words = words; scene->light_visibility_words = source_words;
     for (uint32_t l = 0; l < leaves; ++l) {
         const byte *vis = Mod_LeafPVS(world->leafs + l, world);
         uint32_t *row = scene->leaf_pvs + (size_t)l * words;
@@ -343,6 +363,70 @@ static int BuildLightReach(model_t *world, lq_scene *scene)
     for (size_t i = 0; i < (size_t)scene->draw_count*source_words; ++i)
         for (uint32_t bits = scene->light_visibility[i]; bits; bits &= bits - 1) ++pairs;
     printf("Light reach: %u leaves, %llu potential face/source pairs.\n",leaves,(unsigned long long)pairs);
+    return 1;
+}
+static int SolidPoint(model_t *world, float point[3])
+{
+    int contents = Mod_PointInLeaf(point,world)->contents;
+    return contents == CONTENTS_SOLID || contents == CONTENTS_SKY;
+}
+/* LIGHT's per-face sample lattice for Enhanced bounce, one unit in front of
+ * the face. Points that start inside solid move toward the face center, as
+ * LIGHT does before tracing; any that cannot are NaN (no sample). */
+static int BuildSampleGrids(model_t *world, lq_scene *s, const uint16_t (*atlas)[2])
+{
+    uint64_t total = 0;
+    float (*albedo)[3] = calloc(s->material_count,sizeof(*albedo));
+    s->face_samples = calloc(s->draw_count,sizeof(*s->face_samples));
+    if (!albedo || !s->face_samples) { free(albedo); return 0; }
+    for (uint32_t m = 0; m < s->material_count; ++m) {
+        const lq_image *image = &s->materials[m].indices;
+        double sum[3] = {0};
+        size_t pixels = (size_t)image->width * image->height;
+        for (size_t i = 0; i < pixels; ++i)
+            for (int c = 0; c < 3; ++c) sum[c] += s->colormap.pixels[(31*256 + image->pixels[i])*4 + c];
+        for (int c = 0; c < 3; ++c) albedo[m][c] = pixels ? (float)(sum[c] / pixels / 255.0) : 0;
+    }
+    for (uint32_t i = 0; i < s->draw_count && i < (uint32_t)world->numsurfaces; ++i)
+        if (!s->draws[i].flags) {
+            const msurface_t *f = world->surfaces + i;
+            total += (uint64_t)((f->extents[0] >> 4) + 1) * ((f->extents[1] >> 4) + 1);
+        }
+    if (total > 16u * 1024 * 1024) { free(albedo); return 0; }
+    s->sample_positions = malloc((size_t)(total ? total : 1) * sizeof(*s->sample_positions));
+    if (!s->sample_positions) { free(albedo); return 0; }
+    for (uint32_t i = 0; i < s->draw_count && i < (uint32_t)world->numsurfaces; ++i) {
+        const lq_draw *draw = &s->draws[i];
+        if (draw->flags) continue;
+        msurface_t *f = world->surfaces + i;
+        lq_face_samples *grid = &s->face_samples[i];
+        for (int k = 0; k < 4; ++k) { grid->s[k] = f->texinfo->vecs[0][k]; grid->t[k] = f->texinfo->vecs[1][k]; }
+        grid->mins[0] = f->texturemins[0]; grid->mins[1] = f->texturemins[1];
+        grid->width = (uint16_t)((f->extents[0] >> 4) + 1); grid->height = (uint16_t)((f->extents[1] >> 4) + 1);
+        grid->atlas_x = atlas[i][0]; grid->atlas_y = atlas[i][1];
+        memcpy(grid->albedo, albedo[draw->material], sizeof(grid->albedo));
+        grid->first_sample = s->sample_count;
+        float center[3] = {0};
+        const float *normal = s->vertices[s->indices[draw->first_index]].normal;
+        for (uint32_t j = 0; j < draw->index_count; ++j)
+            for (int axis = 0; axis < 3; ++axis) center[axis] += s->vertices[s->indices[draw->first_index + j]].position[axis];
+        for (int axis = 0; axis < 3; ++axis) center[axis] = center[axis] / draw->index_count + normal[axis];
+        for (int y = 0; y < grid->height; ++y) for (int x = 0; x < grid->width; ++x) {
+            float *point = s->sample_positions[s->sample_count++];
+            if (!LightSampleOrigin(f,(float)(f->texturemins[0] + x*16),(float)(f->texturemins[1] + y*16),point)) {
+                point[0] = point[1] = point[2] = NAN; continue;
+            }
+            if (!SolidPoint(world,point)) continue;
+            float start[3]; VectorCopy(point,start);
+            int moved = 0;
+            for (int step = 1; step <= 4 && !moved; ++step) {
+                for (int axis = 0; axis < 3; ++axis) point[axis] = start[axis] + (center[axis] - start[axis]) * step * 0.25f;
+                moved = !SolidPoint(world,point);
+            }
+            if (!moved) point[0] = point[1] = point[2] = NAN;
+        }
+    }
+    free(albedo);
     return 1;
 }
 int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char *error, size_t size)
@@ -414,10 +498,11 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
     s->draws = calloc(world->numsurfaces, sizeof(*s->draws));
     s->materials = calloc(world->numtextures + 1, sizeof(*s->materials));
     texture_sources = calloc(world->numtextures + 1, sizeof(*texture_sources));
-    if (!s->vertices || !s->indices || !s->draws || !s->materials || !texture_sources) {
-        free(texture_sources); return Failure(s, error, size, "Cannot allocate scene geometry");
+    uint16_t (*face_atlas)[2] = calloc(world->numsurfaces, sizeof(*face_atlas));
+    if (!s->vertices || !s->indices || !s->draws || !s->materials || !texture_sources || !face_atlas) {
+        free(texture_sources); free(face_atlas); return Failure(s, error, size, "Cannot allocate scene geometry");
     }
-#define FAIL(message) do { free(texture_sources); return Failure(s, error, size, message); } while (0)
+#define FAIL(message) do { free(texture_sources); free(face_atlas); return Failure(s, error, size, message); } while (0)
     for (int i = 0; i < world->numsurfaces; ++i) {
         msurface_t *f = world->surfaces + i;
         texture_t *texture = f->texinfo->texture;
@@ -440,12 +525,14 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
         draw->flags = (f->flags & SURF_DRAWSKY ? LQ_SURFACE_SKY : 0) |
             (f->flags & SURF_DRAWTURB ? LQ_SURFACE_WATER : 0);
         memset(draw->styles, 255, 4); draw->styles[0] = 0;
+        memset(draw->bounce_styles, 255, 4);
         if (!draw->flags) {
             if (light_width < 1 || light_height < 1 || light_width + 2 > ATLAS_SIZE || light_height + 2 > ATLAS_SIZE)
                 FAIL("Invalid surface lightmap size");
             if (atlas_x + light_width + 1 > ATLAS_SIZE) { atlas_x = 1; atlas_y += row_height; row_height = 0; }
             if (atlas_y + light_height + 1 > ATLAS_SIZE) FAIL("Lightmap atlas full; multiple pages are not implemented yet");
             light_x = atlas_x; light_y = atlas_y; atlas_x += light_width + 2;
+            face_atlas[i][0] = (uint16_t)light_x; face_atlas[i][1] = (uint16_t)light_y;
             if (light_height + 2 > row_height) row_height = light_height + 2;
             int maps = 0;
             if (f->samples) {
@@ -518,9 +605,12 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
         memcpy(m->indices.pixels, (byte *)texture+texture->offsets[0], (size_t)texture->width*texture->height);
         memcpy(m->name, texture->name, 16); m->name[16] = 0;
     }
-    free(texture_sources);
-    if (!Spawn(world, s)) return Failure(s,error,size,"Cannot retain map light inventory (allocation/4096-source limit)");
-    if (!BuildLightReach(world,s)) return Failure(s,error,size,"Cannot build light reach");
+    free(texture_sources); texture_sources = NULL;
+    s->atlas_height = (uint32_t)(atlas_y + row_height);
+    if (!Spawn(world, s)) FAIL("Cannot retain map light inventory (allocation/4096-source limit)");
+    if (!BuildBSP(world,s) || !BuildLightReach(world,s)) FAIL("Cannot build light reach");
+    if (!BuildSampleGrids(world,s,face_atlas)) FAIL("Cannot build light sample grids");
+    free(face_atlas);
     if (!LQ_SceneCheck(s, error, size)) { LQ_SceneFree(s); return 0; }
     printf("GPU scene: %u triangles, %u draws, %u indexed materials, %dx%d lightmap atlas\n",
         s->index_count / 3, s->draw_count, s->material_count, ATLAS_SIZE, ATLAS_SIZE);

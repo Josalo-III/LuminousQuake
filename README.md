@@ -9,18 +9,22 @@ improved materials, and faithful asset improvements. See the
 The Classic GPU feature implementation milestone is reached as of October 14,
 2026, including mipmaps, anisotropic filtering and saved video options. Broader
 campaign/platform validation and rerelease fog remain open. The Phase 4A engine
-worker pool now handles measured row conversion work; Enhanced rendering remains
-unavailable.
+worker pool now handles measured row conversion work and Enhanced bounce
+gathering; Enhanced rendering is experimental.
 
-Enhanced development has started with shared scene normals and retained map
-light descriptions. The gated standalone viewer (`luminousquake-gpu --enhanced`)
-now lights the world only from runtime lights: original LIGHT/ericw-tools falloff
-formulas, spotlights and live styles, occluded by cached cube shadow maps with
-emitter-sized soft penumbrae. Darkness comes from falloff and occlusion, never
-from the baked lightmap. There is no indirect light yet and actors neither
-receive nor cast Enhanced light, so playable rendering remains Classic and the
-Enhanced choice is unavailable. See [Enhanced renderer notes](docs/ENHANCED_RENDERER.md)
-for the commands, evidence and next steps.
+Enhanced (`lq_renderer 2`) is now an **experimental** playable choice. It lights
+the world only from runtime lights:
+- original LIGHT/ericw-tools falloff formulas, spotlights and live styles;
+- cached cube shadow maps with emitter-sized soft penumbrae;
+- static-world bounce gathered at map load from those same lights;
+- weapon light: rockets, muzzle flashes, explosions and other gameplay dlights,
+  each a shadowed, warm-tinted runtime light.
+
+Darkness comes from falloff and occlusion, never from the baked lightmap.
+Actors still use Classic shading and neither receive nor cast Enhanced light.
+The standalone viewer (`luminousquake-gpu --enhanced`) has tuning flags. See
+[Enhanced renderer notes](docs/ENHANCED_RENDERER.md) for commands, evidence and
+next steps.
 
 See [profiling method](docs/PROFILING.md) for the Instruments-led measurement
 method. CPU timing is opt-in: set `lq_profile 1`, then use `lq_profile_report` in the
@@ -51,7 +55,7 @@ From the repository root:
 
 Use `+lq_renderer 0` for Software. Options saves the choice for the next launch;
 the console command `vid_restart` also applies a change in the current game.
-**Enhanced** remains reserved and currently falls back to Software. Legacy debug
+**Enhanced** (`+lq_renderer 2`) is experimental; see above. Legacy debug
 views use a software frame; failed GPU initialization/map uploads fall back to
 Software with a console explanation. See the current
 [Classic GPU checkpoint](docs/CLASSIC_GPU_CHECKPOINT.md).
@@ -145,7 +149,7 @@ renderer), **Classic GPU** (GLQuake-style appearance with baked lightmaps), and
 **Enhanced** (Tenebrae-inspired lighting, shadows and materials). Left/right
 cycle in either direction; Enter advances. `lq_renderer` stores 0, 1 or 2.
 Classic GPU is now available as the feature implementation checkpoint described above;
-Enhanced remains pending. Restart the game or use `vid_restart` to apply the
+Enhanced is experimental (runtime lights, soft shadows, bounce and weapon light). Restart the game or use `vid_restart` to apply the
 saved choice. The experimental GPU viewer remains a separate `luminousquake-gpu`
 executable. Classic GPU describes appearance and can use Metal/Vulkan.
 Options → Video Options selects resolution, horizontal FOV (10–170 degrees),

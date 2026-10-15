@@ -19,7 +19,8 @@ struct lq_gpu {
     lq_mip_palette *mip_palette;
     SDL_GPUSampler *repeat, *point, *linear;
     SDL_GPUBuffer *vertices, *indices;
-    SDL_GPUTexture **textures, *colormap, *lightmap, *color, *depth, *overlay;
+    SDL_GPUTexture **textures, *colormap, *lightmap, *bounce, *color, *depth, *overlay;
+    float bounce_ratio; /* lightmap rows per bounce layer row */
     uint32_t texture_count, draw_count, width, height;
     lq_draw *draws;
     SDL_GPUBuffer *frame_vertices, *frame_indices;
@@ -43,12 +44,14 @@ struct lq_gpu {
 typedef struct {
     float lights[4], parameters[4], camera[4], dynamic[32][4];
     uint32_t bits[4];
+    float bounce[4]; /* live style value per bounce layer */
 } lq_surface_uniforms;
 typedef struct {
     float position_range[LQ_MAX_RUNTIME_LIGHTS][4], color_strength[LQ_MAX_RUNTIME_LIGHTS][4];
     float falloff[LQ_MAX_RUNTIME_LIGHTS][4], spot[LQ_MAX_RUNTIME_LIGHTS][4];
     float shape[LQ_MAX_RUNTIME_LIGHTS][4]; /* inner cosine, source radius */
     uint32_t parameters[4];
+    float tuning[4]; /* exposure, bounce layer ratio, bounce enabled, bounce gain */
 } lq_light_uniforms;
 typedef struct { float face_projection[16], light_origin[4]; } lq_shadow_uniforms;
 #define LQ_SHADOW_NEAR 2.0f
@@ -72,7 +75,7 @@ static SDL_GPUShader *ShaderCode(lq_gpu *g, const unsigned char *spv, size_t spv
 static SDL_GPUShader *Shader(lq_gpu *g, int fragment, int overlay)
 {
     if (overlay) return fragment ? SHADER(g, lq_overlay_frag, 1, 1, 0) : SHADER(g, lq_overlay_vert, 0, 0, 0);
-    return fragment ? SHADER(g, lq_world_frag, 1, 5, 2) : SHADER(g, lq_world_vert, 0, 0, 1);
+    return fragment ? SHADER(g, lq_world_frag, 1, 6, 2) : SHADER(g, lq_world_vert, 0, 0, 1);
 }
 static SDL_GPUTexture *CubeArray(lq_gpu *g, uint32_t size, uint32_t cubes)
 {
@@ -372,6 +375,8 @@ static void ReleaseScene(lq_gpu *g)
         if (g->textures[i]) SDL_ReleaseGPUTexture(g->device, g->textures[i]);
     if (g->colormap) SDL_ReleaseGPUTexture(g->device, g->colormap);
     if (g->lightmap) SDL_ReleaseGPUTexture(g->device, g->lightmap);
+    if (g->bounce) SDL_ReleaseGPUTexture(g->device, g->bounce);
+    g->bounce = NULL; g->bounce_ratio = 0;
     free(g->textures); free(g->draws);
     g->textures = NULL; g->draws = NULL; g->vertices = g->indices = NULL;
     g->colormap = g->lightmap = NULL; g->texture_count = g->draw_count = 0;
@@ -478,7 +483,11 @@ int LQ_GPUUpload(lq_gpu *g, const lq_scene *s, char *error, size_t size)
     g->vertices = UploadBuffer(g, s->vertices, s->vertex_count * sizeof(*s->vertices), SDL_GPU_BUFFERUSAGE_VERTEX);
     g->indices = UploadBuffer(g, s->indices, s->index_count * sizeof(*s->indices), SDL_GPU_BUFFERUSAGE_INDEX);
     g->colormap = UploadImage(g, &s->colormap); g->lightmap = UploadImage(g, &s->lightmap);
-    if (!g->vertices || !g->indices || !g->colormap || !g->lightmap) goto failed;
+    static uint8_t black[4];
+    lq_image none = {1, 1, 4, black};
+    g->bounce = UploadImage(g, s->bounce.pixels ? &s->bounce : &none);
+    g->bounce_ratio = s->bounce.pixels ? (float)s->lightmap.height / s->atlas_height : 0;
+    if (!g->vertices || !g->indices || !g->colormap || !g->lightmap || !g->bounce) goto failed;
     /* Every opaque world face may occlude; water and similar liquids do not. */
     uint32_t *casters = malloc((size_t)s->index_count * sizeof(*casters));
     if (!casters) { SDL_SetError("out of memory"); goto failed; }
@@ -532,8 +541,10 @@ static void SurfaceUniforms(lq_surface_uniforms *uniforms, const lq_gpu *g,
     uniforms->parameters[0] = view->time; uniforms->parameters[1] = (float)draw->flags;
     uniforms->parameters[2] = (float)g->smooth; uniforms->parameters[3] = (float)g->mipmaps;
     memcpy(uniforms->camera,view->origin,sizeof(view->origin)); uniforms->camera[3] = (float)g->anisotropy;
-    for (int j = 0; j < 4; ++j)
+    for (int j = 0; j < 4; ++j) {
         uniforms->lights[j] = draw->styles[j] == 255 ? 0 : view->lightstyles[draw->styles[j]];
+        uniforms->bounce[j] = draw->bounce_styles[j] == 255 ? 0 : view->lightstyles[draw->bounce_styles[j]];
+    }
 }
 static void LightUniforms(lq_light_uniforms *uniforms, const lq_gpu *g, const lq_view *view)
 {
@@ -551,6 +562,10 @@ static void LightUniforms(lq_light_uniforms *uniforms, const lq_gpu *g, const lq
     uniforms->parameters[1] = view->enhanced_lighting != 0;
     uniforms->parameters[2] = g->shadow_size ? g->shadow_size : 1;
     uniforms->parameters[3] = view->enhanced_lighting && g->shadow_maps && !view->disable_shadows;
+    uniforms->tuning[0] = view->exposure > 0 ? view->exposure : 1;
+    uniforms->tuning[1] = g->bounce_ratio;
+    uniforms->tuning[2] = view->enhanced_lighting && g->bounce_ratio > 0 && !view->disable_bounce;
+    uniforms->tuning[3] = view->bounce_gain > 0 ? view->bounce_gain : 1;
 }
 /* Reversed-depth 90-degree face projection. Faces follow the cube-map table
  * (+X,-X,+Y,-Y,+Z,-Z; screen right/up per face) used by sampling hardware,
@@ -667,9 +682,9 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
         SurfaceUniforms(&uniforms,g,v,d);
         SDL_GPUTextureSamplerBinding samplers[] = {
             {g->textures[d->material], g->repeat}, {g->colormap, g->point}, {g->lightmap, g->linear},
-            {shadows, g->shadow_sampler}, {shadows, g->depth_sampler}
+            {shadows, g->shadow_sampler}, {shadows, g->depth_sampler}, {g->bounce, g->linear}
         };
-        SDL_BindGPUFragmentSamplers(pass, 0, samplers, 5);
+        SDL_BindGPUFragmentSamplers(pass, 0, samplers, 6);
         SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
         SDL_DrawGPUIndexedPrimitives(pass, d->index_count, 1, d->first_index, 0, 0);
     }
@@ -686,9 +701,9 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
             SurfaceUniforms(&uniforms,g,v,d);
             SDL_GPUTextureSamplerBinding samplers[] = {
                 {g->frame_textures[d->material], g->repeat}, {g->colormap, g->point}, {g->lightmap, g->linear},
-                {shadows, g->shadow_sampler}, {shadows, g->depth_sampler}
+                {shadows, g->shadow_sampler}, {shadows, g->depth_sampler}, {g->bounce, g->linear}
             };
-            SDL_BindGPUFragmentSamplers(pass, 0, samplers, 5);
+            SDL_BindGPUFragmentSamplers(pass, 0, samplers, 6);
             SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
             SDL_DrawGPUIndexedPrimitives(pass, d->index_count, 1, d->first_index, 0, 0);
         }

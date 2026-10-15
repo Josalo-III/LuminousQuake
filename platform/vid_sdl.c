@@ -15,6 +15,7 @@ static SDL_Renderer *renderer;
 static SDL_Texture *texture;
 static lq_gpu *gpu;
 static qboolean backend_applied;
+static int gpu_mode; /* 1 Classic, 2 Enhanced: the lq_renderer the GPU map was built for */
 static qboolean startup_video_applied;
 lq_gpu *LQ_PlayableGPU(void) { return gpu; }
 static uint32_t *pixels;
@@ -212,19 +213,19 @@ void LQ_ApplyRenderer(void)
         if (renderer) SDL_SetRenderVSync(renderer, vid_vsync.value != 0);
         startup_video_applied = true;
     }
-    if (Cvar_VariableValue("lq_renderer") == 1) {
+    float choice = Cvar_VariableValue("lq_renderer");
+    if (choice == 1 || choice == 2) {
+        /* Classic and Enhanced share the GPU; the map is rebuilt for the mode. */
+        if (gpu && choice != gpu_mode) { LQ_RenderMapChanged(); gpu_mode = (int)choice; }
         if (gpu) { GPUOptions(); return; }
         SDL_DestroyTexture(texture); texture = NULL;
         SDL_DestroyRenderer(renderer); renderer = NULL;
         gpu = LQ_GPUCreate(window, 0, error, sizeof(error));
         if (!gpu) { LQ_FallbackRenderer(error); return; }
-        GPUOptions();
-        Con_Printf("Classic GPU enabled: GPU world, actors, brushes and effects.\n");
-    } else {
-        if (gpu) LQ_FallbackRenderer("Software selected");
-        if (Cvar_VariableValue("lq_renderer") == 2)
-            Con_Printf("Enhanced renderer is pending integration; using Software.\n");
-    }
+        GPUOptions(); gpu_mode = (int)choice;
+        Con_Printf(choice == 2 ? "Enhanced (experimental): runtime lights, soft shadows, bounce and weapon lights; actors keep Classic shading.\n" :
+            "Classic GPU enabled: GPU world, actors, brushes and effects.\n");
+    } else if (gpu) LQ_FallbackRenderer("Software selected");
 }
 
 void VID_Init(unsigned char *palette)

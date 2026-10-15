@@ -295,9 +295,11 @@ renders direct light with compiler-compatible falloff (all LIGHT/ericw-tools
 `delay` formulas, `wait`, `_range`/`_dist`), mangle/target spotlights and
 reversed-depth cube shadow maps with PCSS penumbrae from an emitter radius.
 A controlled six-axis occluder scene proves moving shadow boundaries, cached
-static shadows, range cutoff and penumbrae by readback. Indirect light, actor
-lighting/shadows and material upgrades remain pending, so the in-game Enhanced
-choice remains unavailable. Classic GPU services remain shared unless a specific
+static shadows, range cutoff and penumbrae by readback. Static-world bounce is
+gathered at map load from the runtime lights, per light style. `lq_renderer 2`
+is an experimental in-game mode in which gameplay dlights (rockets, muzzle
+flashes, explosions) are shadowed runtime lights. Actor lighting/shadows,
+dynamic bounce (a probe grid) and material upgrades remain pending. Classic GPU services remain shared unless a specific
 Enhanced implementation supersedes them.
 
 The static-light reconstruction approach is documented in

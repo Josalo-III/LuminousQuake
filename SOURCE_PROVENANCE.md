@@ -31,6 +31,11 @@
   reimplemented from documented behavior, and no ericw-tools code was copied.
   Cube shadow maps, back-face casting and PCSS penumbrae (Fernando, 2005) are
   standard published techniques written as new LuminousQuake code.
+- Static bounce (`renderer/bounce.c`) is new code. Its ray-to-face search follows
+  the structure of id's GPL `R_RecursiveLightPoint` (WinQuake/GLQuake `r_light.c`),
+  adding exact convex-polygon containment and arbitrary ray directions. Cosine-
+  weighted Hammersley gathering is a standard technique; no ericw-tools bounce
+  code was copied.
 
 ## Rerelease QuakeC comparison — October 14, 2026
 

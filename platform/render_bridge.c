@@ -18,7 +18,11 @@ void R_MarkLeaves(void);
 void R_DrawParticles(void);
 void R_StoreEfrags(efrag_t **frags);
 static lq_scene map_scene;
-static lq_draw *world_draws;
+static lq_draw *world_draws, *interaction_draws;
+/* Enhanced (lq_renderer 2, experimental): map lights keep stable slots for
+ * cached shadows; gameplay dlights take the last LQ_MAX_DYNAMIC_LIGHTS. */
+static qboolean enhanced;
+static lq_runtime_light runtime_lights[LQ_MAX_RUNTIME_LIGHTS];
 static qboolean direct_frame;
 static void CaptureView(void);
 
@@ -35,6 +39,7 @@ void LQ_RenderAfterCommands(void) { LQ_ApplyRenderer(); }
 void LQ_RenderBridgeShutdown(void)
 {
     LQ_EntitiesReset(); LQ_SceneFree(&map_scene); free(world_draws); world_draws = NULL;
+    free(interaction_draws); interaction_draws = NULL; memset(runtime_lights, 0, sizeof(runtime_lights));
     direct_frame = false;
     free(preserve); free(rgba);
     preserve = rgba = NULL; count = 0;
@@ -43,6 +48,7 @@ void LQ_RenderBridgeShutdown(void)
 void LQ_RenderMapChanged(void) {
     loaded = false; captured_scene = direct_frame = false;
     LQ_EntitiesReset(); LQ_SceneFree(&map_scene); free(world_draws); world_draws = NULL;
+    free(interaction_draws); interaction_draws = NULL; memset(runtime_lights, 0, sizeof(runtime_lights));
 }
 void LQ_RenderBegin(void)
 {
@@ -70,14 +76,21 @@ void LQ_RenderBegin(void)
     }
     memset(preserve, 0, count);
     if (!loaded && cls.state == ca_connected && cl.worldmodel && !con_forcedup) {
-        if (!LQ_QuakeSceneFromWorld(&map_scene, error, sizeof(error)) ||
-            !LQ_GPUUpload(gpu, &map_scene, error, sizeof(error))) {
-            LQ_FallbackRenderer(error); return;
+        enhanced = Cvar_VariableValue("lq_renderer") == 2;
+        if (!LQ_QuakeSceneFromWorld(&map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }
+        if (enhanced) {
+            double started = Sys_FloatTime();
+            if (LQ_SceneComputeBounce(&map_scene, 64, LQ_JobsRunRange, error, sizeof(error)))
+                Con_Printf("Enhanced bounce: %u samples in %.2f s.\n", map_scene.sample_count, Sys_FloatTime() - started);
+            else Con_Printf("Enhanced bounce unavailable: %s\n", error);
         }
+        if (!LQ_GPUUpload(gpu, &map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }
         world_draws = malloc(map_scene.draw_count*sizeof(*world_draws));
-        if (!world_draws) { LQ_FallbackRenderer("Cannot allocate world visibility"); return; }
+        interaction_draws = enhanced ? malloc(map_scene.draw_count*sizeof(*interaction_draws)) : NULL;
+        if (!world_draws || (enhanced && !interaction_draws)) { LQ_FallbackRenderer("Cannot allocate world visibility"); return; }
+        memset(runtime_lights, 0, sizeof(runtime_lights));
         loaded = true; palette_valid = false;
-        Con_Printf("Classic GPU: copied live BSP world; map resources replaced.\n");
+        Con_Printf("%s: copied live BSP world; map resources replaced.\n", enhanced ? "Enhanced (experimental)" : "Classic GPU");
     }
 }
 int LQ_RenderGPUView(void)
@@ -167,6 +180,43 @@ static void ConvertOverlayRows(void *opaque_context, size_t begin, size_t end)
         rgba_pixel[3] = painted ? 255 : context->menu ? 128 : 0;
     }
 }
+/* Map lights with stable slots, then the nearest live gameplay dlights. The
+ * world draws visible this frame take their runtime-light bits. */
+static void EnhancedLights(void)
+{
+    static const float fire[3] = {1.0f, 0.85f, 0.65f};
+    LQ_BuildRuntimeLightsLimited(&map_scene, view.lightstyles, view.origin, runtime_lights,
+        LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS);
+    int chosen[LQ_MAX_DYNAMIC_LIGHTS]; float scores[LQ_MAX_DYNAMIC_LIGHTS]; uint32_t dynamic = 0;
+    for (int i = 0; i < MAX_DLIGHTS; ++i) {
+        const dlight_t *light = &cl_dlights[i];
+        if (light->die < cl.time || light->radius <= 0) continue;
+        vec3_t delta; VectorSubtract(light->origin, view.origin, delta);
+        float score = Length(delta) - light->radius;
+        uint32_t at = dynamic;
+        while (at && score < scores[at-1]) --at;
+        if (at >= LQ_MAX_DYNAMIC_LIGHTS) continue;
+        if (dynamic < LQ_MAX_DYNAMIC_LIGHTS) ++dynamic;
+        memmove(chosen+at+1, chosen+at, (dynamic-at-1)*sizeof(*chosen));
+        memmove(scores+at+1, scores+at, (dynamic-at-1)*sizeof(*scores));
+        chosen[at] = i; scores[at] = score;
+    }
+    uint32_t base = LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS;
+    for (uint32_t i = 0; i < LQ_MAX_DYNAMIC_LIGHTS; ++i) {
+        lq_runtime_light *slot = &runtime_lights[base + i];
+        if (i < dynamic) LQ_DynamicRuntimeLight(slot, cl_dlights[chosen[i]].origin, cl_dlights[chosen[i]].radius,
+            fire, 4, (uint32_t)chosen[i]);
+        else memset(slot, 0, sizeof(*slot));
+    }
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < LQ_MAX_RUNTIME_LIGHTS; ++i) if (runtime_lights[i].position_radius[3] > 0) count = i + 1;
+    memcpy(view.runtime_lights, runtime_lights, sizeof(runtime_lights));
+    view.runtime_light_count = count;
+    view.enhanced_lighting = 1;
+    LQ_BuildLightInteractions(&map_scene, runtime_lights, count, interaction_draws);
+    for (uint32_t i = 0; i < map_scene.draw_count; ++i)
+        if (world_draws[i].index_count) world_draws[i].light_bits = interaction_draws[i].light_bits;
+}
 static void CaptureView(void)
 {
     if (!direct_frame) return;
@@ -184,6 +234,7 @@ static void CaptureView(void)
         view.dynamic_lights[i][3] = cl_dlights[i].radius;
     }
     view.water_warp = direct_frame && r_waterwarp.value && r_viewleaf->contents <= CONTENTS_WATER;
+    if (enhanced && direct_frame && interaction_draws) EnhancedLights();
     captured_scene = true;
 }
 qboolean LQ_RenderBridgePresent(void)

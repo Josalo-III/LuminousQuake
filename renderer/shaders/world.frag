@@ -7,12 +7,14 @@ layout(set=2,binding=1) uniform sampler2D colormap;
 layout(set=2,binding=2) uniform sampler2D lightmap;
 layout(set=2,binding=3) uniform samplerCubeArrayShadow shadow_maps;
 layout(set=2,binding=4) uniform samplerCubeArray shadow_depths; // same cubes, raw depth
+layout(set=2,binding=5) uniform sampler2D bounce; // four stacked style layers, brightness/255
 layout(set=3,binding=0,std140) uniform Surface {
     vec4 light_weights;
     vec4 parameters; // time, surface flags, smooth filter, mip mode
     vec4 camera_origin;
     vec4 dynamic_lights[32];
     uvec4 light_bits;
+    vec4 bounce_weights; // live style value per bounce layer
 } surface;
 // Enhanced runtime lights, pushed once per frame. Each slot owns a shadow cube.
 layout(set=3,binding=1,std140) uniform Lights {
@@ -22,6 +24,7 @@ layout(set=3,binding=1,std140) uniform Lights {
     vec4 spot[32]; // direction, outer cosine (< -1: omnidirectional)
     vec4 shape[32]; // inner cosine, emitter radius
     uvec4 parameters; // slot count, Enhanced enabled, shadow resolution, shadows enabled
+    vec4 tuning; // exposure, lightmap-to-layer row ratio, bounce enabled, bounce gain
 } lights;
 const float SHADOW_NEAR = 2.0;
 layout(location=0) in vec2 uv;
@@ -185,6 +188,14 @@ void main() {
                     direct *= shadowFactor(i,origin.xyz,normal,lights.shape[i].y);
                     illumination += lights.color_strength[i].rgb * direct;
                 }
+                // Static-world bounce from those lights, driven by live styles.
+                if (lights.tuning.z != 0.0) {
+                    float row = light_uv.y * lights.tuning.y;
+                    for (int k = 0; k < 4; ++k) if (surface.bounce_weights[k] > 0.0)
+                        illumination += texture(bounce, vec2(light_uv.x, (row + float(k)) * 0.25)).rgb *
+                            (255.0 * surface.bounce_weights[k] * lights.tuning.w);
+                }
+                illumination *= lights.tuning.x;
                 brightness = max(illumination.r,max(illumination.g,illumination.b));
                 if (brightness > 0.001) direct_tint = illumination/brightness;
             } else {

@@ -7,6 +7,77 @@
 #include <string.h>
 #include <math.h>
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #c); return 1; } } while (0)
+/* A closed 256-unit white room lit from its center: one wall per BSP node,
+ * a single empty leaf inside. Every wall receives direct light, so bounce at
+ * each sample is the mean exitance of the walls its hemisphere sees. */
+static int BounceRoomTest(void)
+{
+    enum { HALF = 128, GRID = HALF*2/16 + 1 };
+    lq_scene room = {0}; char error[256];
+    room.vertices = calloc(24, sizeof(*room.vertices)); room.indices = calloc(36, sizeof(*room.indices));
+    room.draws = calloc(6, sizeof(*room.draws)); room.materials = calloc(1, sizeof(*room.materials));
+    room.face_samples = calloc(6, sizeof(*room.face_samples));
+    room.sample_positions = calloc(6*GRID*GRID, sizeof(*room.sample_positions));
+    room.bsp_nodes = calloc(6, sizeof(*room.bsp_nodes)); room.leaf_contents = calloc(2, 1);
+    room.light_sources = calloc(1, sizeof(*room.light_sources));
+    room.colormap = (lq_image){256, 64, 4, calloc(256*64, 4)};
+    room.lightmap = (lq_image){128, 32, 4, calloc(128*32, 4)};
+    room.materials[0].indices = (lq_image){1, 1, 1, calloc(1, 1)};
+    CHECK(room.vertices && room.indices && room.draws && room.materials && room.face_samples && room.sample_positions &&
+        room.bsp_nodes && room.leaf_contents && room.light_sources && room.colormap.pixels && room.lightmap.pixels &&
+        room.materials[0].indices.pixels);
+    room.vertex_count = 24; room.index_count = 36; room.draw_count = 6; room.material_count = 1;
+    room.bsp_node_count = 6; room.leaf_count = 2; room.leaf_contents[0] = LQ_LEAF_SOLID;
+    room.atlas_height = 2 + GRID; room.bounce_scale = 1;
+    for (int wall = 0; wall < 6; ++wall) {
+        int axis = wall / 2, u = (axis + 1) % 3, v = (axis + 2) % 3;
+        float inward = wall & 1 ? -1.0f : 1.0f; /* even walls sit at -HALF */
+        lq_bsp_node *node = &room.bsp_nodes[wall];
+        node->normal[axis] = inward; node->dist = -HALF;
+        node->children[0] = wall < 5 ? wall + 1 : -2; node->children[1] = -1;
+        node->first_face = (uint32_t)wall; node->face_count = 1;
+        static const float corners[4][2] = {{-1,-1},{1,-1},{1,1},{-1,1}};
+        for (int c = 0; c < 4; ++c) {
+            lq_vertex *vertex = &room.vertices[wall*4 + c];
+            vertex->position[axis] = -inward * HALF;
+            vertex->position[u] = corners[c][0] * HALF; vertex->position[v] = corners[c][1] * HALF;
+            vertex->normal[axis] = inward;
+        }
+        static const uint32_t fan[6] = {0,1,2,0,2,3};
+        for (int i = 0; i < 6; ++i) room.indices[wall*6 + i] = (uint32_t)(wall*4) + fan[i];
+        room.draws[wall] = (lq_draw){(uint32_t)wall*6, 6, 0, 0, {0,255,255,255}, 0, {255,255,255,255}};
+        lq_face_samples *grid = &room.face_samples[wall];
+        grid->s[u] = 1; grid->t[v] = 1; grid->mins[0] = grid->mins[1] = -HALF;
+        grid->width = grid->height = GRID; grid->atlas_x = (uint16_t)(1 + wall*(GRID + 2)); grid->atlas_y = 1;
+        grid->albedo[0] = grid->albedo[1] = grid->albedo[2] = 1;
+        grid->first_sample = room.sample_count;
+        for (int y = 0; y < GRID; ++y) for (int x = 0; x < GRID; ++x) {
+            float *point = room.sample_positions[room.sample_count++];
+            point[axis] = -inward * (HALF - 1); point[u] = (float)(x*16 - HALF); point[v] = (float)(y*16 - HALF);
+        }
+    }
+    lq_light_source *light = room.light_sources; room.light_source_count = 1;
+    LQ_LightSourceDefaults(light); light->intensity = 600; light->style = 5;
+    CHECK(LQ_SceneCheck(&room, error, sizeof(error)));
+    CHECK(LQ_SceneComputeBounce(&room, 256, NULL, error, sizeof(error)));
+    CHECK(LQ_SceneCheck(&room, error, sizeof(error)));
+    /* Direct exitance runs from 236 at a wall's center to ~149 at its corners;
+     * a wall center sees mostly the opposite wall and the side walls' middles. */
+    const uint8_t *center = room.bounce.pixels + ((size_t)(1 + GRID/2) * room.bounce.width + 1 + GRID/2) * 4;
+    for (int wall = 0; wall < 6; ++wall) {
+        CHECK(room.draws[wall].bounce_styles[0] == 5 && room.draws[wall].bounce_styles[1] == 255);
+        const uint8_t *texel = center + (size_t)wall * (GRID + 2) * 4;
+        CHECK(texel[0] > 140 && texel[0] < 215 && texel[0] == texel[1] && abs((int)texel[0] - center[0]) <= 3);
+    }
+    /* Black walls reflect nothing. */
+    for (int wall = 0; wall < 6; ++wall) memset(room.face_samples[wall].albedo, 0, sizeof(room.face_samples[wall].albedo));
+    CHECK(LQ_SceneComputeBounce(&room, 64, NULL, error, sizeof(error)));
+    center = room.bounce.pixels + ((size_t)(1 + GRID/2) * room.bounce.width + 1 + GRID/2) * 4;
+    CHECK(room.draws[0].bounce_styles[0] == 255 && center[0] == 0);
+    LQ_SceneFree(&room);
+    puts("PASS static bounce gather: closed room hits, cosine weighting, style layers and albedo");
+    return 0;
+}
 int main(void)
 {
     lq_mip_palette *palette = malloc(sizeof(*palette));
@@ -168,5 +239,6 @@ int main(void)
     selection.bsp_nodes = NULL; selection.leaf_pvs = selection.light_leaves = NULL;
     LQ_SceneFree(&selection);
     puts("PASS deterministic bounded runtime-light selection, stable shadow slots and PVS reach");
+    CHECK(BounceRoomTest() == 0);
     puts("PASS renderer scene ownership, invalid geometry rejection and Quake/GPU camera projection"); return 0;
 }

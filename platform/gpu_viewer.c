@@ -7,6 +7,7 @@
 #include "scene_fixture.h"
 #include "quake_scene.h"
 #include "gpu_sdl.h"
+#include "jobs.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +18,7 @@ static lq_gpu *gpu;
 static lq_scene scene;
 static void Shutdown(void)
 {
+    LQ_JobsShutdown();
     LQ_GPUDestroy(gpu); gpu = NULL; LQ_SceneFree(&scene); LQ_QuakeSceneShutdown();
     if (window) SDL_DestroyWindow(window); window = NULL; SDL_Quit();
 }
@@ -390,6 +392,26 @@ int LQ_GPUViewer(int argc, char **argv)
     float seconds = 0;
     lq_view view = {0}; view.horizontal_fov = 90;
     view.disable_shadows = Has(argc, argv, "--no-shadows");
+    view.disable_bounce = Has(argc, argv, "--no-bounce");
+    const char *exposure = Argument(argc, argv, "--exposure"), *bounce_rays = Argument(argc, argv, "--bounce-rays");
+    const char *bounce_gain = Argument(argc, argv, "--bounce-gain");
+    if (exposure) {
+        char *end; view.exposure = strtof(exposure, &end);
+        if (!*exposure || *end || !isfinite(view.exposure) || view.exposure <= 0 || view.exposure > 16) {
+            fprintf(stderr, "--exposure needs 0 < scale <= 16\n"); return 1;
+        }
+    }
+    if (bounce_gain) {
+        char *end; view.bounce_gain = strtof(bounce_gain, &end);
+        if (!*bounce_gain || *end || !isfinite(view.bounce_gain) || view.bounce_gain <= 0 || view.bounce_gain > 64) {
+            fprintf(stderr, "--bounce-gain needs 0 < gain <= 64\n"); return 1;
+        }
+    }
+    long rays = 64;
+    if (bounce_rays) {
+        char *end; rays = strtol(bounce_rays, &end, 10);
+        if (!*bounce_rays || *end || rays < 1 || rays > 4096) { fprintf(stderr, "--bounce-rays needs 1..4096\n"); return 1; }
+    }
     const char *camera = Argument(argc, argv, "--camera");
     if (!map) map = Argument(argc, argv, "+map");
     if (!map) map = "e1m1";
@@ -438,6 +460,20 @@ int LQ_GPUViewer(int argc, char **argv)
         result = 0; goto done;
     }
     if (Has(argc, argv, "--scene-info") || Has(argc, argv, "--light-analysis")) { result = 0; goto done; }
+    if (enhanced && !view.disable_bounce) {
+        LQ_JobsRegister();
+        uint64_t started = SDL_GetTicksNS();
+        if (!LQ_SceneComputeBounce(&scene, (uint32_t)rays, LQ_JobsRunRange, error, sizeof(error))) goto done;
+        double total = 0, peak = 0; uint64_t texels = 0;
+        for (uint32_t y = 0; y < scene.atlas_height; ++y) for (uint32_t x = 0; x < scene.bounce.width; ++x) {
+            const uint8_t *p = scene.bounce.pixels + ((size_t)y * scene.bounce.width + x) * 4;
+            if (!p[3]) continue;
+            double value = (p[0] + p[1] + p[2]) / 3.0; total += value; peak = value > peak ? value : peak; ++texels;
+        }
+        printf("Enhanced bounce: %u samples, %ld rays each, %u workers, %.2f s; style-0 mean %.1f, peak %.0f brightness\n",
+            scene.sample_count, rays, LQ_JobsWorkerCount(), (double)(SDL_GetTicksNS() - started) / 1e9,
+            texels ? total / texels : 0, peak);
+    }
     int fixed_camera = Has(argc, argv, "--fixed-camera");
     active = 0;
     if (!test) printf("GPU camera: %.1f %.1f %.1f; angles %.1f %.1f %.1f\n",

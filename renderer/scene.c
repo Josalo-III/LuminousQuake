@@ -11,7 +11,8 @@ void LQ_SceneFree(lq_scene *s)
     if (!s) return;
     for (uint32_t i = 0; i < s->material_count; ++i) free(s->materials[i].indices.pixels);
     free(s->light_sources); free(s->light_visibility);
-    free(s->bsp_nodes); free(s->leaf_pvs); free(s->light_leaves);
+    free(s->bsp_nodes); free(s->leaf_pvs); free(s->light_leaves); free(s->leaf_contents);
+    free(s->face_samples); free(s->sample_positions); free(s->bounce.pixels);
     free(s->materials); free(s->vertices); free(s->indices); free(s->draws);
     free(s->colormap.pixels); free(s->lightmap.pixels); memset(s, 0, sizeof(*s));
 }
@@ -114,12 +115,30 @@ static void FillRuntimeLight(lq_runtime_light *light, const lq_light_source *sou
  * Returns one past the highest occupied slot; zero-range slots are empty. */
 uint32_t LQ_BuildRuntimeLights(const lq_scene *scene, const float styles[256],
     const float camera[3], lq_runtime_light output[LQ_MAX_RUNTIME_LIGHTS])
+{ return LQ_BuildRuntimeLightsLimited(scene, styles, camera, output, LQ_MAX_RUNTIME_LIGHTS); }
+void LQ_DynamicRuntimeLight(lq_runtime_light *light, const float origin[3], float radius,
+    const float color[3], float source_radius, uint32_t key)
+{
+    memset(light, 0, sizeof(*light));
+    memcpy(light->position_radius, origin, 3*sizeof(float));
+    light->position_radius[3] = isfinite(radius) && radius > 0 ? radius : 0;
+    memcpy(light->color_strength, color, 3*sizeof(float));
+    light->color_strength[3] = 1;
+    light->falloff[0] = light->position_radius[3]; light->falloff[1] = 1; light->falloff[2] = 0.5f;
+    light->falloff[3] = LQ_LIGHT_LINEAR;
+    light->spot[3] = light->spot_inner = -2;
+    light->source_radius = source_radius;
+    light->source_index = LQ_DYNAMIC_LIGHT_SOURCE | key;
+}
+uint32_t LQ_BuildRuntimeLightsLimited(const lq_scene *scene, const float styles[256],
+    const float camera[3], lq_runtime_light output[LQ_MAX_RUNTIME_LIGHTS], uint32_t slots)
 {
     typedef struct { float score; uint32_t entity, source; } candidate;
     candidate selected[LQ_MAX_RUNTIME_LIGHTS];
     lq_runtime_light previous[LQ_MAX_RUNTIME_LIGHTS];
     uint32_t count = 0, used = 0;
     if (!scene || !styles || !camera || !output) return 0;
+    if (slots > LQ_MAX_RUNTIME_LIGHTS) slots = LQ_MAX_RUNTIME_LIGHTS;
     memcpy(previous, output, sizeof(previous));
     const uint32_t *view = NULL;
     if (scene->leaf_pvs && scene->light_leaves && scene->leaf_words) {
@@ -145,14 +164,14 @@ uint32_t LQ_BuildRuntimeLights(const lq_scene *scene, const float styles[256],
         uint32_t at = count;
         while (at && (value.score < selected[at-1].score ||
             (value.score == selected[at-1].score && value.entity < selected[at-1].entity))) --at;
-        if (at >= LQ_MAX_RUNTIME_LIGHTS) continue;
-        if (count < LQ_MAX_RUNTIME_LIGHTS) ++count;
+        if (at >= slots) continue;
+        if (count < slots) ++count;
         memmove(selected+at+1,selected+at,(count-at-1)*sizeof(*selected));
         selected[at] = value;
     }
     uint8_t placed[LQ_MAX_RUNTIME_LIGHTS] = {0};
-    memset(output, 0, sizeof(*output) * LQ_MAX_RUNTIME_LIGHTS);
-    for (uint32_t slot = 0; slot < LQ_MAX_RUNTIME_LIGHTS; ++slot) {
+    memset(output, 0, sizeof(*output) * slots);
+    for (uint32_t slot = 0; slot < slots; ++slot) {
         output[slot].source_index = UINT32_MAX;
         if (previous[slot].position_radius[3] <= 0) continue;
         for (uint32_t j = 0; j < count; ++j) if (!placed[j] && selected[j].source == previous[slot].source_index) {
@@ -165,7 +184,7 @@ uint32_t LQ_BuildRuntimeLights(const lq_scene *scene, const float styles[256],
         while (output[slot].position_radius[3] > 0) ++slot;
         FillRuntimeLight(&output[slot], &scene->light_sources[selected[j].source], selected[j].source, styles);
     }
-    for (uint32_t slot = 0; slot < LQ_MAX_RUNTIME_LIGHTS; ++slot)
+    for (uint32_t slot = 0; slot < slots; ++slot)
         if (output[slot].position_radius[3] > 0) used = slot + 1;
     return used;
 }
@@ -205,8 +224,9 @@ uint32_t LQ_BuildLightInteractions(const lq_scene *scene,
             }
             float facing = toward[0]*first->normal[0]+toward[1]*first->normal[1]+toward[2]*first->normal[2];
             float radius = position[3];
-            int visible = !scene->light_visibility ||
-                (lights[i].source_index < scene->light_source_count &&
+            /* Gameplay lights have no static reach entry; range and facing bound them. */
+            int visible = !scene->light_visibility || lights[i].source_index >= scene->light_source_count ||
+                (
                  (scene->light_visibility[d * scene->light_visibility_words +
                      lights[i].source_index / 32] & (1u << (lights[i].source_index % 32))));
             if (radius > 0 && facing > 0 && distance2 < radius*radius && visible) {
@@ -239,9 +259,23 @@ int LQ_SceneCheck(const lq_scene *s, char *error, size_t size)
     REQUIRE(s->light_source_count <= 4096 && (!s->light_source_count || s->light_sources), "invalid light source inventory");
     REQUIRE(!s->light_visibility || (s->light_source_count && s->light_visibility_words ==
         (s->light_source_count + 31) / 32), "invalid static light visibility");
-    REQUIRE(!s->bsp_nodes || (s->bsp_node_count && s->leaf_count && s->leaf_pvs &&
-        s->leaf_words == (s->leaf_count + 31) / 32 && (!s->light_source_count || s->light_leaves)),
-        "invalid BSP light visibility");
+    REQUIRE(!s->bsp_nodes || (s->bsp_node_count && s->leaf_count && s->leaf_contents), "invalid BSP nodes");
+    REQUIRE(!s->leaf_pvs || (s->bsp_nodes && s->leaf_words == (s->leaf_count + 31) / 32 &&
+        (!s->light_source_count || s->light_leaves)), "invalid BSP light visibility");
+    for (uint32_t i = 0; s->bsp_nodes && i < s->bsp_node_count; ++i)
+        REQUIRE((uint64_t)s->bsp_nodes[i].first_face + s->bsp_nodes[i].face_count <= s->draw_count, "invalid BSP node faces");
+    for (uint32_t i = 0; s->leaf_contents && i < s->leaf_count; ++i)
+        REQUIRE(s->leaf_contents[i] <= LQ_LEAF_LIQUID, "invalid BSP leaf contents");
+    for (uint32_t i = 0; s->face_samples && i < s->draw_count; ++i) {
+        const lq_face_samples *grid = &s->face_samples[i];
+        REQUIRE(!grid->width || (grid->height && s->sample_positions &&
+            (uint64_t)grid->first_sample + (uint64_t)grid->width * grid->height <= s->sample_count &&
+            grid->atlas_x + grid->width + 1u <= s->lightmap.width && grid->atlas_y + grid->height + 1u <= s->atlas_height &&
+            s->atlas_height <= s->lightmap.height), "invalid light sample grid");
+    }
+    REQUIRE(isfinite(s->bounce_scale) && s->bounce_scale >= 0, "invalid bounce scale");
+    REQUIRE(!s->bounce.pixels || (s->face_samples && s->bounce.channels == 4 && s->bounce.width == s->lightmap.width &&
+        s->bounce.height == 4 * s->atlas_height), "invalid bounce atlas");
     for (uint32_t i = 0; s->bsp_nodes && i < s->bsp_node_count; ++i)
         for (int j = 0; j < 2; ++j) {
             int32_t child = s->bsp_nodes[i].children[j];

@@ -106,17 +106,75 @@ mostly direct light. Where it differs, the cause is usually bounce and dirt, as
 under torch brackets: the bracket's real shadow is filled in Classic by the
 map's compiled `_bounce`.
 
+## Bounce light
+
+Light also bounces off lit textures as a secondary source. At map load,
+`LQ_SceneComputeBounce` runs on the worker pool:
+1. **Direct light per sample.** For each sample on LIGHT's 16-unit lattice, sum
+   every source's direct light using the same falloff, cone and BSP occlusion as
+   the runtime path. Multiply by the face's mean texture color to get exitance.
+2. **Gather.** Each sample casts 64 cosine-weighted rays through the world BSP.
+   The ray-to-face test follows GLQuake's RecursiveLightPoint, with exact convex
+   polygon containment. The mean exitance of the surfaces hit is the bounced
+   irradiance.
+3. **Scale.** Multiply by worldspawn `_bouncescale` (default 1).
+
+Results are kept per light style: each face keeps its four strongest bounce
+styles in four stacked layers of an atlas that mirrors the lightmap layout. The
+shader weights each layer by its live style value, so switched and flickering
+lights still drive their bounce. The baked lightmap is never read.
+
+One bounce is gathered. E1M3 takes 1.6 s on six workers (183,046 samples × 64
+rays); E1M1 takes 1.7 s. A closed white room test checks hits, cosine weighting,
+style layers and albedo. E1M3's stone textures reflect only about 20–25% and
+the map sets `_bouncescale 0.5`, so physically based bounce there is subtle
+(mean 3 brightness units).
+
+Viewer tuning flags:
+- `--exposure S` scales all Enhanced light; below 1 is darker.
+- `--bounce-gain G` scales bounce artistically.
+- `--no-bounce` disables bounce.
+- `--bounce-rays N` sets the rays per sample.
+
+For example, `--exposure 0.7 --bounce-gain 8` gives a darker scene with a
+visible fill. The defaults (1, 1) are physically based.
+
+## In-game experimental mode and weapon light
+
+`lq_renderer 2` (Options → Renderer → Enhanced, then `vid_restart`) selects the
+GPU path with Enhanced lighting. At map load it computes bounce for the live
+world.
+
+Each frame, map lights fill 24 stable slots. The nearest live gameplay dlights
+take the last eight:
+- rockets, muzzle flashes and explosions;
+- powerup glows (quad/pentagram, `EF_DIMLIGHT`/`EF_BRIGHTLIGHT`).
+
+Each dlight keeps Quake's radius as its value and range, so a surface facing it
+gets the same `radius − distance` as Classic. It has a 4-unit emitter and a warm
+fire tint, since Quake dlights carry no color. Its shadow cube is redrawn every
+frame as it moves.
+
+Scripted E1M1 captures (rocket launcher fired from the start) show the muzzle
+flash, the rocket in flight and its explosion lighting the corridor. An ASan
+build ran the same session without reports. Switching between Classic and
+Enhanced rebuilds the map for the new mode.
+
 Current limits:
 
-- No indirect light. The next step is bounce from lit textures as a secondary
-  source, with a darker overall balance, in place of the bake's fill.
-- Actors and particles keep Classic shading and do not cast Enhanced shadows.
-  Brush-model faces are lit and cast only at their compiled positions.
-- 32 shadowed lights per view. Lights entering or leaving the set can pop.
+- Actors, the view weapon, particles and moving brush models keep Classic
+  shading and do not cast Enhanced shadows. Brush-model faces in the static scene
+  are lit, and cast, at their compiled positions.
+- Bounce is static: moving lights (including weapons) and switched-light
+  geometry changes do not update it. A probe grid will cover actors and
+  dynamic bounce.
+- 24 shadowed map lights per view, so lights can pop as the set changes. Bounce
+  takes 1–2 s of map load and is not cached yet.
 - PVS reach may exclude surfaces lit through water if the map was vised with
   opaque water.
-- Only Metal has run; the Vulkan path, including `imageCubeArray`, is
-  untested. Shadow memory is about 200 MB at 512² for 32 cubes.
+- Only Metal has run; the Vulkan path, including `imageCubeArray`, is untested.
+  Shadow memory is about 200 MB at 512² for 32 cubes; the bounce atlas adds up to
+  four layers the size of the used lightmap rows.
 
 Quake's stored data is a baked lightmap rather than a shadow map. Enhanced keeps
 that image as evidence of the original composition: it can guide comparisons,
@@ -164,11 +222,10 @@ Other-platform runtime validation remains pending.
 
 ## Next implementation sequence
 
-1. Indirect light: bounce from directly lit textures as a secondary source, with
-   a darker overall balance, replacing the bake's `_bounce`/`_dirt` fill without
-   sampling it. It should follow live styles and switched lights.
-2. Enhanced lighting and shadow casting for actors and moving brush models,
-   redrawing only the cubes their bounds touch.
+1. A probe grid for the hybrid's dynamic part: light actors and the view weapon
+   from runtime lights plus bounce, and carry moving and weapon light into bounce.
+2. Shadow casting for actors and moving brush models, redrawing only the cubes
+   their bounds touch.
 3. Implement the staged [light reconstruction](LIGHT_RECONSTRUCTION.md): retain
    style-layer evidence, compare the runtime prediction, estimate only
    identifiable parameters, and report residual/confidence data.
