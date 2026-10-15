@@ -467,6 +467,13 @@ int LQ_GPUViewer(int argc, char **argv)
             fprintf(stderr, "--bounce-gain needs 0 < gain <= 64\n"); return 1;
         }
     }
+    const char *water = Argument(argc, argv, "--water-alpha");
+    if (water) {
+        char *end; view.water_alpha = strtof(water, &end);
+        if (!*water || *end || !isfinite(view.water_alpha) || view.water_alpha <= 0 || view.water_alpha > 1) {
+            fprintf(stderr, "--water-alpha needs 0 < opacity <= 1\n"); return 1;
+        }
+    }
     long rays = 64;
     if (bounce_rays) {
         char *end; rays = strtol(bounce_rays, &end, 10);

@@ -129,6 +129,11 @@ uint32_t LQ_SceneLeaf(const lq_scene *scene, const float point[3])
     uint32_t leaf = (uint32_t)(-(node + 1));
     return leaf < scene->leaf_count ? leaf : UINT32_MAX;
 }
+int LQ_SceneLiquid(const lq_scene *scene, const float point[3])
+{
+    uint32_t leaf = LQ_SceneLeaf(scene, point);
+    return leaf != UINT32_MAX && scene->leaf_contents && scene->leaf_contents[leaf] == LQ_LEAF_LIQUID;
+}
 static void FillRuntimeLight(lq_runtime_light *light, const lq_light_source *source,
     uint32_t index, const float styles[256])
 {
@@ -224,7 +229,10 @@ uint32_t LQ_BuildRuntimeLightsLimited(const lq_scene *scene, const float styles[
         FillRuntimeLight(&output[slot], &scene->light_sources[selected[j].source], selected[j].source, styles);
     }
     for (uint32_t slot = 0; slot < slots; ++slot)
-        if (output[slot].position_radius[3] > 0) used = slot + 1;
+        if (output[slot].position_radius[3] > 0) {
+            output[slot].submerged = (uint8_t)LQ_SceneLiquid(scene, output[slot].position_radius);
+            used = slot + 1;
+        }
     return used;
 }
 /* Broad-phase light/surface relationships are renderer data, independent of
@@ -264,7 +272,7 @@ uint32_t LQ_BuildVisibleLightInteractions(const lq_scene *scene, const lq_runtim
     for (uint32_t d = 0; d < scene->draw_count; ++d) {
         lq_draw *draw = &output[d];
         draw->light_bits = 0;
-        if (draw->flags & (LQ_SURFACE_SKY | LQ_SURFACE_WATER) || draw->index_count < 3) continue;
+        if (draw->flags & LQ_SURFACE_SKY || draw->index_count < 3) continue;
         if (visible && !visible[d].index_count) continue;
         float computed[6];
         const float *bounds = scene->draw_bounds ? scene->draw_bounds[d] : computed;

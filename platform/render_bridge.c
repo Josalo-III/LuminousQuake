@@ -24,6 +24,30 @@ static lq_draw *world_draws, *interaction_draws;
 static qboolean enhanced;
 static lq_runtime_light runtime_lights[LQ_MAX_RUNTIME_LIGHTS];
 static uint8_t *dynamic_probes; /* per-frame gameplay-light bounce, GPU layout */
+/* Translucent liquids (r_wateralpha) must show what lies across the surface.
+ * Without water vis a compiled PVS stops at the leaves touching it, so the
+ * frame adds the PVS of every visible leaf on the other side of the surface. */
+static byte water_pvs[MAX_MAP_LEAFS/8];
+static float WaterAlpha(void)
+{
+    float alpha = Cvar_VariableValue("r_wateralpha");
+    return isfinite(alpha) && alpha > 0 && alpha < 1 ? fmaxf(alpha, 0.1f) : 1;
+}
+static qboolean Liquid(int contents) { return contents <= CONTENTS_WATER && contents >= CONTENTS_LAVA; }
+static byte *ThroughWater(mleaf_t *view_leaf, model_t *world)
+{
+    size_t bytes = (world->numleafs + 7) / 8;
+    memcpy(water_pvs, Mod_LeafPVS(view_leaf, world), bytes);
+    qboolean below = Liquid(view_leaf->contents);
+    if (!below && view_leaf->contents != CONTENTS_EMPTY) return water_pvs;
+    for (int i = 0; i < world->numleafs; ++i) {
+        mleaf_t *leaf = &world->leafs[i+1];
+        if (!(water_pvs[i>>3] & (1<<(i&7))) || !(below ? leaf->contents == CONTENTS_EMPTY : Liquid(leaf->contents))) continue;
+        const byte *across = Mod_LeafPVS(leaf, world);
+        for (size_t k = 0; k < bytes; ++k) water_pvs[k] |= across[k];
+    }
+    return water_pvs;
+}
 static qboolean direct_frame;
 static void CaptureView(void);
 
@@ -113,7 +137,7 @@ int LQ_RenderGPUView(void)
     memcpy(world_draws, map_scene.draws, map_scene.draw_count*sizeof(*world_draws));
     for (uint32_t i = 0; i < map_scene.draw_count; ++i) world_draws[i].index_count = 0;
     currententity = &cl_entities[0];
-    byte *visible = Mod_LeafPVS(r_viewleaf, cl.worldmodel);
+    byte *visible = WaterAlpha() < 1 ? ThroughWater(r_viewleaf, cl.worldmodel) : Mod_LeafPVS(r_viewleaf, cl.worldmodel);
     for (int i = 0; i < cl.worldmodel->numleafs; ++i) if (visible[i>>3] & (1<<(i&7))) {
         mleaf_t *leaf = &cl.worldmodel->leafs[i+1];
         R_StoreEfrags(&leaf->efrags);
@@ -213,6 +237,7 @@ static void EnhancedLights(void)
         if (i < dynamic) LQ_DynamicRuntimeLight(slot, cl_dlights[chosen[i]].origin, cl_dlights[chosen[i]].radius,
             fire, 4, (uint32_t)chosen[i]);
         else memset(slot, 0, sizeof(*slot));
+        slot->submerged = i < dynamic && Liquid(Mod_PointInLeaf(slot->position_radius, cl.worldmodel)->contents);
     }
     uint32_t count = 0;
     for (uint32_t i = 0; i < LQ_MAX_RUNTIME_LIGHTS; ++i) if (runtime_lights[i].position_radius[3] > 0) count = i + 1;
@@ -239,6 +264,7 @@ static void CaptureView(void)
         memcpy(view.dynamic_lights[i], cl_dlights[i].origin, sizeof(vec3_t));
         view.dynamic_lights[i][3] = cl_dlights[i].radius;
     }
+    view.water_alpha = WaterAlpha();
     view.water_warp = direct_frame && r_waterwarp.value && r_viewleaf->contents <= CONTENTS_WATER;
     if (enhanced && direct_frame && interaction_draws) EnhancedLights();
     captured_scene = true;

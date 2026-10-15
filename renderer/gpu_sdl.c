@@ -14,8 +14,10 @@ struct lq_gpu {
     SDL_GPUDevice *device;
     SDL_GPUGraphicsPipeline *pipeline, *overlay_pipeline;
     SDL_GPUGraphicsPipeline *multisample[2];
+    SDL_GPUGraphicsPipeline *liquid[3]; /* translucent liquids: 1x, 2x, 4x samples */
     SDL_GPUTexture *multisample_color;
     int smooth, samples, mipmaps, anisotropy;
+    uint8_t *submerged; /* per scene draw: the face lies inside a liquid volume */
     lq_mip_palette *mip_palette;
     SDL_GPUSampler *repeat, *point, *linear;
     SDL_GPUBuffer *vertices, *indices;
@@ -68,6 +70,7 @@ typedef struct {
     float probe_origin[4]; /* xyz, spacing */
     float probe_size[4]; /* probes per axis; w: 1 static, 2 dynamic */
     float probe_weights[4]; /* live style per static layer */
+    float liquid[4]; /* translucent liquid opacity; zero when liquids are opaque or unlit */
 } lq_light_uniforms;
 typedef struct { float face_projection[16], light_origin[4]; } lq_shadow_uniforms;
 #define LQ_SHADOW_NEAR 2.0f
@@ -191,6 +194,18 @@ lq_gpu *LQ_GPUCreate(SDL_Window *window, int debug, char *error, size_t size)
             g->multisample[i] = SDL_CreateGPUGraphicsPipeline(g->device, &info);
         }
     }
+    /* Liquids blend over what is behind them by a constant opacity and leave
+     * depth unwritten, so a surface seen through water is not hidden by it. */
+    color.blend_state.enable_blend = true;
+    color.blend_state.src_color_blendfactor = color.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_CONSTANT_COLOR;
+    color.blend_state.dst_color_blendfactor = color.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_CONSTANT_COLOR;
+    color.blend_state.color_blend_op = color.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+    info.depth_stencil_state.enable_depth_write = false;
+    for (int i = 0; i < 3; ++i) if (!i || g->multisample[i - 1]) {
+        info.multisample_state.sample_count = i == 2 ? SDL_GPU_SAMPLECOUNT_4 : i ? SDL_GPU_SAMPLECOUNT_2 : SDL_GPU_SAMPLECOUNT_1;
+        g->liquid[i] = SDL_CreateGPUGraphicsPipeline(g->device, &info);
+    }
+    color = (SDL_GPUColorTargetDescription){0}; color.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
     SDL_ReleaseGPUShader(g->device, vertex); SDL_ReleaseGPUShader(g->device, fragment);
     vertex = fragment = NULL;
     vertex = Shader(g, 0, 1); fragment = Shader(g, 1, 1);
@@ -216,7 +231,7 @@ lq_gpu *LQ_GPUCreate(SDL_Window *window, int debug, char *error, size_t size)
     g->repeat = Sampler(g, SDL_GPU_FILTER_NEAREST, SDL_GPU_SAMPLERADDRESSMODE_REPEAT);
     g->point = Sampler(g, SDL_GPU_FILTER_NEAREST, SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE);
     g->linear = Sampler(g, SDL_GPU_FILTER_LINEAR, SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE);
-    if (!g->pipeline || !g->overlay_pipeline || !g->repeat || !g->point || !g->linear) goto failed;
+    if (!g->pipeline || !g->liquid[0] || !g->overlay_pipeline || !g->repeat || !g->point || !g->linear) goto failed;
     if (!SDL_GPUTextureSupportsFormat(g->device, SDL_GPU_TEXTUREFORMAT_D32_FLOAT, SDL_GPU_TEXTURETYPE_CUBE_ARRAY,
             SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET)) {
         SDL_SetError("depth cube arrays are unsupported"); goto failed;
@@ -423,8 +438,8 @@ static void ReleaseScene(lq_gpu *g)
     if (g->probe_transfer) SDL_ReleaseGPUTransferBuffer(g->device, g->probe_transfer);
     g->probe_static = g->probe_dynamic = NULL; g->probe_transfer = NULL;
     g->probe_dynamic_bytes = 0; g->probe_dynamic_active = 0; g->probe_origin[3] = 0;
-    free(g->textures); free(g->draws);
-    g->textures = NULL; g->draws = NULL; g->vertices = g->indices = NULL;
+    free(g->textures); free(g->draws); free(g->submerged);
+    g->textures = NULL; g->draws = NULL; g->submerged = NULL; g->vertices = g->indices = NULL;
     g->colormap = g->lightmap = NULL; g->texture_count = g->draw_count = 0;
 }
 static int FrameBuffer(lq_gpu *g, SDL_GPUBuffer **buffer, uint32_t *capacity,
@@ -544,6 +559,19 @@ int LQ_GPUUpload(lq_gpu *g, const lq_scene *s, char *error, size_t size)
     LQ_MipPaletteInit(g->mip_palette, s->colormap.pixels);
     g->texture_count = s->material_count; g->draw_count = s->draw_count;
     memcpy(g->draws, s->draws, (size_t)s->draw_count * sizeof(*g->draws));
+    /* A point just in front of each lit face tells whether it lies under a liquid. */
+    g->submerged = calloc(s->draw_count ? s->draw_count : 1, 1);
+    if (!g->submerged) { SDL_SetError("out of memory"); goto failed; }
+    for (uint32_t i = 0; i < s->draw_count && s->leaf_contents; ++i) {
+        const lq_draw *d = &s->draws[i];
+        if (d->flags & (LQ_SURFACE_SKY|LQ_SURFACE_WATER)) continue;
+        float point[3] = {0};
+        for (uint32_t j = 0; j < d->index_count; ++j)
+            for (int k = 0; k < 3; ++k) point[k] += s->vertices[s->indices[d->first_index+j]].position[k] / d->index_count;
+        const float *normal = s->vertices[s->indices[d->first_index]].normal;
+        for (int k = 0; k < 3; ++k) point[k] += normal[k] * 2;
+        g->submerged[i] = (uint8_t)LQ_SceneLiquid(s, point);
+    }
     g->vertices = UploadBuffer(g, s->vertices, s->vertex_count * sizeof(*s->vertices), SDL_GPU_BUFFERUSAGE_VERTEX);
     g->indices = UploadBuffer(g, s->indices, s->index_count * sizeof(*s->indices), SDL_GPU_BUFFERUSAGE_INDEX);
     g->colormap = UploadImage(g, &s->colormap); g->lightmap = UploadImage(g, &s->lightmap);
@@ -642,6 +670,7 @@ static void LightUniforms(lq_light_uniforms *uniforms, const lq_gpu *g, const lq
         memcpy(uniforms->falloff[i],light->falloff,4*sizeof(float));
         memcpy(uniforms->spot[i],light->spot,4*sizeof(float));
         uniforms->shape[i][0] = light->spot_inner; uniforms->shape[i][1] = light->source_radius;
+        uniforms->shape[i][2] = light->submerged;
     }
     uniforms->parameters[0] = count;
     uniforms->parameters[1] = view->enhanced_lighting != 0;
@@ -657,6 +686,7 @@ static void LightUniforms(lq_light_uniforms *uniforms, const lq_gpu *g, const lq
         1.0f + (g->probe_dynamic_active ? 2.0f : 0.0f) : 0.0f;
     for (int k = 0; k < 4; ++k)
         uniforms->probe_weights[k] = g->probe_styles[k] == 255 ? 0 : view->lightstyles[g->probe_styles[k]];
+    uniforms->liquid[0] = view->enhanced_lighting && view->water_alpha > 0 && view->water_alpha < 1 ? view->water_alpha : 0;
 }
 static const float shadow_basis[6][3][3] = { /* forward, right, up per cube face */
     {{1,0,0},{0,0,-1},{0,1,0}}, {{-1,0,0},{0,0,1},{0,1,0}},
@@ -794,6 +824,22 @@ int LQ_GPUDynamicProbes(lq_gpu *g, const uint8_t *pixels, char *error, size_t si
     if (!SDL_SubmitGPUCommandBuffer(command)) return Error(error, size, "GPU probe submit");
     g->probe_dynamic_active = 1; return 1;
 }
+#define LQ_SHADER_SUBMERGED 64 /* shader-only surface flag: face lies inside a liquid */
+static void DrawSurface(lq_gpu *g, SDL_GPUCommandBuffer *command, SDL_GPURenderPass *pass, const lq_view *v,
+    const lq_draw *d, uint32_t extra_flags, SDL_GPUTexture *texture, SDL_GPUTexture *shadows)
+{
+    lq_surface_uniforms uniforms;
+    SurfaceUniforms(&uniforms,g,v,d);
+    uniforms.parameters[1] = (float)(d->flags | extra_flags);
+    SDL_GPUTextureSamplerBinding samplers[] = {
+        {texture, g->repeat}, {g->colormap, g->point}, {g->lightmap, g->linear},
+        {shadows, g->shadow_sampler}, {shadows, g->depth_sampler}, {g->bounce, g->linear},
+        {g->probe_static, g->linear}, {g->probe_dynamic, g->linear}
+    };
+    SDL_BindGPUFragmentSamplers(pass, 0, samplers, 8);
+    SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
+    SDL_DrawGPUIndexedPrimitives(pass, d->index_count, 1, d->first_index, 0, 0);
+}
 int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, char *error, size_t size)
 {
     SDL_GPUCommandBuffer *command;
@@ -842,40 +888,34 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
     if (v->water_warp) { camera.horizontal_fov *= 1+sinf(v->time*1.5f)*0.01f; aspect *= 1+cosf(v->time*1.7f)*0.01f; }
     LQ_ViewMatrix(&camera, aspect, matrix);
     SDL_PushGPUVertexUniformData(command, 0, matrix, sizeof(matrix));
-    for (uint32_t i = 0; i < g->draw_count; ++i) {
-        const lq_draw *d = v->world_draws && v->world_draw_count == g->draw_count ? &v->world_draws[i] : &g->draws[i];
-        if (!d->index_count) continue;
-        if (d->material >= g->texture_count) continue;
-        lq_surface_uniforms uniforms;
-        SurfaceUniforms(&uniforms,g,v,d);
-        SDL_GPUTextureSamplerBinding samplers[] = {
-            {g->textures[d->material], g->repeat}, {g->colormap, g->point}, {g->lightmap, g->linear},
-            {shadows, g->shadow_sampler}, {shadows, g->depth_sampler}, {g->bounce, g->linear},
-            {g->probe_static, g->linear}, {g->probe_dynamic, g->linear}
-        };
-        SDL_BindGPUFragmentSamplers(pass, 0, samplers, 8);
-        SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
-        SDL_DrawGPUIndexedPrimitives(pass, d->index_count, 1, d->first_index, 0, 0);
-    }
-    if (g->frame_draw_count) {
+    /* Opaque surfaces first; with translucent liquids, water goes last over them. */
+    int liquid = v->water_alpha > 0 && v->water_alpha < 1;
+    for (int translucent = 0; translucent <= liquid; ++translucent) {
+        if (translucent) {
+            SDL_BindGPUGraphicsPipeline(pass, g->liquid[g->samples == 4 ? 2 : g->samples ? 1 : 0]);
+            SDL_SetGPUBlendConstants(pass, (SDL_FColor){v->water_alpha, v->water_alpha, v->water_alpha, v->water_alpha});
+            viewport.max_depth = 1; SDL_SetGPUViewport(pass, &viewport);
+            vertex = (SDL_GPUBufferBinding){g->vertices, 0}; index = (SDL_GPUBufferBinding){g->indices, 0};
+            SDL_BindGPUVertexBuffers(pass, 0, &vertex, 1); SDL_BindGPUIndexBuffer(pass, &index, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+        }
+        for (uint32_t i = 0; i < g->draw_count; ++i) {
+            const lq_draw *d = v->world_draws && v->world_draw_count == g->draw_count ? &v->world_draws[i] : &g->draws[i];
+            if (!d->index_count || d->material >= g->texture_count) continue;
+            if (liquid && translucent != ((d->flags & LQ_SURFACE_WATER) != 0)) continue;
+            DrawSurface(g, command, pass, v, d, g->submerged && g->submerged[i] ? LQ_SHADER_SUBMERGED : 0,
+                g->textures[d->material], shadows);
+        }
+        if (!g->frame_draw_count) continue;
         vertex = (SDL_GPUBufferBinding){g->frame_vertices, 0};
         index = (SDL_GPUBufferBinding){g->frame_indices, 0};
         SDL_BindGPUVertexBuffers(pass, 0, &vertex, 1);
         SDL_BindGPUIndexBuffer(pass, &index, SDL_GPU_INDEXELEMENTSIZE_32BIT);
         for (uint32_t i = 0; i < g->frame_draw_count; ++i) {
             const lq_draw *d = &g->frame_draws[i];
+            if (liquid && translucent != ((d->flags & LQ_SURFACE_WATER) != 0)) continue;
             viewport.max_depth = d->flags & LQ_SURFACE_WEAPON ? 0.3f : 1.0f;
             SDL_SetGPUViewport(pass, &viewport);
-            lq_surface_uniforms uniforms;
-            SurfaceUniforms(&uniforms,g,v,d);
-            SDL_GPUTextureSamplerBinding samplers[] = {
-                {g->frame_textures[d->material], g->repeat}, {g->colormap, g->point}, {g->lightmap, g->linear},
-                {shadows, g->shadow_sampler}, {shadows, g->depth_sampler}, {g->bounce, g->linear},
-                {g->probe_static, g->linear}, {g->probe_dynamic, g->linear}
-            };
-            SDL_BindGPUFragmentSamplers(pass, 0, samplers, 8);
-            SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
-            SDL_DrawGPUIndexedPrimitives(pass, d->index_count, 1, d->first_index, 0, 0);
+            DrawSurface(g, command, pass, v, d, 0, g->frame_textures[d->material], shadows);
         }
     }
     SDL_EndGPURenderPass(pass);
@@ -947,6 +987,7 @@ void LQ_GPUDestroy(lq_gpu *g)
         if (g->depth) SDL_ReleaseGPUTexture(g->device, g->depth);
         if (g->multisample_color) SDL_ReleaseGPUTexture(g->device, g->multisample_color);
         for (int i = 0; i < 2; ++i) if (g->multisample[i]) SDL_ReleaseGPUGraphicsPipeline(g->device, g->multisample[i]);
+        for (int i = 0; i < 3; ++i) if (g->liquid[i]) SDL_ReleaseGPUGraphicsPipeline(g->device, g->liquid[i]);
         if (g->pipeline) SDL_ReleaseGPUGraphicsPipeline(g->device, g->pipeline);
         if (g->overlay_pipeline) SDL_ReleaseGPUGraphicsPipeline(g->device, g->overlay_pipeline);
         if (g->overlay) SDL_ReleaseGPUTexture(g->device, g->overlay);

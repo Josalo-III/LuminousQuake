@@ -132,6 +132,7 @@ typedef struct {
     float spot_inner; /* inner cosine; equal to outer for a hard edge */
     float source_radius; /* emitter radius for penumbrae; zero is a point */
     uint32_t source_index; /* scene light-source index; never sent to the GPU */
+    uint8_t submerged; /* origin inside water, slime or lava */
 } lq_runtime_light;
 typedef struct {
     float origin[3], angles[3], horizontal_fov;
@@ -151,6 +152,7 @@ typedef struct {
     float exposure; /* Enhanced brightness scale; zero means 1 */
     float bounce_gain; /* Enhanced artistic bounce multiplier; zero means 1 */
     float water_warp;
+    float water_alpha; /* liquid opacity; zero or one draws liquids opaque */
 } lq_view;
 void LQ_LightSourceDefaults(lq_light_source *source);
 int LQ_LightIsAccent(const lq_light_source *source);
@@ -161,6 +163,7 @@ float LQ_LightSourceIntensity(const lq_light_source *source, const float styles[
 float LQ_LightFalloff(const lq_light_source *source, float distance);
 float LQ_LightSourceRange(const lq_light_source *source);
 uint32_t LQ_SceneLeaf(const lq_scene *scene, const float point[3]);
+int LQ_SceneLiquid(const lq_scene *scene, const float point[3]);
 /* Static-world bounce from the scene's runtime lights: direct light at each
  * sample (BSP-occluded), reflected by its texture color and gathered once by
  * cosine-weighted rays. Kept per light style so live styles still drive it.

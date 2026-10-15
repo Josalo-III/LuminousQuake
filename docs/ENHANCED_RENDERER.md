@@ -13,6 +13,7 @@ reference; its implementation is the starting point for the upgraded renderer.
 | GPU buffers, resource ownership and map/restart lifecycle | Retain and extend |
 | Visibility, animated textures/models, moving brushes, particles | Retain; camera visibility is not light/shadow visibility |
 | Sky, water, palettes, fullbrights and transparency | Retain existing behavior until a particular effect is deliberately superseded |
+| Translucent liquids (`r_wateralpha` < 1) | Lit by runtime lights and static probes; light crossing the surface scales by 1 − opacity (direct and static bounce) |
 | Filtering, mipmaps, anisotropy, MSAA, resolution/FOV and VSync | Shared settings; retain relevant implementations |
 | HUD, menus, console, UI scaling, input and saved settings | Shared |
 | Baked lightmaps and Classic model shading | Preserve unchanged for Classic and comparison; Enhanced replaces direct light, with an explicit map-local static composition patch only when reconstruction and authored controls cannot retain an important original scene |

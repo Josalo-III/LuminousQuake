@@ -30,6 +30,7 @@ layout(set=3,binding=1,std140) uniform Lights {
     vec4 probe_origin; // xyz, spacing
     vec4 probe_size; // probes per axis; w: 1 static, 2 dynamic (bits)
     vec4 probe_weights; // live style value per static layer
+    vec4 liquid; // x: translucent liquid opacity; zero when liquids are opaque or unlit
 } lights;
 const float SHADOW_NEAR = 2.0;
 layout(location=0) in vec2 uv;
@@ -177,10 +178,16 @@ void main() {
         float front = texture(indices, vec2(front_uv.x * 0.5, front_uv.y)).r;
         index_value = front > 0.001 ? front : back;
     } else {
-        if ((flags & 2) != 0)
+        bool liquid = (flags & 2) != 0;
+        if (liquid)
             sample_uv += sin(uv.yx * 8.0 + surface.parameters.x) * 0.125;
         index_value = texture(indices, sample_uv).r;
-        if ((flags & 2) == 0) {
+        // A translucent liquid catches light in proportion to its opacity (the
+        // blend weight) and passes the rest to surfaces across it. Opaque
+        // liquids keep Quake's unlit, full-bright look.
+        float opacity = lights.liquid.x;
+        bool submerged = (flags & 64) != 0;
+        if (!liquid || (opacity > 0.0 && lights.parameters.y != 0u)) {
             float brightness = 0.0;
             bool actor = (flags & 32) != 0;
             if (lights.parameters.y != 0u && ((flags & 4) == 0 || actor)) {
@@ -212,22 +219,25 @@ void main() {
                         direct *= spot;
                     }
                     direct *= lights.color_strength[i].w;
+                    if (!liquid && opacity > 0.0 && submerged != (lights.shape[i].z > 0.5)) direct *= 1.0 - opacity;
                     if (direct < 0.01) continue;
                     direct *= shadowFactor(i,origin.xyz,normal,lights.shape[i].y);
                     illumination += lights.color_strength[i].rgb * direct;
                 }
                 // Static-world bounce from those lights, driven by live styles.
-                if (lights.tuning.z != 0.0 && (flags & 4) == 0) {
-                    float row = light_uv.y * lights.tuning.y;
+                // Bounce under a translucent liquid mostly arrived through its surface.
+                if (lights.tuning.z != 0.0 && (flags & 4) == 0 && !liquid) {
+                    float row = light_uv.y * lights.tuning.y, through = submerged && opacity > 0.0 ? 1.0 - opacity : 1.0;
                     for (int k = 0; k < 4; ++k) if (surface.bounce_weights[k] > 0.0)
                         illumination += texture(bounce, vec2(light_uv.x, (row + float(k)) * 0.25)).rgb *
-                            (255.0 * surface.bounce_weights[k] * lights.tuning.w);
+                            (255.0 * surface.bounce_weights[k] * lights.tuning.w * through);
                 }
                 // Probes: static bounce for actors; gameplay-light bounce for all.
                 int probes = int(lights.probe_size.w + 0.5);
                 if (probes != 0) {
                     vec3 point = world_position + normal * (actor ? 0.0 : 8.0);
-                    if (actor && (probes & 1) != 0)
+                    // Liquids have no lightmap or bounce texels; the static probes stand in.
+                    if ((actor || liquid) && (probes & 1) != 0)
                         for (int k = 0; k < 4; ++k) if (lights.probe_weights[k] > 0.0)
                             illumination += probeCube(probe_static, 24.0, float(k * 6), point, normal) *
                                 (lights.probe_weights[k] * lights.tuning.w);

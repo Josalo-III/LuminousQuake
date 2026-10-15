@@ -162,6 +162,13 @@ existing appearance until enabled. For smoother distant textures, try smooth
 filtering, trilinear mipmaps and 4× anisotropy; higher anisotropy costs more shader
 work. Sky, masked sprites and UI retain their existing crisp sampling.
 `gpu_mipmaps` stores 0/1/2 and `gpu_anisotropy` stores 1/2/4/8/16 (1 means off).
+GPU water (opaque/80%/60%/40%) makes water, slime and lava translucent in Classic GPU
+and Enhanced, saved as GLQuake's `r_wateralpha` (1 is opaque). Original maps were not
+compiled to see through liquids, so each frame also draws the leaves visible from the
+liquid (or, underwater, the air) leaves in view; no re-vised maps are needed.
+In Enhanced, a translucent liquid is lit like any surface instead of drawn full-bright,
+catching light in proportion to its opacity; the rest passes through, so faces under it
+receive (1 − opacity) of light from lights on the other side of the surface.
 Unsupported GPU settings report a fallback. Apply activates the staged settings and saves them in
 the LuminousQuake profile. Resolution presets include 16:9 and 16:10 widescreen.
 The view uses square pixels so widescreen geometry keeps its proportions.
