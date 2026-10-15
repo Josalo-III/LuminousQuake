@@ -24,6 +24,7 @@ void LQ_InitUserDirectory(const char *game_directory)
     user_directory[0] = 0;
     /* Discovery diagnostics and the standalone viewer have no writable state. */
     if (read_only || COM_CheckParm("--check-data") || COM_CheckParm("--scene-info") ||
+        COM_CheckParm("--light-analysis") ||
         COM_CheckParm("--gpu-test")) return;
     game = game ? game + 1 : game_directory;
     if (!SafeName(game)) Sys_Error("Invalid user-data game profile");

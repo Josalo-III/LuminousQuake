@@ -28,26 +28,98 @@ struct lq_gpu {
     lq_draw *frame_draws;
     uint32_t frame_vertex_bytes, frame_index_bytes, frame_transfer_bytes;
     uint32_t frame_draw_count, frame_draw_capacity;
+    /* Enhanced shadows: one reversed-depth cube per runtime-light slot. A slot
+     * is redrawn only when its light changes; static world casters persist. */
+    SDL_GPUGraphicsPipeline *shadow_pipeline;
+    SDL_GPUTexture *shadow_maps, *shadow_dummy;
+    SDL_GPUSampler *shadow_sampler, *depth_sampler;
+    SDL_GPUBuffer *casters;
+    uint32_t caster_count, shadow_size, shadow_updates;
+    float shadow_keys[LQ_MAX_RUNTIME_LIGHTS][4];
+    uint32_t shadow_sources[LQ_MAX_RUNTIME_LIGHTS];
+    uint8_t shadow_valid[LQ_MAX_RUNTIME_LIGHTS];
     int claimed;
 };
+typedef struct {
+    float lights[4], parameters[4], camera[4], dynamic[32][4];
+    uint32_t bits[4];
+} lq_surface_uniforms;
+typedef struct {
+    float position_range[LQ_MAX_RUNTIME_LIGHTS][4], color_strength[LQ_MAX_RUNTIME_LIGHTS][4];
+    float falloff[LQ_MAX_RUNTIME_LIGHTS][4], spot[LQ_MAX_RUNTIME_LIGHTS][4];
+    float shape[LQ_MAX_RUNTIME_LIGHTS][4]; /* inner cosine, source radius */
+    uint32_t parameters[4];
+} lq_light_uniforms;
+typedef struct { float face_projection[16], light_origin[4]; } lq_shadow_uniforms;
+#define LQ_SHADOW_NEAR 2.0f
+#define LQ_SHADOW_SIZE 512
 static int Error(char *error, size_t size, const char *what)
 { snprintf(error, size, "%s: %s", what, SDL_GetError()); return 0; }
-static SDL_GPUShader *Shader(lq_gpu *g, int fragment, int overlay)
+static SDL_GPUShader *ShaderCode(lq_gpu *g, const unsigned char *spv, size_t spv_size,
+    const unsigned char *msl, size_t msl_size, int fragment, uint32_t samplers, uint32_t uniforms)
 {
     int metal = (SDL_GetGPUShaderFormats(g->device) & SDL_GPU_SHADERFORMAT_MSL) != 0;
     SDL_GPUShaderCreateInfo info = {0};
-    if (fragment) {
-        info.code = overlay ? (metal ? lq_overlay_frag_msl : lq_overlay_frag_spv) : (metal ? lq_world_frag_msl : lq_world_frag_spv);
-        info.code_size = overlay ? (metal ? sizeof(lq_overlay_frag_msl) : sizeof(lq_overlay_frag_spv)) : (metal ? sizeof(lq_world_frag_msl) : sizeof(lq_world_frag_spv));
-    } else {
-        info.code = overlay ? (metal ? lq_overlay_vert_msl : lq_overlay_vert_spv) : (metal ? lq_world_vert_msl : lq_world_vert_spv);
-        info.code_size = overlay ? (metal ? sizeof(lq_overlay_vert_msl) : sizeof(lq_overlay_vert_spv)) : (metal ? sizeof(lq_world_vert_msl) : sizeof(lq_world_vert_spv));
-    }
+    info.code = metal ? msl : spv; info.code_size = metal ? msl_size : spv_size;
     info.entrypoint = metal ? "main0" : "main";
     info.format = metal ? SDL_GPU_SHADERFORMAT_MSL : SDL_GPU_SHADERFORMAT_SPIRV;
     info.stage = fragment ? SDL_GPU_SHADERSTAGE_FRAGMENT : SDL_GPU_SHADERSTAGE_VERTEX;
-    info.num_samplers = fragment ? (overlay ? 1 : 3) : 0; info.num_uniform_buffers = overlay ? 0 : 1;
+    info.num_samplers = samplers; info.num_uniform_buffers = uniforms;
     return SDL_CreateGPUShader(g->device, &info);
+}
+#define SHADER(g, name, fragment, samplers, uniforms) ShaderCode(g, name##_spv, sizeof(name##_spv), \
+    name##_msl, sizeof(name##_msl), fragment, samplers, uniforms)
+static SDL_GPUShader *Shader(lq_gpu *g, int fragment, int overlay)
+{
+    if (overlay) return fragment ? SHADER(g, lq_overlay_frag, 1, 1, 0) : SHADER(g, lq_overlay_vert, 0, 0, 0);
+    return fragment ? SHADER(g, lq_world_frag, 1, 5, 2) : SHADER(g, lq_world_vert, 0, 0, 1);
+}
+static SDL_GPUTexture *CubeArray(lq_gpu *g, uint32_t size, uint32_t cubes)
+{
+    SDL_GPUTextureCreateInfo info = {0};
+    info.type = SDL_GPU_TEXTURETYPE_CUBE_ARRAY; info.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+    info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+    info.width = info.height = size; info.layer_count_or_depth = 6 * cubes; info.num_levels = 1;
+    info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    return SDL_CreateGPUTexture(g->device, &info);
+}
+/* Depth-only cube-face pass for the sealed BSP world (see shadow.frag). */
+static int ShadowPipeline(lq_gpu *g)
+{
+    SDL_GPUVertexBufferDescription buffer = {0, sizeof(lq_vertex), SDL_GPU_VERTEXINPUTRATE_VERTEX, 0};
+    SDL_GPUVertexAttribute attributes[] = {
+        {0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(lq_vertex, position)},
+        {4, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(lq_vertex, normal)}
+    };
+    SDL_GPUGraphicsPipelineCreateInfo info = {0};
+    info.vertex_shader = SHADER(g, lq_shadow_vert, 0, 0, 1);
+    info.fragment_shader = SHADER(g, lq_shadow_frag, 1, 0, 0);
+    if (info.vertex_shader && info.fragment_shader) {
+        info.vertex_input_state = (SDL_GPUVertexInputState){&buffer, 1, attributes, 2};
+        info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+        info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+        info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+        info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
+        info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_GREATER_OR_EQUAL;
+        info.depth_stencil_state.enable_depth_test = info.depth_stencil_state.enable_depth_write = true;
+        info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+        info.target_info.has_depth_stencil_target = true;
+        g->shadow_pipeline = SDL_CreateGPUGraphicsPipeline(g->device, &info);
+    }
+    if (info.vertex_shader) SDL_ReleaseGPUShader(g->device, info.vertex_shader);
+    if (info.fragment_shader) SDL_ReleaseGPUShader(g->device, info.fragment_shader);
+    SDL_GPUSamplerCreateInfo sampler = {0};
+    sampler.min_filter = sampler.mag_filter = SDL_GPU_FILTER_LINEAR;
+    sampler.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+    sampler.address_mode_u = sampler.address_mode_v = sampler.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    sampler.enable_compare = true; sampler.compare_op = SDL_GPU_COMPAREOP_GREATER_OR_EQUAL;
+    g->shadow_sampler = SDL_CreateGPUSampler(g->device, &sampler);
+    /* Raw nearest depth for the soft-shadow blocker search. */
+    sampler.min_filter = sampler.mag_filter = SDL_GPU_FILTER_NEAREST; sampler.enable_compare = false;
+    g->depth_sampler = SDL_CreateGPUSampler(g->device, &sampler);
+    /* Classic draws never sample shadows but the shader binding must exist. */
+    g->shadow_dummy = CubeArray(g, 1, 1);
+    return g->shadow_pipeline && g->shadow_sampler && g->depth_sampler && g->shadow_dummy;
 }
 static SDL_GPUSampler *Sampler(lq_gpu *g, SDL_GPUFilter filter, SDL_GPUSamplerAddressMode mode)
 {
@@ -67,7 +139,8 @@ lq_gpu *LQ_GPUCreate(SDL_Window *window, int debug, char *error, size_t size)
         {0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(lq_vertex, position)},
         {1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, offsetof(lq_vertex, uv)},
         {2, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, offsetof(lq_vertex, light_uv)},
-        {3, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT, offsetof(lq_vertex, shade)}
+        {3, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT, offsetof(lq_vertex, shade)},
+        {4, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(lq_vertex, normal)}
     };
     if (!g) { SDL_SetError("out of memory"); Error(error, size, "GPU allocation"); return NULL; }
     g->window = window;
@@ -80,7 +153,7 @@ lq_gpu *LQ_GPUCreate(SDL_Window *window, int debug, char *error, size_t size)
     vertex = Shader(g, 0, 0); fragment = Shader(g, 1, 0);
     if (!vertex || !fragment) goto failed;
     info.vertex_shader = vertex; info.fragment_shader = fragment;
-    info.vertex_input_state = (SDL_GPUVertexInputState){&buffer, 1, attributes, 4};
+    info.vertex_input_state = (SDL_GPUVertexInputState){&buffer, 1, attributes, 5};
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
     info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
@@ -125,6 +198,11 @@ lq_gpu *LQ_GPUCreate(SDL_Window *window, int debug, char *error, size_t size)
     g->point = Sampler(g, SDL_GPU_FILTER_NEAREST, SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE);
     g->linear = Sampler(g, SDL_GPU_FILTER_LINEAR, SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE);
     if (!g->pipeline || !g->overlay_pipeline || !g->repeat || !g->point || !g->linear) goto failed;
+    if (!SDL_GPUTextureSupportsFormat(g->device, SDL_GPU_TEXTUREFORMAT_D32_FLOAT, SDL_GPU_TEXTURETYPE_CUBE_ARRAY,
+            SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET)) {
+        SDL_SetError("depth cube arrays are unsupported"); goto failed;
+    }
+    if (!ShadowPipeline(g)) goto failed;
     return g;
 failed:
     Error(error, size, "GPU initialization");
@@ -287,6 +365,9 @@ static void ReleaseScene(lq_gpu *g)
     g->frame_draw_count = 0;
     if (g->vertices) SDL_ReleaseGPUBuffer(g->device, g->vertices);
     if (g->indices) SDL_ReleaseGPUBuffer(g->device, g->indices);
+    if (g->casters) SDL_ReleaseGPUBuffer(g->device, g->casters);
+    g->casters = NULL; g->caster_count = 0;
+    memset(g->shadow_valid, 0, sizeof(g->shadow_valid));
     for (uint32_t i = 0; i < g->texture_count; ++i)
         if (g->textures[i]) SDL_ReleaseGPUTexture(g->device, g->textures[i]);
     if (g->colormap) SDL_ReleaseGPUTexture(g->device, g->colormap);
@@ -398,6 +479,16 @@ int LQ_GPUUpload(lq_gpu *g, const lq_scene *s, char *error, size_t size)
     g->indices = UploadBuffer(g, s->indices, s->index_count * sizeof(*s->indices), SDL_GPU_BUFFERUSAGE_INDEX);
     g->colormap = UploadImage(g, &s->colormap); g->lightmap = UploadImage(g, &s->lightmap);
     if (!g->vertices || !g->indices || !g->colormap || !g->lightmap) goto failed;
+    /* Every opaque world face may occlude; water and similar liquids do not. */
+    uint32_t *casters = malloc((size_t)s->index_count * sizeof(*casters));
+    if (!casters) { SDL_SetError("out of memory"); goto failed; }
+    for (uint32_t i = 0; i < s->draw_count; ++i) if (!(s->draws[i].flags & LQ_SURFACE_WATER)) {
+        memcpy(casters + g->caster_count, s->indices + s->draws[i].first_index, s->draws[i].index_count * sizeof(*casters));
+        g->caster_count += s->draws[i].index_count;
+    }
+    if (g->caster_count) g->casters = UploadBuffer(g, casters, g->caster_count * sizeof(*casters), SDL_GPU_BUFFERUSAGE_INDEX);
+    free(casters);
+    if (g->caster_count && !g->casters) goto failed;
     for (uint32_t i = 0; i < g->texture_count; ++i) {
         g->textures[i] = UploadIndexed(g, &s->materials[i].indices);
         if (!g->textures[i]) goto failed;
@@ -432,6 +523,94 @@ static int Targets(lq_gpu *g, uint32_t width, uint32_t height)
     g->multisample_color = multisample;
     g->color = color; g->depth = depth; g->width = width; g->height = height; return 1;
 }
+static void SurfaceUniforms(lq_surface_uniforms *uniforms, const lq_gpu *g,
+    const lq_view *view, const lq_draw *draw)
+{
+    memset(uniforms,0,sizeof(*uniforms));
+    memcpy(uniforms->dynamic,view->dynamic_lights,sizeof(uniforms->dynamic));
+    uniforms->bits[0] = draw->light_bits;
+    uniforms->parameters[0] = view->time; uniforms->parameters[1] = (float)draw->flags;
+    uniforms->parameters[2] = (float)g->smooth; uniforms->parameters[3] = (float)g->mipmaps;
+    memcpy(uniforms->camera,view->origin,sizeof(view->origin)); uniforms->camera[3] = (float)g->anisotropy;
+    for (int j = 0; j < 4; ++j)
+        uniforms->lights[j] = draw->styles[j] == 255 ? 0 : view->lightstyles[draw->styles[j]];
+}
+static void LightUniforms(lq_light_uniforms *uniforms, const lq_gpu *g, const lq_view *view)
+{
+    memset(uniforms,0,sizeof(*uniforms));
+    uint32_t count = view->runtime_light_count > LQ_MAX_RUNTIME_LIGHTS ? LQ_MAX_RUNTIME_LIGHTS : view->runtime_light_count;
+    for (uint32_t i = 0; i < count; ++i) {
+        const lq_runtime_light *light = &view->runtime_lights[i];
+        memcpy(uniforms->position_range[i],light->position_radius,4*sizeof(float));
+        memcpy(uniforms->color_strength[i],light->color_strength,4*sizeof(float));
+        memcpy(uniforms->falloff[i],light->falloff,4*sizeof(float));
+        memcpy(uniforms->spot[i],light->spot,4*sizeof(float));
+        uniforms->shape[i][0] = light->spot_inner; uniforms->shape[i][1] = light->source_radius;
+    }
+    uniforms->parameters[0] = count;
+    uniforms->parameters[1] = view->enhanced_lighting != 0;
+    uniforms->parameters[2] = g->shadow_size ? g->shadow_size : 1;
+    uniforms->parameters[3] = view->enhanced_lighting && g->shadow_maps && !view->disable_shadows;
+}
+/* Reversed-depth 90-degree face projection. Faces follow the cube-map table
+ * (+X,-X,+Y,-Y,+Z,-Z; screen right/up per face) used by sampling hardware,
+ * applied directly to Quake world directions. */
+static void ShadowFace(int face, const float origin[3], float out[16])
+{
+    static const float basis[6][3][3] = {
+        {{1,0,0},{0,0,-1},{0,1,0}}, {{-1,0,0},{0,0,1},{0,1,0}},
+        {{0,1,0},{1,0,0},{0,0,-1}}, {{0,-1,0},{1,0,0},{0,0,1}},
+        {{0,0,1},{1,0,0},{0,1,0}}, {{0,0,-1},{-1,0,0},{0,1,0}}
+    };
+    const float *forward = basis[face][0], *right = basis[face][1], *up = basis[face][2];
+    memset(out, 0, 16 * sizeof(float));
+    for (int j = 0; j < 3; ++j) {
+        out[j * 4] = right[j]; out[j * 4 + 1] = up[j]; out[j * 4 + 3] = forward[j];
+        out[12] -= right[j] * origin[j]; out[13] -= up[j] * origin[j]; out[15] -= forward[j] * origin[j];
+    }
+    out[14] = LQ_SHADOW_NEAR;
+}
+static int ShadowMaps(lq_gpu *g)
+{
+    if (g->shadow_maps) return 1;
+    g->shadow_maps = CubeArray(g, LQ_SHADOW_SIZE, LQ_MAX_RUNTIME_LIGHTS);
+    if (!g->shadow_maps) return 0;
+    g->shadow_size = LQ_SHADOW_SIZE; memset(g->shadow_valid, 0, sizeof(g->shadow_valid));
+    return 1;
+}
+static void RenderShadows(lq_gpu *g, SDL_GPUCommandBuffer *command, const lq_view *v)
+{
+    uint32_t count = v->runtime_light_count > LQ_MAX_RUNTIME_LIGHTS ? LQ_MAX_RUNTIME_LIGHTS : v->runtime_light_count;
+    g->shadow_updates = 0;
+    for (uint32_t slot = 0; slot < count; ++slot) {
+        const lq_runtime_light *light = &v->runtime_lights[slot];
+        if (light->position_radius[3] <= 0 || !g->casters) continue;
+        if (g->shadow_valid[slot] && g->shadow_sources[slot] == light->source_index &&
+            !memcmp(g->shadow_keys[slot], light->position_radius, sizeof(g->shadow_keys[slot]))) continue;
+        lq_shadow_uniforms uniforms = {{0}, {light->position_radius[0], light->position_radius[1], light->position_radius[2], 1}};
+        for (int face = 0; face < 6; ++face) {
+            SDL_GPUDepthStencilTargetInfo depth = {0};
+            depth.texture = g->shadow_maps; depth.layer = (Uint8)(slot * 6 + face);
+            depth.clear_depth = 0; depth.load_op = SDL_GPU_LOADOP_CLEAR; depth.store_op = SDL_GPU_STOREOP_STORE;
+            depth.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE; depth.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+            SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(command, NULL, 0, &depth);
+            SDL_BindGPUGraphicsPipeline(pass, g->shadow_pipeline);
+            SDL_GPUViewport viewport = {0, 0, (float)g->shadow_size, (float)g->shadow_size, 0, 1};
+            SDL_SetGPUViewport(pass, &viewport);
+            SDL_GPUBufferBinding vertex = {g->vertices, 0}, index = {g->casters, 0};
+            SDL_BindGPUVertexBuffers(pass, 0, &vertex, 1);
+            SDL_BindGPUIndexBuffer(pass, &index, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+            ShadowFace(face, light->position_radius, uniforms.face_projection);
+            SDL_PushGPUVertexUniformData(command, 0, &uniforms, sizeof(uniforms));
+            SDL_DrawGPUIndexedPrimitives(pass, g->caster_count, 1, 0, 0, 0);
+            SDL_EndGPURenderPass(pass);
+        }
+        memcpy(g->shadow_keys[slot], light->position_radius, sizeof(g->shadow_keys[slot]));
+        g->shadow_sources[slot] = light->source_index; g->shadow_valid[slot] = 1;
+        ++g->shadow_updates;
+    }
+}
+uint32_t LQ_GPUShadowUpdates(const lq_gpu *g) { return g ? g->shadow_updates : 0; }
 int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, char *error, size_t size)
 {
     SDL_GPUCommandBuffer *command;
@@ -441,11 +620,19 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
     if (!g->vertices || !g->indices) { SDL_SetError("scene not uploaded"); return Error(error, size, "GPU render"); }
     if (!width || !height || width > 8192 || height > 8192 || !Targets(g, width, height))
         return Error(error, size, "GPU render target size/allocation");
+    if (v->enhanced_lighting && v->runtime_light_count && !v->disable_shadows && !ShadowMaps(g))
+        return Error(error, size, "GPU shadow maps");
     command = SDL_AcquireGPUCommandBuffer(g->device);
     if (!command) return Error(error, size, "GPU command buffer");
     if (!SDL_WaitAndAcquireGPUSwapchainTexture(command, g->window, &swapchain, &swap_width, &swap_height)) {
         SDL_CancelGPUCommandBuffer(command); return Error(error, size, "GPU swapchain");
     }
+    g->shadow_updates = 0;
+    if (v->enhanced_lighting && g->shadow_maps && !v->disable_shadows) RenderShadows(g, command, v);
+    lq_light_uniforms light_uniforms;
+    LightUniforms(&light_uniforms, g, v);
+    SDL_PushGPUFragmentUniformData(command, 1, &light_uniforms, sizeof(light_uniforms));
+    SDL_GPUTexture *shadows = g->shadow_maps && v->enhanced_lighting ? g->shadow_maps : g->shadow_dummy;
     SDL_GPUColorTargetInfo color = {0};
     SDL_GPUDepthStencilTargetInfo depth = {0};
     color.texture = g->samples ? g->multisample_color : g->color; color.clear_color = (SDL_FColor){0.02f, 0.02f, 0.025f, 1};
@@ -476,17 +663,13 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
         const lq_draw *d = v->world_draws && v->world_draw_count == g->draw_count ? &v->world_draws[i] : &g->draws[i];
         if (!d->index_count) continue;
         if (d->material >= g->texture_count) continue;
-        struct { float lights[4], parameters[4], camera[4], dynamic[32][4]; uint32_t bits[4]; } uniforms = {0};
-        memcpy(uniforms.dynamic, v->dynamic_lights, sizeof(uniforms.dynamic)); uniforms.bits[0] = d->light_bits;
-        uniforms.parameters[2] = g->smooth; uniforms.parameters[3] = g->mipmaps;
-        uniforms.camera[3] = g->anisotropy;
-        for (int j = 0; j < 4; ++j) uniforms.lights[j] = d->styles[j] == 255 ? 0 : v->lightstyles[d->styles[j]];
-        uniforms.parameters[0] = v->time; uniforms.parameters[1] = (float)d->flags;
-        memcpy(uniforms.camera, v->origin, sizeof(v->origin));
+        lq_surface_uniforms uniforms;
+        SurfaceUniforms(&uniforms,g,v,d);
         SDL_GPUTextureSamplerBinding samplers[] = {
-            {g->textures[d->material], g->repeat}, {g->colormap, g->point}, {g->lightmap, g->linear}
+            {g->textures[d->material], g->repeat}, {g->colormap, g->point}, {g->lightmap, g->linear},
+            {shadows, g->shadow_sampler}, {shadows, g->depth_sampler}
         };
-        SDL_BindGPUFragmentSamplers(pass, 0, samplers, 3);
+        SDL_BindGPUFragmentSamplers(pass, 0, samplers, 5);
         SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
         SDL_DrawGPUIndexedPrimitives(pass, d->index_count, 1, d->first_index, 0, 0);
     }
@@ -499,17 +682,13 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
             const lq_draw *d = &g->frame_draws[i];
             viewport.max_depth = d->flags & LQ_SURFACE_WEAPON ? 0.3f : 1.0f;
             SDL_SetGPUViewport(pass, &viewport);
-            struct { float lights[4], parameters[4], camera[4], dynamic[32][4]; uint32_t bits[4]; } uniforms = {0};
-            memcpy(uniforms.dynamic, v->dynamic_lights, sizeof(uniforms.dynamic)); uniforms.bits[0] = d->light_bits;
-            uniforms.parameters[2] = g->smooth; uniforms.parameters[3] = g->mipmaps;
-            uniforms.camera[3] = g->anisotropy;
-            for (int j = 0; j < 4; ++j) uniforms.lights[j] = d->styles[j] == 255 ? 0 : v->lightstyles[d->styles[j]];
-            uniforms.parameters[0] = v->time; uniforms.parameters[1] = d->flags;
-            memcpy(uniforms.camera, v->origin, sizeof(v->origin));
+            lq_surface_uniforms uniforms;
+            SurfaceUniforms(&uniforms,g,v,d);
             SDL_GPUTextureSamplerBinding samplers[] = {
-                {g->frame_textures[d->material], g->repeat}, {g->colormap, g->point}, {g->lightmap, g->linear}
+                {g->frame_textures[d->material], g->repeat}, {g->colormap, g->point}, {g->lightmap, g->linear},
+                {shadows, g->shadow_sampler}, {shadows, g->depth_sampler}
             };
-            SDL_BindGPUFragmentSamplers(pass, 0, samplers, 3);
+            SDL_BindGPUFragmentSamplers(pass, 0, samplers, 5);
             SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
             SDL_DrawGPUIndexedPrimitives(pass, d->index_count, 1, d->first_index, 0, 0);
         }
@@ -586,6 +765,11 @@ void LQ_GPUDestroy(lq_gpu *g)
         if (g->pipeline) SDL_ReleaseGPUGraphicsPipeline(g->device, g->pipeline);
         if (g->overlay_pipeline) SDL_ReleaseGPUGraphicsPipeline(g->device, g->overlay_pipeline);
         if (g->overlay) SDL_ReleaseGPUTexture(g->device, g->overlay);
+        if (g->shadow_maps) SDL_ReleaseGPUTexture(g->device, g->shadow_maps);
+        if (g->shadow_dummy) SDL_ReleaseGPUTexture(g->device, g->shadow_dummy);
+        if (g->shadow_sampler) SDL_ReleaseGPUSampler(g->device, g->shadow_sampler);
+        if (g->depth_sampler) SDL_ReleaseGPUSampler(g->device, g->depth_sampler);
+        if (g->shadow_pipeline) SDL_ReleaseGPUGraphicsPipeline(g->device, g->shadow_pipeline);
         if (g->repeat) SDL_ReleaseGPUSampler(g->device, g->repeat);
         if (g->point) SDL_ReleaseGPUSampler(g->device, g->point);
         if (g->linear) SDL_ReleaseGPUSampler(g->device, g->linear);

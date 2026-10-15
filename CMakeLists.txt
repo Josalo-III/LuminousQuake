@@ -201,6 +201,9 @@ endforeach()
 
 if(BUILD_TESTING)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME bsp-light-visibility COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/bsp_light_visibility.py)
+    set_tests_properties(bsp-light-visibility PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     add_test(NAME udp-loopback COMMAND luminousquake-headless --self-test --test-udp -ip 127.0.0.1)
     foreach(target IN LISTS LQ_EXECUTABLES)
         add_test(NAME ${target}-version COMMAND ${target} --version)

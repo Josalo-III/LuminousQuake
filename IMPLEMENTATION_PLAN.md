@@ -10,7 +10,8 @@ Enhanced rendering remain pending.
 
 Enhanced development has begun with shared world/model normals and an owned
 BSP light inventory; see [Enhanced foundations](docs/ENHANCED_RENDERER.md).
-These inputs do not yet change visible lighting or enable Enhanced mode.
+The standalone viewer now renders them as falloff-correct, soft-shadowed direct
+light; Enhanced mode in the game remains disabled.
 
 Classic GPU texture filtering now includes saved mipmap and anisotropy options.
 See the [texture-filtering checkpoint](docs/CLASSIC_GPU_CHECKPOINT.md) for the
@@ -287,11 +288,24 @@ gameplay simulation without a separate compatibility and ownership design.
 
 ## Phase 5: dynamic lighting, shadows, and atmosphere
 
-First foundation slice implemented: renderer-owned light descriptions from
+First foundation slices implemented: renderer-owned light descriptions from
 retained BSP entity text and world-space normals for world/brush/MDL geometry.
-See [Enhanced foundations](docs/ENHANCED_RENDERER.md). Runtime illumination,
-target resolution, shadows and material upgrades remain pending. Classic GPU
-services remain shared unless a specific Enhanced implementation supersedes them.
+See [Enhanced foundations](docs/ENHANCED_RENDERER.md). The standalone viewer now
+renders direct light with compiler-compatible falloff (all LIGHT/ericw-tools
+`delay` formulas, `wait`, `_range`/`_dist`), mangle/target spotlights and
+reversed-depth cube shadow maps with PCSS penumbrae from an emitter radius.
+A controlled six-axis occluder scene proves moving shadow boundaries, cached
+static shadows, range cutoff and penumbrae by readback. Indirect light, actor
+lighting/shadows and material upgrades remain pending, so the in-game Enhanced
+choice remains unavailable. Classic GPU services remain shared unless a specific
+Enhanced implementation supersedes them.
+
+The static-light reconstruction approach is documented in
+[Light reconstruction](docs/LIGHT_RECONSTRUCTION.md): entity light scalars and
+the final BSP samples are evidence for a fitted direct/indirect model, not
+separate authored power and range fields.
+The first E1M3 sample/source comparison is in
+[The Necropolis lighting analysis](docs/NECROPOLIS_LIGHTING_ANALYSIS.md).
 
 ### Work
 
@@ -301,6 +315,9 @@ services remain shared unless a specific Enhanced implementation supersedes them
 - Introduce Doom 3/dhewm3-inspired light/surface relationships, normal and specular mapping, shadow generation, and culling as separate changes.
 - Select shadow techniques based on artifact behavior, cost, and portability; do not assume the historical technique is automatically best.
 - Keep baked lightmaps as a comparison/reference dataset, rather than multiplying them into the new direct-lighting path and double-counting illumination.
+- Reconstruct static-light parameters from the original compiler prior and BSP
+  samples. Record uncertainty, retain only identifiable fits, and derive any
+  ambient/residual data outside original game files.
 - Calibrate illumination against original focal points, shadowed passages, silhouettes, and navigation cues. Document intentional departures.
 - Provide optional, inspectable per-map lighting overrides for cases where surviving entities are insufficient.
 - Establish an original-PAK-only Enhanced mode before relying on optional overrides or material packs. Keep authored enhancement data in the separate asset project.

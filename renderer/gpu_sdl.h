@@ -13,6 +13,9 @@ int LQ_GPUOptions(lq_gpu *gpu, int smooth, int samples, int vsync, char *error, 
 int LQ_GPUTextureOptions(lq_gpu *gpu, int mipmaps, int anisotropy, char *error, size_t size);
 int LQ_GPUSamplesSupported(lq_gpu *gpu, int samples);
 int LQ_GPURender(lq_gpu *gpu, const lq_view *view, uint32_t width, uint32_t height, char *error, size_t size);
+/* Shadow cube slots redrawn by the most recent render; unchanged slots reuse
+ * their cached static-world shadows. */
+uint32_t LQ_GPUShadowUpdates(const lq_gpu *gpu);
 int LQ_GPUReadPixels(lq_gpu *gpu, uint8_t **pixels, uint32_t *width, uint32_t *height, char *error, size_t size);
 void LQ_GPUDestroy(lq_gpu *gpu);
 #endif

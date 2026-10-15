@@ -13,9 +13,14 @@ worker pool now handles measured row conversion work; Enhanced rendering remains
 unavailable.
 
 Enhanced development has started with shared scene normals and retained map
-light descriptions. These are foundations; visible rendering remains Classic
-and the Enhanced choice is still unavailable. See [Enhanced renderer notes](docs/ENHANCED_RENDERER.md)
-for the shared components and next steps.
+light descriptions. The gated standalone viewer (`luminousquake-gpu --enhanced`)
+now lights the world only from runtime lights: original LIGHT/ericw-tools falloff
+formulas, spotlights and live styles, occluded by cached cube shadow maps with
+emitter-sized soft penumbrae. Darkness comes from falloff and occlusion, never
+from the baked lightmap. There is no indirect light yet and actors neither
+receive nor cast Enhanced light, so playable rendering remains Classic and the
+Enhanced choice is unavailable. See [Enhanced renderer notes](docs/ENHANCED_RENDERER.md)
+for the commands, evidence and next steps.
 
 See [profiling method](docs/PROFILING.md) for the Instruments-led measurement
 method. CPU timing is opt-in: set `lq_profile 1`, then use `lq_profile_report` in the

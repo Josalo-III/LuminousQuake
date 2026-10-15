@@ -15,7 +15,7 @@ args = parser.parse_args()
 with tempfile.TemporaryDirectory(prefix='lq-shaders-') as temporary:
     root = args.root
     result = ['/* Generated from renderer/shaders by tools/build_shaders.py. GPL-2.0-or-later. */']
-    for name, stage in ((name, stage) for name in ('world', 'overlay') for stage in ('vert', 'frag')):
+    for name, stage in ((name, stage) for name in ('world', 'overlay', 'shadow') for stage in ('vert', 'frag')):
         spirv = Path(temporary) / (name + '.' + stage + '.spv')
         metal = Path(temporary) / (name + '.' + stage + '.msl')
         subprocess.run(['glslangValidator', '-V', '--target-env', 'vulkan1.0',

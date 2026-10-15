@@ -13,12 +13,24 @@
 ## Enhanced lighting foundations — October 14, 2026
 
 - Inspected original compiler semantics in id Software's Quake-Tools revision
-  `c0d1b91c74eb654365ac7755bc837e497caaca73`, `qutils/LIGHT/ENTITIES.C` and
-  `qutils/LIGHT/ENTITIES.H`: scalar light intensity, style/target metadata and
-  the default intensity of 300. No compiler implementation files were imported.
+  `c0d1b91c74eb654365ac7755bc837e497caaca73`, `qutils/LIGHT/ENTITIES.C`,
+  `qutils/LIGHT/ENTITIES.H`, `qutils/LIGHT/LTFACE.C` and `qutils/LIGHT/LIGHT.C`:
+  scalar source input, default 300, static ray visibility, softened surface
+  angle, range scaling and 8-bit output clamping. No compiler implementation
+  files were imported.
 - Scene light descriptions, style evaluation and normal propagation are local
   GPL-2.0-or-later adaptations of the existing renderer/Quake loader boundary.
   No Doom 3/dhewm3 or Tenebrae implementation has been imported in this slice.
+- Runtime point-light selection, GLSL direct lighting and rerelease `_color`
+  handling are new LuminousQuake code. The existing owned shader-generation
+  pipeline produced the checked-in SPIR-V/MSL arrays; no donor shader was copied.
+- October 15, 2026: falloff formulas and spotlight keys (`delay`, `wait`,
+  `mangle`, `angle`, `_softangle`, `_deviance`, `_anglescale`, worldspawn
+  `_range`/`_dist`) follow the documented entity semantics of ericw-tools'
+  `light` compiler, checked against the keys present in local E1M3; they are
+  reimplemented from documented behavior, and no ericw-tools code was copied.
+  Cube shadow maps, back-face casting and PCSS penumbrae (Fernando, 2005) are
+  standard published techniques written as new LuminousQuake code.
 
 ## Rerelease QuakeC comparison — October 14, 2026
 

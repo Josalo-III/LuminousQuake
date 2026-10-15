@@ -22,7 +22,12 @@ lumps[0] = lumps[0][:-1] + (
     b'{"classname" "light" "origin" "8 16 32" "light" "500" "style" "32" '
     b'"spawnflags" "1" "targetname" "switch" "target" "aim" "angle" "25"}\n'
     b'{"classname" "light_torch_small_walltorch" "origin" "0 0 8"}\n'
+    b'{"classname" "light" "origin" "0 0 7" "_color" "255 128 64"}\n'
     b'{"classname" "light" "origin" "0 0 9" "_light" "1 0.5 0.25 400"}\n'
+    b'{"classname" "info_null" "origin" "8 16 0" "targetname" "aim"}\n'
+    b'{"classname" "light" "origin" "0 0 10" "light" "2500" "delay" "3" "wait" "2" '
+    b'"mangle" "90 -45 0" "_softangle" "20"}\n'
+    b'{"classname" "light" "origin" "0 0 11" "delay" "9"}\n'
     b'{"classname" "light" "origin" "nan 0 9"}\n'
     b'{"classname" "light" "origin" "0 0 9" "style" "99999999999999"}\n\0')
 lumps[1] = struct.pack('<4fi', 1, 0, 0, 128, 0)
@@ -64,12 +69,19 @@ with tempfile.TemporaryDirectory(prefix='lq-bsp-') as temporary:
     (root / 'id1/pak0.pak').write_bytes(struct.pack('<4sii', b'PACK', 12 + len(payload), len(directory)) + payload + directory)
     output = run(root, '-map', 'fixture')
     assert '2 triangles, 1 draws, 1 indexed materials' in output, output
-    assert 'Light inventory: 3 sources, 1 targeted, 1 styled, 1 unresolved' in output, output
+    assert 'Light inventory: 6 sources, 1 targeted, 1 styled, 2 unresolved' in output, output
     output = run(root, '-map', 'fixture', '--light-info')
     assert 'origin 8.000 16.000 32.000 intensity 500.000 style 32 spawnflags 1 cone 25.000 target [aim] targetname [switch]' in output, output
     assert 'light_torch_small_walltorch origin 0.000 0.000 8.000 intensity 300.000' in output, output
-    assert 'intensity 0.000 style 0 spawnflags 0 cone 0.000 target [] targetname [] flags 1' in output, output
+    assert 'origin 0.000 0.000 7.000 intensity 300.000' in output and 'color [255 128 64] flags 0' in output, output
+    assert 'intensity 0.000 style 0 spawnflags 0 cone 0.000 target [] targetname [] rawlight [1 0.5 0.25 400] color [] flags 1' in output, output
     assert 'skipping invalid source entity' in output, output
+    # A matched target aims a cone with half the full "angle"; LIGHT's default
+    # linear falloff ends where the value drops below one unit.
+    assert 'flags 0 formula 0 attenuation 1.000 range 499.0 spot 0.000 0.000 -1.000 outer 0.9763 inner 0.9763' in output, output
+    assert 'formula 3 attenuation 2.000 range 16384.0 spot' in output, output
+    assert '0.000 0.707 -0.707 outer 0.9397 inner 0.9848' in output, output  # mangle yaw 90, pitch -45
+    assert 'origin 0.000 0.000 11.000 intensity 300.000' in output and 'flags 1 formula 0' in output, output
     output = run(root, '-map', '../escape', expected=1)
     assert 'without a path or extension' in output, output
     output = run(root, '--run-seconds', 'nan', expected=1)
