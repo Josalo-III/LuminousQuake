@@ -142,8 +142,39 @@ carries its own copy of SDL3. Drag it into a Quake folder (the one containing
 anywhere else, it asks you to choose a Quake folder and remembers that
 choice. Hold Option while launching to choose a different folder. The game
 data is only read, never changed; settings and saves go to
-`~/Library/Application Support/LuminousQuake`. The app is signed ad hoc on
-the Mac that built it and is not notarized for distribution.
+`~/Library/Application Support/LuminousQuake`. The app in `build/` is signed
+ad hoc for the Mac that built it.
+
+### Mac release for other Macs
+
+`tools/release_mac.sh` builds the version to share. It is universal (Apple
+silicon and Intel), runs on macOS 11 or later, and carries its own SDL3, built
+from the pinned 3.4.18 source. The script signs the app with the hardened
+runtime, notarizes and staples it, and wraps it in a signed, notarized disk
+image with a short read-me: `build-mac-release/LuminousQuake-VERSION.dmg`.
+
+It needs two things set up once, both on the Apple developer account:
+
+1. A **Developer ID Application** certificate. In Xcode → Settings → Accounts,
+   select the team, choose Manage Certificates, then + → Developer ID
+   Application. Only the account holder can create one.
+2. A notary profile in the keychain, using an app-specific password from
+   account.apple.com:
+
+```sh
+xcrun notarytool store-credentials luminousquake --apple-id YOUR_APPLE_ID --team-id YOUR_TEAM_ID
+```
+
+Then:
+
+```sh
+tools/release_mac.sh --identity "Developer ID Application: YOUR NAME (TEAMID)" --notary-profile luminousquake
+```
+
+`--skip-notarize` builds and signs without notarizing; any signing identity
+works for a trial. The script fails if either architecture is missing or the
+app still links a library outside the bundle. With notarization it ends by
+checking the app and disk image with Gatekeeper (`spctl`).
 
 LuminousQuake targets the original game. Rerelease installations are an expected
 compatibility case, with support still incomplete: known missing engine services
