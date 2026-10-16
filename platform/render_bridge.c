@@ -10,6 +10,7 @@
 #include "scene_fixture.h"
 #include "gpu_entities.h"
 #include "effects.h"
+#include "fluorescent.h"
 #include "jobs.h"
 extern cvar_t r_waterwarp;
 extern mleaf_t *r_viewleaf;
@@ -121,6 +122,9 @@ void LQ_RenderBegin(void)
         enhanced = Cvar_VariableValue("lq_renderer") == 2;
         if (!LQ_QuakeSceneFromWorld(&map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }
         if (enhanced) {
+            /* Before bounce, so each failing tube's bounce follows it. */
+            uint32_t tubes = LQ_SceneAssignFluorescentStyles(&map_scene);
+            if (tubes) Con_DPrintf("Enhanced fluorescents: %u failing tubes on private styles.\n", tubes);
             double started = Sys_FloatTime();
             if (LQ_SceneComputeBounce(&map_scene, 64, LQ_JobsRunRange, error, sizeof(error)))
                 Con_Printf("Enhanced bounce: %u samples, sky light %.0f %.0f %.0f, in %.2f s.\n", map_scene.sample_count,
@@ -261,6 +265,15 @@ static void EnhancedLights(void)
         light->color_strength[3] *= gain;
         for (int k = 0; k < 3; ++k) light->position_radius[k] += offset[k];
     }
+    /* Fluorescent tubes flicker with the mains as the chosen camera records it. */
+    uint32_t camera = (uint32_t)Cvar_VariableValue("r_fluorescent");
+    for (uint32_t i = 0; i < LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS; ++i) {
+        lq_runtime_light *light = &runtime_lights[i];
+        float rgb[3];
+        if (light->position_radius[3] <= 0 ||
+            !LQ_FluorescentGain(&map_scene, light->source_index, cl.time, camera, rgb)) continue;
+        for (int k = 0; k < 3; ++k) light->color_strength[k] *= rgb[k];
+    }
     lq_runtime_light selected[LQ_MAX_DYNAMIC_LIGHTS], candidate;
     float scores[LQ_MAX_DYNAMIC_LIGHTS]; uint32_t dynamic = 0;
     for (int i = 0; i < MAX_DLIGHTS; ++i) {
@@ -317,6 +330,7 @@ static void CaptureView(void)
     view.horizontal_fov = atanf(r_refdef.horizontalFieldOfView * 0.5f) * 360.0f / (float)M_PI;
     view.time = (float)cl.time;
     for (int i = 0; i < 256; ++i) view.lightstyles[i] = d_lightstylevalue[i] / 256.0f;
+    if (enhanced && direct_frame) LQ_FluorescentStyles(&map_scene, cl.time, view.lightstyles);
     view.viewport[0] = r_refdef.vrect.x; view.viewport[1] = r_refdef.vrect.y;
     view.viewport[2] = r_refdef.vrect.width; view.viewport[3] = r_refdef.vrect.height;
     if (direct_frame) { view.world_draws = world_draws; view.world_draw_count = map_scene.draw_count; }

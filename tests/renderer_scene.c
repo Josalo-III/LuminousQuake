@@ -3,6 +3,7 @@
 #include "scene_fixture.h"
 #include "indexed_mips.h"
 #include "effects.h"
+#include "fluorescent.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -302,6 +303,76 @@ static int BounceRoomTest(void)
     puts("PASS static bounce and probe gather: closed room hits, cosine weighting, style layers, albedo, gameplay-light probes and sky visibility through sky faces or leaves, light through sky leaves, sun visibility and bounce");
     return 0;
 }
+static int FluorescentTest(void)
+{
+    lq_light_source sources[5];
+    memset(sources, 0, sizeof(sources));
+    const char *names[5] = {"light_fluoro", "light_fluorospark", "light_fluorospark", "light", "light"};
+    for (int i = 0; i < 5; ++i) {
+        LQ_LightSourceDefaults(&sources[i]);
+        snprintf(sources[i].classname, sizeof(sources[i].classname), "%s", names[i]);
+        sources[i].origin[0] = 100.0f * i; sources[i].intensity = 300;
+    }
+    sources[1].style = 10; sources[2].style = 33; /* a switched failing tube keeps its switch */
+    sources[3].origin[0] = 116; /* the beam spotlight in the failing tube's fixture */
+    sources[4].origin[0] = 500; /* an ordinary light */
+    lq_scene scene = {0}; scene.light_sources = sources; scene.light_source_count = 5;
+    CHECK(LQ_LightFluorescent(&sources[0]) == 1 && LQ_LightFluorescent(&sources[1]) == 2);
+    CHECK(LQ_SceneAssignFluorescentStyles(&scene) == 1);
+    CHECK(sources[1].style == LQ_FLUORESCENT_STYLE_BASE && sources[2].style == 33);
+    CHECK(sources[3].style == LQ_FLUORESCENT_STYLE_BASE && sources[4].style == 0);
+    float tube[3], beam[3];
+    CHECK(LQ_FluorescentGain(&scene, 1, 2.5, LQ_CAMERA_FILM, tube) && LQ_FluorescentGain(&scene, 3, 2.5, LQ_CAMERA_FILM, beam));
+    CHECK(!memcmp(tube, beam, sizeof(tube)));
+    float rgb[3], low[3] = {9,9,9}, high[3] = {0}, step = 0;
+    CHECK(LQ_FluorescentGain(&scene, 0, 3.7, LQ_CAMERA_EYE, rgb) && rgb[0] == 1 && rgb[1] == 1 && rgb[2] == 1);
+    /* NTSC's 1/60 shutter spans whole 60 and 120 Hz cycles: in sync, steady. */
+    for (double t = 0; t < 20; t += 0.0137) {
+        CHECK(LQ_FluorescentGain(&scene, 0, t, LQ_CAMERA_NTSC, rgb));
+        for (int k = 0; k < 3; ++k) CHECK(fabsf(rgb[k] - 1) < 0.002f);
+    }
+    /* Film breathes slowly: a few percent, blue deepest, smooth frame to frame. */
+    float last = 0;
+    for (double t = 0; t < 30; t += 0.01) {
+        CHECK(LQ_FluorescentGain(&scene, 0, t, LQ_CAMERA_FILM, rgb));
+        for (int k = 0; k < 3; ++k) { low[k] = fminf(low[k], rgb[k]); high[k] = fmaxf(high[k], rgb[k]); }
+        if (t > 0) step = fmaxf(step, fabsf(rgb[1] - last));
+        last = rgb[1];
+    }
+    CHECK(high[1] - low[1] > 0.05f && high[1] - low[1] < 0.2f);
+    CHECK(high[2] - low[2] > high[1] - low[1] && high[1] - low[1] > high[0] - low[0]);
+    CHECK(step < 0.01f);
+    /* A fast shutter keeps far more of the 120 Hz term. */
+    float fast_low = 9, fast_high = 0;
+    for (double t = 0; t < 30; t += 0.01) {
+        LQ_FluorescentGain(&scene, 0, t, LQ_CAMERA_NTSC_FAST, rgb);
+        fast_low = fminf(fast_low, rgb[1]); fast_high = fmaxf(fast_high, rgb[1]);
+    }
+    CHECK(fast_high - fast_low > 3 * (high[1] - low[1]));
+    /* PAL's 5 Hz flutter changes far faster than film's breathing. */
+    float pal_step = 0;
+    for (double t = 0; t < 5; t += 0.01) {
+        LQ_FluorescentGain(&scene, 0, t, LQ_CAMERA_PAL, rgb); float before = rgb[1];
+        LQ_FluorescentGain(&scene, 0, t + 0.05, LQ_CAMERA_PAL, rgb); pal_step = fmaxf(pal_step, fabsf(rgb[1] - before));
+    }
+    CHECK(pal_step > 0.03f);
+    /* A failing tube is mostly lit, drops out a few percent of the time, glows
+     * while restriking and overshoots on strike; the same time gives the same light. */
+    uint32_t dark = 0, glow = 0, over = 0, samples = 0;
+    for (double t = 0; t < 600; t += 0.005, ++samples) {
+        float styles[256] = {0}, again[256] = {0};
+        LQ_FluorescentStyles(&scene, t, styles); LQ_FluorescentStyles(&scene, t, again);
+        float v = styles[LQ_FLUORESCENT_STYLE_BASE];
+        CHECK(v == again[LQ_FLUORESCENT_STYLE_BASE] && v >= 0 && v < 1.6f && styles[33] == 0);
+        dark += v == 0; glow += v > 0 && v < 0.1f; over += v > 1.2f;
+        if (v > 0 && v < 0.1f) { CHECK(LQ_FluorescentGain(&scene, 1, t, LQ_CAMERA_EYE, rgb) && rgb[0] > rgb[2] * 4); }
+    }
+    CHECK(dark > samples / 100 && dark < samples / 10);
+    CHECK(glow > samples / 200 && over > samples / 500);
+    CHECK(!LQ_FluorescentGain(&scene, 4, 0, LQ_CAMERA_FILM, rgb) && !LQ_FluorescentGain(&scene, 5, 0, LQ_CAMERA_FILM, rgb));
+    puts("PASS fluorescent tubes: private failing-tube styles, camera-synced mains flicker and phosphor colour, failure timeline");
+    return 0;
+}
 int main(void)
 {
     lq_mip_palette *palette = malloc(sizeof(*palette));
@@ -488,5 +559,6 @@ int main(void)
     CHECK(SurfaceLightTest() == 0);
     CHECK(BounceRoomTest() == 0);
     CHECK(EffectTest() == 0);
+    CHECK(FluorescentTest() == 0);
     puts("PASS renderer scene ownership, invalid geometry rejection and Quake/GPU camera projection"); return 0;
 }

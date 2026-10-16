@@ -101,6 +101,39 @@ comes from each light's falloff and from occlusion.
   times a second), so its shadow cube is redrawn at that rate rather than
   every frame. Static bounce and probes keep the mean strength. Classic and
   Software keep the original lockstep animation.
+- **Fluorescent tubes** (`renderer/fluorescent.c`). `light_fluoro` and
+  `light_fluorospark` (the base levels: e1m1 has 6 and 2, e4m1 17 and 4)
+  flicker with US mains as a camera records them. A tube on a magnetic ballast
+  lights on both halves of each 60 Hz cycle: its drive is a rectified sine,
+  1 − ⅔cos 2ωt − ²⁄₁₅cos 4ωt relative to its mean, plus a 60 Hz term from worn
+  electrodes (3% steady, 20% failing). Each phosphor filters the drive as a
+  first-order low-pass (red 4 ms, green 2 ms, blue 0.5 ms), so blue modulates
+  deepest and the tube is bluer at its peaks. A camera's shutter T keeps
+  sinc(πfT) of a term at f Hz, and its frames see the alias of f by its frame
+  rate. Enhanced evaluates the alias at continuous time, which matches the
+  camera's samples at its frame instants and does not depend on the display's
+  rate. `r_fluorescent` picks the camera: 0 eye (fused, steady); 1 film,
+  23.976 fps with a 180° shutter (default): 120 Hz aliases to 0.12 Hz, so the
+  light breathes over about 8 s, peak to peak 6% red, 10% green and 17% blue;
+  2 NTSC 29.97 fps at 1/60, whose shutter spans whole cycles, so it is steady
+  (why US video needs no sync); 3 NTSC at 1/250, the same beat at 30% / 51% /
+  85%; 4 PAL 25 fps at 1/50, a 5 Hz flutter at film's depth. The grid wanders
+  by 0.015 Hz over 97 s, so the beat drifts. Tubes within one 256-unit cell
+  share a circuit, and circuits sit on one of three phases. A plain light
+  within 24 units of a tube is part of its fixture (the rerelease adds a beam
+  spotlight beside each tube) and follows it. Static bounce of steady tubes
+  keeps the mean.
+- **Failing tubes.** Each `light_fluorospark` on style 0 or 10 (and its fixture
+  lights) gets a private style from 64 up at load, before bounce, so its face
+  bounce layer goes dark and returns with it. Its timeline is a pure function
+  of time and position, cut into 1.6 s windows: nothing (35%), a dropout of
+  35–140 ms (35%), chatter of 3–6 short dropouts (15%), or a restrike (15%),
+  where the starter heats the cathodes (5%, orange) and fails with a flash (80%,
+  bluish) once or twice before the arc holds. A struck arc overshoots by up to
+  45%, bluish, decaying over 60 ms. Over an hour a tube is dark 4.3% of the
+  time and glowing 4.1%, with 0.7 outages a second. Probe layers are map-wide
+  and keep only the three strongest non-zero styles, so actors may miss a
+  failing tube's bounce. Classic and Software keep style 10.
 - **Selection.** Up to 128 sources are chosen per frame from those whose PVS
   reach (leaves their own leaf can see, within range) meets the camera's PVS,
   nearest (range-weighted) first. In game, map lights get 120 slots and gameplay
