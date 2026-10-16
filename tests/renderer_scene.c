@@ -59,7 +59,70 @@ static int EffectTest(void)
     CHECK(LQ_BeamRuntimeLights(start, end, 100, samples) == 1);
     CHECK(samples[0].position_radius[0] == 0);
     end[0] = NAN; CHECK(!LQ_BeamRuntimeLights(start, end, 100, samples));
-    puts("PASS stable convex 3-6 sided particle flakes, varied scale up to Classic's size and continuous beam-light coverage");
+    /* 3D particles: closed, convex, outward-wound and stable for a seed; time
+     * only turns them, and their mean silhouette matches the flakes'. */
+    uint32_t shapes[LQ_PARTICLE_MAX_FACES+1] = {0};
+    float mean = 0, widest = 0;
+    for (uint32_t seed = 0; seed < 4096; ++seed) {
+        float faces[LQ_PARTICLE_MAX_FACES][3][3], again[LQ_PARTICLE_MAX_FACES][3][3], later[LQ_PARTICLE_MAX_FACES][3][3];
+        uint32_t faces_count = LQ_ParticleSolid(seed, 12.5, faces);
+        CHECK(faces_count == 4 || faces_count == 6 || faces_count == 8);
+        CHECK(LQ_ParticleSolid(seed, 12.5, again) == faces_count && !memcmp(faces, again, sizeof(faces[0])*faces_count));
+        CHECK(LQ_ParticleSolid(seed, 12.75, later) == faces_count && memcmp(faces, later, sizeof(faces[0])*faces_count));
+        ++shapes[faces_count];
+        float closure[3] = {0}, surface = 0, surface_later = 0;
+        for (uint32_t f = 0; f < faces_count; ++f) {
+            float u[3], v[3], n[3], m[3];
+            for (int k = 0; k < 3; ++k) { u[k] = faces[f][1][k]-faces[f][0][k]; v[k] = faces[f][2][k]-faces[f][0][k]; }
+            n[0] = u[1]*v[2]-u[2]*v[1]; n[1] = u[2]*v[0]-u[0]*v[2]; n[2] = u[0]*v[1]-u[1]*v[0];
+            for (int k = 0; k < 3; ++k) { u[k] = later[f][1][k]-later[f][0][k]; v[k] = later[f][2][k]-later[f][0][k]; }
+            m[0] = u[1]*v[2]-u[2]*v[1]; m[1] = u[2]*v[0]-u[0]*v[2]; m[2] = u[0]*v[1]-u[1]*v[0];
+            surface += 0.5f*sqrtf(n[0]*n[0]+n[1]*n[1]+n[2]*n[2]);
+            surface_later += 0.5f*sqrtf(m[0]*m[0]+m[1]*m[1]+m[2]*m[2]);
+            for (int k = 0; k < 3; ++k) closure[k] += n[k];
+            /* Faces point away from the centre; every vertex lies behind every face's plane. */
+            CHECK(n[0]*faces[f][0][0]+n[1]*faces[f][0][1]+n[2]*faces[f][0][2] > 0);
+            for (uint32_t g = 0; g < faces_count; ++g) for (int c = 0; c < 3; ++c) {
+                float d = 0;
+                for (int k = 0; k < 3; ++k) d += n[k]*(faces[g][c][k]-faces[f][0][k]);
+                CHECK(d < 0.00001f);
+            }
+        }
+        CHECK(fabsf(closure[0]) < 0.0001f && fabsf(closure[1]) < 0.0001f && fabsf(closure[2]) < 0.0001f);
+        CHECK(fabsf(surface - surface_later) < 0.0001f);
+        CHECK(surface*0.25f >= 0.15f - 0.0001f && surface*0.25f <= 0.35f + 0.0001f);
+        float axes[3][3] = {{1,0,0},{0,1,0},{0,0,1}}, average = 0;
+        for (int a = 0; a < 3; ++a) {
+            float seen = LQ_ParticleProjectedArea((const float (*)[3][3])faces, faces_count, axes[a]);
+            average += seen/3; widest = fmaxf(widest, seen);
+        }
+        mean += average/4096;
+    }
+    for (uint32_t n = 4; n <= 8; n += 2) CHECK(shapes[n] > 1100 && shapes[n] < 1650);
+    CHECK(mean > 0.2f && mean < 0.3f); /* like the flakes, about half of Classic's 0.5 */
+    CHECK(widest > 0.4f); /* some views exceed the cap, which the renderer applies */
+    /* Droplets: closed, outward-wound unit spheres; discs no larger than Classic's triangle. */
+    for (int fine = 0; fine < 2; ++fine) {
+        const float (*sphere)[3][3];
+        uint32_t sphere_faces = LQ_ParticleSphere(fine, &sphere);
+        CHECK(sphere_faces == (fine ? 80u : 20u));
+        float closure[3] = {0};
+        for (uint32_t f = 0; f < sphere_faces; ++f) {
+            float u[3], v[3], n[3];
+            for (int k = 0; k < 3; ++k) { u[k] = sphere[f][1][k]-sphere[f][0][k]; v[k] = sphere[f][2][k]-sphere[f][0][k]; }
+            n[0] = u[1]*v[2]-u[2]*v[1]; n[1] = u[2]*v[0]-u[0]*v[2]; n[2] = u[0]*v[1]-u[1]*v[0];
+            CHECK(n[0]*sphere[f][0][0]+n[1]*sphere[f][0][1]+n[2]*sphere[f][0][2] > 0);
+            for (int k = 0; k < 3; ++k) closure[k] += n[k];
+            for (int c = 0; c < 3; ++c)
+                CHECK(fabsf(sphere[f][c][0]*sphere[f][c][0]+sphere[f][c][1]*sphere[f][c][1]+sphere[f][c][2]*sphere[f][c][2]-1) < 0.0001f);
+        }
+        CHECK(fabsf(closure[0]) < 0.0001f && fabsf(closure[1]) < 0.0001f && fabsf(closure[2]) < 0.0001f);
+    }
+    for (uint32_t seed = 0; seed < 4096; ++seed) {
+        float r = LQ_ParticleDropRadius(seed);
+        CHECK(r == LQ_ParticleDropRadius(seed) && 3.14159265f*r*r >= 0.15f - 0.0001f && 3.14159265f*r*r <= 0.35f + 0.0001f);
+    }
+    puts("PASS stable convex 3-6 sided particle flakes, varied scale up to Classic's size, closed convex tumbling 3D particles, spherical droplets and continuous beam-light coverage");
     return 0;
 }
 /* A closed 256-unit white room lit from its center: one wall per BSP node,

@@ -60,7 +60,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define pt_type				40
 #define pt_emissive			44
 #define pt_visual_seed			48
-#define pt_size				52
+#define pt_liquid			52
+#define pt_size				56
 
 #define PARTICLE_Z_CLIP	8.0
 

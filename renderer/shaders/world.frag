@@ -217,6 +217,8 @@ vec4 effectProbe(sampler3D probes, float blocks, float base, vec3 point, vec3 n,
 void main() {
     int flags = int(surface.parameters.y);
     bool diffuse_effect = lights.parameters.y != 0u && (flags & 128) != 0;
+    // Solid (3D) particles take the effect colour but face lights by their normals.
+    bool lit_effect = diffuse_effect || (lights.parameters.y != 0u && (flags & 512) != 0);
     vec3 effect_light = vec3(0.0);
     vec2 sample_uv = uv;
     float index_value, grade = 0;
@@ -342,7 +344,7 @@ void main() {
     // Resolve colors before interpolation. Sky, masks and UI keep level zero.
     if ((flags & 9) == 0)
         color = filteredColor(sample_uv, dx, dy, grade);
-    if (diffuse_effect) {
+    if (lit_effect) {
         // Unlit blood, smoke and bubbles go dark even if their palette entries
         // belong to Quake's fullbright range. Emission follows effect provenance.
         // Row 32 is the palette at Quake's normal brightness (128), the level

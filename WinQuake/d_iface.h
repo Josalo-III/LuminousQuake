@@ -49,6 +49,7 @@ typedef struct particle_s
 	ptype_t		type;
 	int			emissive; /* effect provenance, independent of palette color */
 	unsigned int visual_seed;
+	int			liquid; /* blood, poison, lava or tar: Luminous draws droplets */
 } particle_t;
 
 #define PARTICLE_Z_CLIP	8.0

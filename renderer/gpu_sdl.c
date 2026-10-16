@@ -536,7 +536,7 @@ int LQ_GPUFrame(lq_gpu *g, const lq_frame *f, char *error, size_t size)
     g->frame_caster_count = 0;
     for (uint32_t i = 0; i < f->draw_count; ++i) {
         lq_draw d = f->draws[i];
-        if (d.flags & ~(LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_MODEL|LQ_SURFACE_MASKED|LQ_SURFACE_WEAPON|LQ_SURFACE_ACTOR|LQ_SURFACE_DIFFUSE_EFFECT|LQ_SURFACE_NOSHADOW) ||
+        if (d.flags & ~(LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_MODEL|LQ_SURFACE_MASKED|LQ_SURFACE_WEAPON|LQ_SURFACE_ACTOR|LQ_SURFACE_DIFFUSE_EFFECT|LQ_SURFACE_SOLID_EFFECT|LQ_SURFACE_NOSHADOW) ||
             d.material >= f->material_count || d.first_index > f->index_count ||
             d.index_count > f->index_count - d.first_index || !d.index_count || d.index_count % 3) {
             SDL_SetError("invalid frame triangle range"); return Error(error, size, "GPU frame draws");
@@ -551,7 +551,7 @@ int LQ_GPUFrame(lq_gpu *g, const lq_frame *f, char *error, size_t size)
         /* Actors and moving brush faces cast; the view weapon, particles,
          * sprites, flames and liquids do not. */
         int brush = !(d.flags & LQ_SURFACE_MODEL), actor = (d.flags & LQ_SURFACE_ACTOR) != 0;
-        if ((brush || actor) && !(d.flags & (LQ_SURFACE_WEAPON|LQ_SURFACE_MASKED|LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_DIFFUSE_EFFECT|LQ_SURFACE_NOSHADOW))) {
+        if ((brush || actor) && !(d.flags & (LQ_SURFACE_WEAPON|LQ_SURFACE_MASKED|LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_DIFFUSE_EFFECT|LQ_SURFACE_SOLID_EFFECT|LQ_SURFACE_NOSHADOW))) {
             struct lq_caster *c = &g->frame_casters[g->frame_caster_count++];
             c->draw = i;
             memcpy(c->min, g->frame_bounds[i], sizeof(c->min)); memcpy(c->max, g->frame_bounds[i] + 3, sizeof(c->max));

@@ -179,10 +179,10 @@ int LQ_RenderGPUView(void)
     CaptureView();
     return 1;
 }
-int LQ_RenderGPUParticle(const float origin[3], int color, int emissive, unsigned int seed)
+int LQ_RenderGPUParticle(const float origin[3], int color, int emissive, int liquid, unsigned int seed)
 {
     if (!direct_frame) return 0;
-    LQ_EntitiesParticle(origin, color, emissive, seed); return 1;
+    LQ_EntitiesParticle(origin, color, emissive, liquid, seed); return 1;
 }
 void LQ_RenderUIRegion(int x, int y, int width, int height, const byte *pixels, int stride, int transparent)
 {

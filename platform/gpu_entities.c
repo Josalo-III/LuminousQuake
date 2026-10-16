@@ -19,7 +19,7 @@ static lq_frame frame;
 static lq_material materials[4095];
 static struct { const void *model; uint32_t offset; int translated; byte colors[256]; } keys[4095];
 static uint32_t owned_start, particle_material;
-static int luminous_frame;
+static int luminous_frame, solid_particles;
 static uint8_t particle_pixels[256];
 static void Reserve(uint32_t count)
 {
@@ -77,6 +77,7 @@ void LQ_EntitiesBegin(const lq_scene *world)
 {
     frame.vertex_count = frame.index_count = frame.draw_count = 0;
     luminous_frame = Cvar_VariableValue("lq_renderer") == 2;
+    solid_particles = luminous_frame && Cvar_VariableValue("lq_particles") != 0;
     if (!frame.material_count) {
         if (world->material_count >= 4094) Sys_Error("Too many world materials");
         for (uint32_t i = 0; i < world->material_count; ++i) {
@@ -386,10 +387,44 @@ void LQ_EntitiesBuild(const lq_scene *world)
         cl.stats[STAT_HEALTH] > 0 && !cl.intermission) Alias(&cl.viewent, 1);
     currententity = &cl_entities[0];
 }
-void LQ_EntitiesParticle(const float origin[3], int color, int emissive, unsigned int seed)
+void LQ_EntitiesParticle(const float origin[3], int color, int emissive, int liquid, unsigned int seed)
 {
     vec3_t delta; VectorSubtract(origin, r_origin, delta);
     float distance = DotProduct(delta, vpn), size = distance < 20 ? 1.5f : 1.5f*(1+distance*0.004f);
+    if (solid_particles && liquid) {
+        /* Droplets: smooth-shaded spheres, finer when near. */
+        const float (*sphere)[3][3];
+        uint32_t count = LQ_ParticleSphere(distance < 96, &sphere);
+        float radius = size*LQ_ParticleDropRadius(seed);
+        Draw(count*3, particle_material, LQ_SURFACE_MODEL|
+            (emissive ? 0 : LQ_SURFACE_ACTOR|LQ_SURFACE_SOLID_EFFECT));
+        for (uint32_t f = 0; f < count; ++f) for (int c = 0; c < 3; ++c) {
+            lq_vertex *v = &vertices[frame.vertex_count++]; memset(v, 0, sizeof(*v));
+            for (int j = 0; j < 3; ++j) { v->position[j] = origin[j] + radius*sphere[f][c][j]; v->normal[j] = sphere[f][c][j]; }
+            v->uv[0] = ((color & 255)+0.5f)/256; v->uv[1] = 0.5f;
+        }
+        return;
+    }
+    if (solid_particles) {
+        /* Lit by their face normals like actors. A tumbling solid's silhouette
+         * stays within Classic's triangle, the flakes' cap. */
+        float faces[LQ_PARTICLE_MAX_FACES][3][3], n[3];
+        uint32_t count = LQ_ParticleSolid(seed, cl.time, faces);
+        float area = LQ_ParticleProjectedArea((const float (*)[3][3])faces, count, vpn);
+        if (area > 0.5f) size *= sqrtf(0.5f/area);
+        Draw(count*3, particle_material, LQ_SURFACE_MODEL|
+            (emissive ? 0 : LQ_SURFACE_ACTOR|LQ_SURFACE_SOLID_EFFECT));
+        for (uint32_t f = 0; f < count; ++f) {
+            vec3_t u, w; VectorSubtract(faces[f][1], faces[f][0], u); VectorSubtract(faces[f][2], faces[f][0], w);
+            CrossProduct(u, w, n); VectorNormalize(n);
+            for (int c = 0; c < 3; ++c) {
+                lq_vertex *v = &vertices[frame.vertex_count++]; memset(v, 0, sizeof(*v));
+                for (int j = 0; j < 3; ++j) { v->position[j] = origin[j] + size*faces[f][c][j]; v->normal[j] = n[j]; }
+                v->uv[0] = ((color & 255)+0.5f)/256; v->uv[1] = 0.5f;
+            }
+        }
+        return;
+    }
     if (luminous_frame) {
         float corners[LQ_PARTICLE_MAX_SIDES][2];
         uint32_t sides = LQ_ParticleCorners(seed, corners), count = (sides-2)*3;

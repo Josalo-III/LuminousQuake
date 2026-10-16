@@ -13,7 +13,8 @@ enum { LQ_SURFACE_SKY = 1, LQ_SURFACE_WATER = 2, LQ_SURFACE_MODEL = 4,
        LQ_SURFACE_ACTOR = 32, /* model lit by Luminous lights/probes; Classic uses shade */
        /* 64 is reserved for the GPU's submerged-world-face flag. */
        LQ_SURFACE_DIFFUSE_EFFECT = 128, /* small, unoriented lit particles/sprites */
-       LQ_SURFACE_NOSHADOW = 256 /* self-lit projectiles must not occlude their own source */ };
+       LQ_SURFACE_NOSHADOW = 256, /* self-lit projectiles must not occlude their own source */
+       LQ_SURFACE_SOLID_EFFECT = 512 /* small lit 3D particles: effect colour, oriented normals */ };
 typedef struct { lq_image indices; char name[17]; uint32_t resource_id; } lq_material;
 typedef struct {
     uint32_t first_index, index_count, material, flags;

@@ -5,7 +5,7 @@
 void LQ_EntitiesReset(void);
 void LQ_EntitiesBegin(const lq_scene *world);
 void LQ_EntitiesBuild(const lq_scene *world);
-void LQ_EntitiesParticle(const float origin[3], int color, int emissive, unsigned int seed);
+void LQ_EntitiesParticle(const float origin[3], int color, int emissive, int liquid, unsigned int seed);
 const lq_frame *LQ_EntitiesFrame(void);
 uint32_t LQ_AnimatedMaterial(const lq_scene *world, texture_t *texture);
 /* Luminous: for a light whose static flame model sits at origin, its current

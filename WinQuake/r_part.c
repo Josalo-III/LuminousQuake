@@ -85,6 +85,7 @@ void R_DarkFieldParticles (entity_t *ent)
 					return;
 				p = free_particles;
 				p->emissive = 1;
+				p->liquid = 0;
 				free_particles = p->next;
 				p->next = active_particles;
 				active_particles = p;
@@ -163,6 +164,7 @@ avelocities[0][i] = (rand()&255) * 0.01;
 			return;
 		p = free_particles;
 		p->emissive = 1;
+		p->liquid = 0;
 		free_particles = p->next;
 		p->next = active_particles;
 		active_particles = p;
@@ -232,6 +234,7 @@ void R_ReadPointFile_f (void)
 		}
 		p = free_particles;
 		p->emissive = 1;
+		p->liquid = 0;
 		free_particles = p->next;
 		p->next = active_particles;
 		active_particles = p;
@@ -291,6 +294,7 @@ void R_ParticleExplosion (vec3_t org)
 			return;
 		p = free_particles;
 		p->emissive = 1;
+		p->liquid = 0;
 		free_particles = p->next;
 		p->next = active_particles;
 		active_particles = p;
@@ -337,6 +341,7 @@ void R_ParticleExplosion2 (vec3_t org, int colorStart, int colorLength)
 			return;
 		p = free_particles;
 		p->emissive = 1;
+		p->liquid = 0;
 		free_particles = p->next;
 		p->next = active_particles;
 		active_particles = p;
@@ -371,6 +376,7 @@ void R_BlobExplosion (vec3_t org)
 			return;
 		p = free_particles;
 		p->emissive = 0;
+		p->liquid = 1; /* the Spawn bursts into tar */
 		free_particles = p->next;
 		p->next = active_particles;
 		active_particles = p;
@@ -421,6 +427,8 @@ void R_RunParticleEffect (vec3_t org, vec3_t dir, int color, int count)
 			return;
 		p = free_particles;
 		p->emissive = count == 1024 || color == 0 || color == 20 || color == 226;
+		/* QuakeC particle(): red is blood, green poison. */
+		p->liquid = !p->emissive && ((color & ~15) == 64 || (color & ~15) == 48);
 		free_particles = p->next;
 		p->next = active_particles;
 		active_particles = p;
@@ -485,6 +493,7 @@ void R_LavaSplash (vec3_t org)
 					return;
 				p = free_particles;
 				p->emissive = 1;
+				p->liquid = 1;
 				free_particles = p->next;
 				p->next = active_particles;
 				active_particles = p;
@@ -528,6 +537,7 @@ void R_TeleportSplash (vec3_t org)
 					return;
 				p = free_particles;
 				p->emissive = 1;
+				p->liquid = 0;
 				free_particles = p->next;
 				p->next = active_particles;
 				active_particles = p;
@@ -577,6 +587,7 @@ void R_RocketTrail (vec3_t start, vec3_t end, int type)
 			return;
 		p = free_particles;
 		p->emissive = type == 0 || type == 3 || type == 5 || type == 6;
+		p->liquid = type == 2 || type == 3 || type == 4; /* blood, Scrag poison */
 		free_particles = p->next;
 		p->next = active_particles;
 		active_particles = p;
