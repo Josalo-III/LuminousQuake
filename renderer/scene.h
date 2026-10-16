@@ -208,6 +208,30 @@ int LQ_SceneLiquid(const lq_scene *scene, const float point[3]);
 typedef void (*lq_range_fn)(void *context, size_t begin, size_t end);
 typedef void (*lq_range_runner)(size_t count, size_t grain, lq_range_fn function, void *context);
 int LQ_SceneComputeBounce(lq_scene *scene, uint32_t rays, lq_range_runner run, char *error, size_t size);
+/* Optional ray tracing for bounce's passes that walk the BSP per sample. A
+ * callback returning 0 leaves that pass to the CPU.
+ * - sky: fraction of `rays` cosine-weighted rays reaching sky.
+ * - sun: fraction of rays across the sun's penumbra reaching sky, for samples
+ *   on faces turned toward it (0 elsewhere).
+ * - direct: light arriving from the scene's unoccluded light sources (falloff,
+ *   incidence and cone, times light color; not yet the texture's).
+ * - gather: summed exitance of the faces `rays` cosine-weighted rays hit
+ *   (bilinear from `emit`, before scaling).
+ * Visibilities are 0 for buried samples. Entries list up to LQ_BOUNCE_ENTRIES
+ * styles per sample in the order first met, then entries of style 255. */
+#define LQ_BOUNCE_ENTRIES 16
+typedef struct { uint32_t style; float rgb[3]; } lq_bounce_entry;
+typedef struct {
+    void *context;
+    int (*sky)(void *context, const lq_scene *scene, uint32_t rays, float *visible);
+    int (*sun)(void *context, const lq_scene *scene, float *visible);
+    int (*direct)(void *context, const lq_scene *scene, lq_bounce_entry *entries);
+    int (*gather)(void *context, const lq_scene *scene, uint32_t rays, const float (*emit)[4][3],
+        const uint8_t (*emit_styles)[4], lq_bounce_entry *entries);
+    uint32_t passes; /* set by LQ_SceneComputeBounceTraced: passes the tracer completed */
+} lq_bounce_tracer;
+int LQ_SceneComputeBounceTraced(lq_scene *scene, uint32_t rays, lq_range_runner run,
+    lq_bounce_tracer *tracer, char *error, size_t size);
 /* Per-frame bounce from gameplay lights into the probe grid, near those lights
  * only: rays from each probe find surfaces they light (BSP-occluded) and gather
  * the reflected light. `output` holds size[0]*size[1]*size[2]*6 RGBA texels,

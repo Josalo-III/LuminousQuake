@@ -7,7 +7,10 @@
  * sky-lit surfaces' reflection joins the style 0 bounce. An ericw-tools sun
  * is a directional light: each sample keeps the fraction of rays across its
  * penumbra that reach sky, and sunlit surfaces reflect into style 0 too.
- * GPL-2.0-or-later. */
+ * An lq_bounce_tracer may trace the sky, sun, direct-light and gather passes
+ * instead (the GPU's renderer/shaders/bounce.comp follows this file); this
+ * code then only keeps each face's styles. Every pass remains here as the
+ * reference and the fallback. GPL-2.0-or-later. */
 #include "scene.h"
 #include <math.h>
 #include <stdio.h>
@@ -29,6 +32,8 @@ typedef struct {
     float *sky; /* sky visibility per sample, 0-1 */
     uint32_t rays;
     float *sun; /* sun visibility per sample, 0-1; NULL without a sun */
+    const lq_bounce_entry *entries; /* traced gather per sample, or NULL to trace here */
+    const lq_bounce_entry *direct; /* traced light per sample, or NULL to trace here */
 } bounce_context;
 
 static float Dot(const float a[3], const float b[3]) { return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
@@ -155,7 +160,19 @@ static void EmitFaces(void *opaque, size_t begin, size_t end)
         style_energy candidates[CANDIDATE_STYLES]; uint32_t candidate_count = 0;
         const lq_draw *draw = &s->draws[f];
         const float *normal = s->vertices[s->indices[draw->first_index]].normal;
-        for (uint32_t l = 0; l < s->light_source_count; ++l) {
+        for (uint32_t i = 0; c->direct && i < samples; ++i) {
+            if (!ValidSample(s->sample_positions[grid->first_sample + i])) continue;
+            const lq_bounce_entry *e = c->direct + (size_t)(grid->first_sample + i) * LQ_BOUNCE_ENTRIES;
+            for (int j = 0; j < LQ_BOUNCE_ENTRIES && e[j].style < 255; ++j) {
+                uint32_t slot = Candidate(candidates, &candidate_count, (uint8_t)e[j].style);
+                if (slot == UINT32_MAX) continue;
+                for (int k = 0; k < 3; ++k) {
+                    float exitance = e[j].rgb[k] * grid->albedo[k];
+                    accumulate[i][slot][k] += exitance; candidates[slot].energy += exitance;
+                }
+            }
+        }
+        for (uint32_t l = 0; !c->direct && l < s->light_source_count; ++l) {
             const lq_light_source *light = &s->light_sources[l];
             if (s->light_visibility && !(s->light_visibility[f * s->light_visibility_words + l / 32] & (1u << (l % 32)))) continue;
             float range = LQ_LightSourceRange(light);
@@ -252,6 +269,21 @@ static void CosineDirection(const float normal[3], const float tangent[3], const
     float a = radius * cosf(angle), b = radius * sinf(angle), h = sqrtf(fmaxf(1 - u, 0));
     for (int k = 0; k < 3; ++k) direction[k] = tangent[k]*a + bitangent[k]*b + normal[k]*h;
 }
+/* Buried samples borrow the nearest valid neighbour, as bounce does. */
+static void BorrowSky(const lq_scene *s, const lq_face_samples *grid, float *visible)
+{
+    uint32_t samples = (uint32_t)grid->width * grid->height;
+    for (uint32_t i = 0; i < samples; ++i) {
+        if (ValidSample(s->sample_positions[grid->first_sample + i])) continue;
+        int x = (int)(i % grid->width), y = (int)(i / grid->width), best = -1, best_distance = 1 << 30;
+        for (uint32_t j = 0; j < samples; ++j) {
+            if (!ValidSample(s->sample_positions[grid->first_sample + j])) continue;
+            int dx = (int)(j % grid->width) - x, dy = (int)(j / grid->width) - y;
+            if (dx*dx + dy*dy < best_distance) { best_distance = dx*dx + dy*dy; best = (int)j; }
+        }
+        if (best >= 0) visible[i] = visible[best];
+    }
+}
 /* Pass 0: sky visibility. With cosine-weighted rays the fraction reaching sky
  * is the irradiance from a uniform sky of unit radiance, divided by pi. */
 static void SkyFaces(void *opaque, size_t begin, size_t end)
@@ -279,17 +311,16 @@ static void SkyFaces(void *opaque, size_t begin, size_t end)
             }
             visible[i] = (float)hits / c->rays;
         }
-        /* Buried samples borrow the nearest valid neighbour, as bounce does. */
-        for (uint32_t i = 0; i < samples; ++i) {
-            if (ValidSample(s->sample_positions[grid->first_sample + i])) continue;
-            int x = (int)(i % grid->width), y = (int)(i / grid->width), best = -1, best_distance = 1 << 30;
-            for (uint32_t j = 0; j < samples; ++j) {
-                if (!ValidSample(s->sample_positions[grid->first_sample + j])) continue;
-                int dx = (int)(j % grid->width) - x, dy = (int)(j / grid->width) - y;
-                if (dx*dx + dy*dy < best_distance) { best_distance = dx*dx + dy*dy; best = (int)j; }
-            }
-            if (best >= 0) visible[i] = visible[best];
-        }
+        BorrowSky(s, grid, visible);
+    }
+}
+/* Pass 0 after GPU tracing: only the borrowing. */
+static void SkyBorrowFaces(void *opaque, size_t begin, size_t end)
+{
+    bounce_context *c = opaque;
+    for (size_t f = begin; f < end; ++f) {
+        const lq_face_samples *grid = &c->scene->face_samples[f];
+        if (grid->width) BorrowSky(c->scene, grid, c->sky + grid->first_sample);
     }
 }
 /* Bilinear per-sample value at a hit point for one of a face's style slots. */
@@ -335,6 +366,15 @@ static void GatherFaces(void *opaque, size_t begin, size_t end)
         for (uint32_t i = 0; i < samples; ++i) {
             const float *point = s->sample_positions[grid->first_sample + i];
             if (!ValidSample(point)) continue;
+            if (c->entries) {
+                const lq_bounce_entry *e = c->entries + (size_t)(grid->first_sample + i) * LQ_BOUNCE_ENTRIES;
+                for (int j = 0; j < LQ_BOUNCE_ENTRIES && e[j].style < 255; ++j) {
+                    uint32_t at = Candidate(candidates, &candidate_count, (uint8_t)e[j].style);
+                    if (at == UINT32_MAX) continue;
+                    for (int k = 0; k < 3; ++k) { accumulate[i][at][k] += e[j].rgb[k]; candidates[at].energy += e[j].rgb[k]; }
+                }
+                continue;
+            }
             uint32_t seed = Hash((uint32_t)(grid->first_sample + i) * 0x9e3779b9u);
             for (uint32_t r = 0; r < c->rays; ++r) {
                 float direction[3], target[3], hit[3];
@@ -746,11 +786,15 @@ static void SkyLight(lq_scene *s)
     if (weight > 0) for (int k = 0; k < 3; ++k) s->sky_light[k] = (float)(sum[k] / weight * 128.0 * LQ_SKY_LIGHT_GAIN);
 }
 int LQ_SceneComputeBounce(lq_scene *s, uint32_t rays, lq_range_runner run, char *error, size_t size)
+{ return LQ_SceneComputeBounceTraced(s, rays, run, NULL, error, size); }
+int LQ_SceneComputeBounceTraced(lq_scene *s, uint32_t rays, lq_range_runner run,
+    lq_bounce_tracer *tracer, char *error, size_t size)
 {
     if (!s || !s->face_samples || !s->bsp_nodes || !s->leaf_contents || !rays || rays > 4096 || !s->atlas_height) {
         snprintf(error, size, "bounce needs sample grids and a BSP"); return 0;
     }
     if (!run) run = Serial;
+    if (tracer) tracer->passes = 0;
     bounce_context c = {s, NULL, NULL, NULL, NULL, NULL, rays};
     size_t samples = s->sample_count ? s->sample_count : 1;
     c.emit = calloc(samples, sizeof(*c.emit)); c.gather = calloc(samples, sizeof(*c.gather));
@@ -765,18 +809,29 @@ int LQ_SceneComputeBounce(lq_scene *s, uint32_t rays, lq_range_runner run, char 
     memset(c.emit_styles, 255, s->draw_count * sizeof(*c.emit_styles));
     memset(c.gather_styles, 255, s->draw_count * sizeof(*c.gather_styles));
     SkyLight(s);
-    if (s->sky_light[0] + s->sky_light[1] + s->sky_light[2] > 0) run(s->draw_count, 8, SkyFaces, &c);
-    else { free(c.sky); c.sky = NULL; }
+    if (s->sky_light[0] + s->sky_light[1] + s->sky_light[2] > 0) {
+        if (tracer && tracer->sky && tracer->sky(tracer->context, s, rays, c.sky)) {
+            ++tracer->passes; run(s->draw_count, 8, SkyBorrowFaces, &c);
+        } else run(s->draw_count, 8, SkyFaces, &c);
+    } else { free(c.sky); c.sky = NULL; }
     if (s->sun_light[0] + s->sun_light[1] + s->sun_light[2] > 0) {
         c.sun = calloc(samples, sizeof(*c.sun));
         if (!c.sun) {
             free(c.emit); free(c.gather); free(c.sky); free(c.emit_styles); free(c.gather_styles); free(pixels);
             snprintf(error, size, "cannot allocate sun visibility"); return 0;
         }
-        run(s->draw_count, 8, SunFaces, &c);
+        if (tracer && tracer->sun && tracer->sun(tracer->context, s, c.sun)) ++tracer->passes;
+        else run(s->draw_count, 8, SunFaces, &c);
     }
+    lq_bounce_entry *direct = tracer && tracer->direct ? malloc(samples * LQ_BOUNCE_ENTRIES * sizeof(*direct)) : NULL;
+    if (direct && tracer->direct(tracer->context, s, direct)) { c.direct = direct; ++tracer->passes; }
     run(s->draw_count, 16, EmitFaces, &c);
+    free(direct); c.direct = NULL;
+    lq_bounce_entry *entries = tracer && tracer->gather ? malloc(samples * LQ_BOUNCE_ENTRIES * sizeof(*entries)) : NULL;
+    if (entries && tracer->gather(tracer->context, s, rays, (const float (*)[4][3])c.emit,
+            (const uint8_t (*)[4])c.emit_styles, entries)) { c.entries = entries; ++tracer->passes; }
     run(s->draw_count, 8, GatherFaces, &c);
+    free(entries); c.entries = NULL;
     /* Stack four style layers vertically, each with the lightmap's layout and
      * its one-texel clamped border for filtering. Values are brightness units. */
     uint32_t width = s->lightmap.width, layer = s->atlas_height;

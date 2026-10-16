@@ -122,9 +122,11 @@ void LQ_RenderBegin(void)
         if (!LQ_QuakeSceneFromWorld(&map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }
         if (enhanced) {
             double started = Sys_FloatTime();
-            if (LQ_SceneComputeBounce(&map_scene, 64, LQ_JobsRunRange, error, sizeof(error)))
-                Con_Printf("Enhanced bounce: %u samples, sky light %.0f %.0f %.0f, in %.2f s.\n", map_scene.sample_count,
-                    map_scene.sky_light[0], map_scene.sky_light[1], map_scene.sky_light[2], Sys_FloatTime() - started);
+            lq_bounce_tracer tracer = LQ_GPUBounceTracer(gpu);
+            if (LQ_SceneComputeBounceTraced(&map_scene, 64, LQ_JobsRunRange, &tracer, error, sizeof(error)))
+                Con_Printf("Enhanced bounce: %u samples, sky light %.0f %.0f %.0f, in %.2f s (%s rays).\n", map_scene.sample_count,
+                    map_scene.sky_light[0], map_scene.sky_light[1], map_scene.sky_light[2], Sys_FloatTime() - started,
+                    tracer.passes ? "GPU" : "CPU");
             else Con_Printf("Enhanced bounce unavailable: %s\n", error);
         }
         if (!LQ_GPUUpload(gpu, &map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }

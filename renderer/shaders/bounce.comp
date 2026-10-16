@@ -1,0 +1,331 @@
+#version 450
+// Enhanced bounce rays through the world BSP, mirroring renderer/bounce.c: the
+// same ray directions, BSP walk (TraceFace, without recursion) and polygon
+// containment. Per sample, mode 0 stores the fraction of cosine-weighted rays
+// reaching sky; mode 1 sums, per light style, the exitance of the faces its
+// rays hit; mode 2 stores the fraction of rays toward the sun that reach sky;
+// mode 3 sums, per style, the light arriving from each unoccluded map light
+// (falloff, incidence and cone; the CPU applies the texture's color).
+// GPL-2.0-or-later.
+layout(local_size_x = 64) in;
+// SDL numbers Metal buffers as uniforms, read-only storage, then read-write
+// storage; SPIR-V keeps each kind in its own descriptor set from zero.
+#ifdef LQ_MSL
+#define READONLY(n) (n + 1)
+#define READWRITE(n) (n + 3)
+#else
+#define READONLY(n) n
+#define READWRITE(n) n
+#endif
+// Words: BSP nodes (normal, dist, children, first face, face count), leaf
+// contents, faces (FACE_WORDS each), vertex positions, samples (xyz, face),
+// lights (LIGHT_WORDS each) and per-face light reach bits.
+layout(std430, set = 0, binding = READONLY(0)) readonly buffer Scene { uint words[]; } scene;
+layout(std430, set = 0, binding = READONLY(1)) readonly buffer Emit { float values[]; } emit; // [sample][4 slots][rgb]
+layout(std430, set = 1, binding = READWRITE(0)) buffer Result { uint words[]; } result;
+layout(std140, set = 2, binding = 0) uniform Parameters {
+    uvec4 job;    // mode, first sample, sample count, rays
+    uvec4 tree;   // node offset, node count, leaf offset, leaf count
+    uvec4 tables; // face offset, face count, vertex offset, sample offset
+    uvec4 lights; // light offset, light count, reach offset, reach words per face (0: every light)
+    vec4 sun;     // direction sunlight travels, penumbra in degrees
+} parameters;
+
+const uint NODE_WORDS = 8u, FACE_WORDS = 20u, LIGHT_WORDS = 20u, ENTRIES = 16u, NO_FACE = 0xffffffffu;
+const uint LEAF_SOLID = 1u, LEAF_SKY = 2u;
+const int TRACE_SOLID = -1, TRACE_SKY = -2;
+const float RAY_LENGTH = 4096.0;
+// Face words: 0 kind (0 skipped, 1 lit, 2 sky), 1 first vertex, 2 vertex count,
+// 3 emit styles (a byte per slot), 4-6 normal, 7 sample width | height << 16,
+// 8 first sample, 9-12 s axis and offset, 13-16 t axis and offset, 17-18 mins.
+// Light words: 0-2 origin, 3 range, 4 light value, 5 attenuation, 6 formula,
+// 7 angle scale, 8 output scale, 9-11 color, 12 spotlight, 13-15 spot axis,
+// 16 outer cosine, 17 inner cosine, 18 emitter radius, 19 style.
+
+uint Word(uint i) { return scene.words[i]; }
+float Float(uint i) { return uintBitsToFloat(scene.words[i]); }
+vec3 Vector(uint i) { return vec3(Float(i), Float(i + 1u), Float(i + 2u)); }
+uint FaceRecord(uint face) { return parameters.tables.x + face * FACE_WORDS; }
+vec3 Vertex(uint index) { return Vector(parameters.tables.z + index * 3u); }
+
+int LeafResult(int node)
+{
+    uint leaf = uint(-(node + 1));
+    uint contents = leaf < parameters.tree.w ? Word(parameters.tree.z + leaf) : LEAF_SOLID;
+    if (contents != LEAF_SOLID && contents != LEAF_SKY) return 0;
+    return contents == LEAF_SKY ? TRACE_SKY : TRACE_SOLID;
+}
+// Convex face containment on the face plane (vertices are a triangle fan).
+bool FaceContains(uint face, vec3 point)
+{
+    uint record = FaceRecord(face), base = Word(record + 1u), count = Word(record + 2u);
+    vec3 normal = Vector(record + 4u);
+    int inside = 0, outside = 0;
+    for (uint i = 0u; i < count; ++i) {
+        vec3 a = Vertex(base + i), b = Vertex(base + (i + 1u) % count);
+        vec3 edge = b - a, to = point - a;
+        float side = dot(cross(edge, to), normal), tolerance = 0.01 * sqrt(dot(edge, edge));
+        inside += side > tolerance ? 1 : 0; outside += side < -tolerance ? 1 : 0;
+    }
+    return !(inside > 0 && outside > 0);
+}
+// First lit face whose front the ray meets (1), solid (-1), sky (-2) or nothing
+// (0). Splits wait on a stack: after the near side, the node's faces at the
+// split point, then the far side, as bounce.c's recursion visits them. A
+// waiting far side ends where the split below it on the stack began (or at the
+// ray's end), so only the node, side and split point are kept.
+const int STACK = 48;
+int Trace(vec3 a, vec3 b, vec3 direction, out uint face, out vec3 hit)
+{
+    uint pending[STACK]; // node * 2 + side
+    float middle_x[STACK], middle_y[STACK], middle_z[STACK];
+    vec3 end = b;
+    int depth = 0, node = 0;
+    face = NO_FACE; hit = vec3(0.0);
+    for (uint steps = 0u; steps < 65536u; ++steps) {
+        if (node >= 0) {
+            if (uint(node) >= parameters.tree.y) return TRACE_SOLID;
+            uint at = parameters.tree.x + uint(node) * NODE_WORDS;
+            vec3 normal = Vector(at);
+            float dist = Float(at + 3u), da = dot(normal, a) - dist, db = dot(normal, b) - dist;
+            if (da >= 0.0 && db >= 0.0) { node = int(Word(at + 4u)); continue; }
+            if (da < 0.0 && db < 0.0) { node = int(Word(at + 5u)); continue; }
+            if (depth == STACK) return TRACE_SOLID;
+            float fraction = da / (da - db);
+            vec3 middle = a + fraction * (b - a);
+            uint side = da < 0.0 ? 1u : 0u;
+            pending[depth] = uint(node) * 2u + side;
+            middle_x[depth] = middle.x; middle_y[depth] = middle.y; middle_z[depth] = middle.z;
+            ++depth;
+            b = middle; node = int(Word(at + 4u + side));
+            continue;
+        }
+        int leaf = LeafResult(node);
+        if (leaf != 0) return leaf;
+        if (depth == 0) return 0;
+        --depth;
+        uint split = pending[depth] >> 1, side = pending[depth] & 1u;
+        vec3 middle = vec3(middle_x[depth], middle_y[depth], middle_z[depth]);
+        uint at = parameters.tree.x + split * NODE_WORDS;
+        uint first = Word(at + 6u), count = Word(at + 7u);
+        for (uint i = 0u; i < count; ++i) {
+            uint candidate = first + i, record = FaceRecord(candidate), kind = Word(record);
+            if (kind == 0u || dot(Vector(record + 4u), direction) >= 0.0) continue;
+            if (!FaceContains(candidate, middle)) continue;
+            if (kind == 2u) return TRACE_SKY;
+            face = candidate; hit = middle; return 1;
+        }
+        a = middle;
+        b = depth > 0 ? vec3(middle_x[depth - 1], middle_y[depth - 1], middle_z[depth - 1]) : end;
+        node = int(Word(at + 5u - side));
+    }
+    return TRACE_SOLID;
+}
+// True when no solid leaf lies on the segment: light passes through sky, as
+// LIGHT's TestLine stops only at solid (bounce.c's SegmentClear).
+bool SegmentClear(vec3 a, vec3 b)
+{
+    uint pending[STACK];
+    float middle_x[STACK], middle_y[STACK], middle_z[STACK];
+    vec3 end = b;
+    int depth = 0, node = 0;
+    for (uint steps = 0u; steps < 65536u; ++steps) {
+        if (node >= 0) {
+            if (uint(node) >= parameters.tree.y) return false;
+            uint at = parameters.tree.x + uint(node) * NODE_WORDS;
+            vec3 normal = Vector(at);
+            float dist = Float(at + 3u), da = dot(normal, a) - dist, db = dot(normal, b) - dist;
+            if (da >= 0.0 && db >= 0.0) { node = int(Word(at + 4u)); continue; }
+            if (da < 0.0 && db < 0.0) { node = int(Word(at + 5u)); continue; }
+            if (depth == STACK) return false;
+            float fraction = da / (da - db);
+            vec3 middle = a + fraction * (b - a);
+            uint side = da < 0.0 ? 1u : 0u;
+            pending[depth] = uint(node) * 2u + side;
+            middle_x[depth] = middle.x; middle_y[depth] = middle.y; middle_z[depth] = middle.z;
+            ++depth;
+            b = middle; node = int(Word(at + 4u + side));
+            continue;
+        }
+        uint leaf = uint(-(node + 1));
+        if (leaf >= parameters.tree.w || Word(parameters.tree.z + leaf) == LEAF_SOLID) return false;
+        if (depth == 0) return true;
+        --depth;
+        uint split = pending[depth] >> 1, side = pending[depth] & 1u;
+        a = vec3(middle_x[depth], middle_y[depth], middle_z[depth]);
+        b = depth > 0 ? vec3(middle_x[depth - 1], middle_y[depth - 1], middle_z[depth - 1]) : end;
+        node = int(Word(parameters.tree.x + split * NODE_WORDS + 5u - side));
+    }
+    return false;
+}
+uint Hash(uint x)
+{
+    x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x;
+}
+float Radical(uint bits) { return float(bitfieldReverse(bits)) * 2.3283064365386963e-10; }
+// Ray r of `rays` cosine-weighted directions, stratified and rotated per sample.
+vec3 CosineDirection(vec3 normal, vec3 tangent, vec3 bitangent, uint r, uint rays, uint seed)
+{
+    float u = (float(r) + 0.5) / float(rays) + float(seed & 0xffffu) / 65536.0;
+    float v = Radical(r) + float(seed >> 16) / 65536.0;
+    u -= floor(u); v -= floor(v);
+    float radius = sqrt(u), angle = 6.2831853 * v;
+    return tangent * (radius * cos(angle)) + bitangent * (radius * sin(angle)) + normal * sqrt(max(1.0 - u, 0.0));
+}
+vec3 EmitValue(uint sample_index, uint slot)
+{
+    uint i = (sample_index * 4u + slot) * 3u;
+    return vec3(emit.values[i], emit.values[i + 1u], emit.values[i + 2u]);
+}
+// Bilinear per-sample exitance at a hit point for one of a face's style slots.
+vec3 HitValue(uint face, vec3 hit, uint slot)
+{
+    uint record = FaceRecord(face), size = Word(record + 7u), first = Word(record + 8u);
+    int width = int(size & 0xffffu), height = int(size >> 16);
+    float u = (dot(hit, Vector(record + 9u)) + Float(record + 12u) - Float(record + 17u)) / 16.0;
+    float v = (dot(hit, Vector(record + 13u)) + Float(record + 16u) - Float(record + 18u)) / 16.0;
+    u = min(max(u, 0.0), float(width - 1)); v = min(max(v, 0.0), float(height - 1));
+    int x = int(u), y = int(v), x1 = x + 1 < width ? x + 1 : x, y1 = y + 1 < height ? y + 1 : y;
+    float fx = u - float(x), fy = v - float(y);
+    vec3 top = EmitValue(first + uint(y * width + x), slot) * (1.0 - fx) + EmitValue(first + uint(y * width + x1), slot) * fx;
+    vec3 bottom = EmitValue(first + uint(y1 * width + x), slot) * (1.0 - fx) + EmitValue(first + uint(y1 * width + x1), slot) * fx;
+    return top * (1.0 - fy) + bottom * fy;
+}
+void Basis(vec3 normal, out vec3 tangent, out vec3 bitangent)
+{
+    vec3 helper = abs(normal.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    tangent = normalize(cross(helper, normal)); bitangent = cross(normal, tangent);
+}
+// LIGHT/ericw-tools falloff (scene.c's LQ_LightFalloff).
+float Falloff(uint light, float distance)
+{
+    float value = Float(light + 4u), scaled = Float(light + 5u) * max(distance, 0.0);
+    uint formula = Word(light + 6u);
+    if (formula == 0u) return max(value - scaled, 0.0);
+    if (formula == 1u) return value * 128.0 / max(scaled, 1.0);
+    if (formula == 2u) return value * 16384.0 / max(scaled * scaled, 1.0);
+    if (formula == 3u) return value;
+    if (formula == 5u) return value * 16384.0 / ((scaled + 128.0) * (scaled + 128.0));
+    return 0.0;
+}
+// Spotlight weight with a blurred cone edge (scene.c's LQ_SpotFactor).
+float SpotFactor(vec3 toward, float distance, vec3 axis, float outer, float inner, float radius)
+{
+    float along = -dot(toward, axis), factor = 1.0;
+    if (outer > 0.01) {
+        float axial = distance * along, radial = distance * sqrt(max(1.0 - along * along, 0.0));
+        float edge = radial - axial * sqrt(max(1.0 - outer * outer, 0.0)) / outer, blur = 16.0 + radius;
+        float t = min(max((edge + blur) / (2.0 * blur), 0.0), 1.0);
+        factor = 1.0 - t * t * (3.0 - 2.0 * t);
+        if (along <= 0.0) factor = 0.0;
+    } else if (along <= outer) return 0.0;
+    if (inner > outer) {
+        float t = min(max((along - outer) / (inner - outer), 0.0), 1.0);
+        factor *= t * t * (3.0 - 2.0 * t);
+    }
+    return factor;
+}
+// Fraction of rays toward the sun, spread evenly over its penumbra disc, that
+// reach sky (bounce.c's SunVisibility).
+float SunVisibility(vec3 point, uint seed)
+{
+    vec3 toward = -parameters.sun.xyz, tangent, bitangent;
+    Basis(toward, tangent, bitangent);
+    float spread = tan(parameters.sun.w * 0.5 * 0.017453293), turn = float(seed & 0xffffu) / 65536.0;
+    uint rays = spread > 0.0 ? 16u : 1u, hits = 0u, face;
+    vec3 hit;
+    for (uint r = 0u; r < rays; ++r) {
+        float radius = sqrt((float(r) + 0.5) / float(rays)) * spread, angle = 6.2831853 * (Radical(r) + turn);
+        vec3 direction = toward + (tangent * cos(angle) + bitangent * sin(angle)) * (rays > 1u ? radius : 0.0);
+        direction /= sqrt(dot(direction, direction));
+        hits += Trace(point, point + direction * 16384.0, direction, face, hit) == TRACE_SKY ? 1u : 0u;
+    }
+    return float(hits) / float(rays);
+}
+// Adds `value` to a style's sum, keeping up to ENTRIES styles in the order met.
+void AddStyle(inout uint styles[ENTRIES], inout vec3 sums[ENTRIES], inout uint used, uint style, vec3 value)
+{
+    uint at = 0u;
+    while (at < used && styles[at] != style) ++at;
+    if (at == used) {
+        if (used == ENTRIES) return;
+        styles[used] = style; sums[used] = vec3(0.0); ++used;
+    }
+    sums[at] += value;
+}
+// Mode 3: light from every unoccluded map light reaching the face, per style.
+void DirectLight(uint own, vec3 point, vec3 normal, inout uint styles[ENTRIES], inout vec3 sums[ENTRIES], inout uint used)
+{
+    uint reach = parameters.lights.z + own * parameters.lights.w;
+    for (uint l = 0u; l < parameters.lights.y; ++l) {
+        if (parameters.lights.w != 0u && (Word(reach + l / 32u) & (1u << (l % 32u))) == 0u) continue;
+        uint light = parameters.lights.x + l * LIGHT_WORDS;
+        vec3 origin = Vector(light), toward = origin - point;
+        float distance = sqrt(dot(toward, toward));
+        if (distance >= Float(light + 3u) || distance < 0.001) continue;
+        toward /= distance;
+        float facing = dot(normal, toward), scale = Float(light + 7u);
+        if (facing <= 0.0) continue;
+        float value = Falloff(light, distance) * ((1.0 - scale) + scale * facing) * Float(light + 8u);
+        if (Word(light + 12u) != 0u)
+            value *= SpotFactor(toward, distance, Vector(light + 13u), Float(light + 16u), Float(light + 17u), Float(light + 18u));
+        if (value < 0.01 || !SegmentClear(origin, point)) continue;
+        AddStyle(styles, sums, used, Word(light + 19u), value * Vector(light + 9u));
+    }
+}
+// Mode 1: exitance of the faces cosine-weighted rays hit, per style.
+void Gather(uint sample_index, uint own, vec3 point, vec3 normal, inout uint styles[ENTRIES], inout vec3 sums[ENTRIES], inout uint used)
+{
+    vec3 tangent, bitangent, hit;
+    Basis(normal, tangent, bitangent);
+    uint rays = parameters.job.w, seed = Hash(sample_index * 0x9e3779b9u), face;
+    for (uint r = 0u; r < rays; ++r) {
+        vec3 direction = CosineDirection(normal, tangent, bitangent, r, rays, seed);
+        if (Trace(point, point + direction * RAY_LENGTH, direction, face, hit) != 1 || face == own) continue;
+        uint packed = Word(FaceRecord(face) + 3u);
+        for (uint slot = 0u; slot < 4u; ++slot) {
+            uint style = (packed >> (8u * slot)) & 255u;
+            if (style != 255u) AddStyle(styles, sums, used, style, HitValue(face, hit, slot));
+        }
+    }
+}
+// Mode 0: fraction of cosine-weighted rays reaching sky.
+float SkyVisibility(uint sample_index, vec3 point, vec3 normal)
+{
+    vec3 tangent, bitangent, hit;
+    Basis(normal, tangent, bitangent);
+    uint rays = parameters.job.w, seed = Hash(sample_index * 0x9e3779b9u ^ 0x632be5abu), hits = 0u, face;
+    for (uint r = 0u; r < rays; ++r) {
+        vec3 direction = CosineDirection(normal, tangent, bitangent, r, rays, seed);
+        hits += Trace(point, point + direction * RAY_LENGTH, direction, face, hit) == TRACE_SKY ? 1u : 0u;
+    }
+    return float(hits) / float(rays);
+}
+void main()
+{
+    uint local = gl_GlobalInvocationID.x;
+    if (local >= parameters.job.z) return;
+    uint mode = parameters.job.x, sample_index = parameters.job.y + local;
+    uint record = parameters.tables.w + sample_index * 4u, own = Word(record + 3u);
+    bool single = mode == 0u || mode == 2u; // one visibility per sample, else style entries
+    if (single) result.words[sample_index] = floatBitsToUint(0.0);
+    else for (uint j = 0u; j < ENTRIES; ++j) result.words[(sample_index * ENTRIES + j) * 4u] = 255u;
+    if (own == NO_FACE) return;
+    vec3 point = Vector(record), normal = Vector(FaceRecord(own) + 4u);
+    if (mode == 0u) { result.words[sample_index] = floatBitsToUint(SkyVisibility(sample_index, point, normal)); return; }
+    if (mode == 2u) {
+        if (dot(normal, parameters.sun.xyz) < 0.0)
+            result.words[sample_index] = floatBitsToUint(SunVisibility(point, Hash(sample_index * 0x85ebca6bu ^ 0x27d4eb2fu)));
+        return;
+    }
+    uint styles[ENTRIES]; vec3 sums[ENTRIES]; uint used = 0u;
+    if (mode == 3u) DirectLight(own, point, normal, styles, sums, used);
+    else Gather(sample_index, own, point, normal, styles, sums, used);
+    for (uint j = 0u; j < used; ++j) {
+        uint at = (sample_index * ENTRIES + j) * 4u;
+        result.words[at] = styles[j];
+        result.words[at + 1u] = floatBitsToUint(sums[j].x);
+        result.words[at + 2u] = floatBitsToUint(sums[j].y);
+        result.words[at + 3u] = floatBitsToUint(sums[j].z);
+    }
+}

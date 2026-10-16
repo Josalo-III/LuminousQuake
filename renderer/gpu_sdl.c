@@ -59,6 +59,7 @@ struct lq_gpu {
     float shadow_keys[LQ_MAX_RUNTIME_LIGHTS][4];
     uint32_t shadow_sources[LQ_MAX_RUNTIME_LIGHTS];
     uint8_t shadow_valid[LQ_MAX_RUNTIME_LIGHTS];
+    SDL_GPUComputePipeline *bounce_pipeline; /* Enhanced bounce rays; made on first use */
     int claimed;
 };
 typedef struct {
@@ -1068,6 +1069,7 @@ void LQ_GPUDestroy(lq_gpu *g)
         if (g->shadow_sampler) SDL_ReleaseGPUSampler(g->device, g->shadow_sampler);
         if (g->depth_sampler) SDL_ReleaseGPUSampler(g->device, g->depth_sampler);
         if (g->shadow_pipeline) SDL_ReleaseGPUGraphicsPipeline(g->device, g->shadow_pipeline);
+        if (g->bounce_pipeline) SDL_ReleaseGPUComputePipeline(g->device, g->bounce_pipeline);
         if (g->repeat) SDL_ReleaseGPUSampler(g->device, g->repeat);
         if (g->point) SDL_ReleaseGPUSampler(g->device, g->point);
         if (g->linear) SDL_ReleaseGPUSampler(g->device, g->linear);
@@ -1075,4 +1077,182 @@ void LQ_GPUDestroy(lq_gpu *g)
         SDL_DestroyGPUDevice(g->device);
     }
     free(g->mip_palette); free(g->frame_draws); free(g->frame_casters); free(g->frame_bounds); free(g);
+}
+
+/* ---- Enhanced bounce rays (renderer/shaders/bounce.comp) ------------------- */
+enum { BOUNCE_NODE_WORDS = 8, BOUNCE_FACE_WORDS = 20, BOUNCE_LIGHT_WORDS = 20, BOUNCE_CHUNK = 65536 };
+typedef struct { uint32_t job[4], tree[4], tables[4], lights[4]; float sun[4]; } lq_bounce_uniforms;
+static void PutFloat(uint32_t *word, float value) { memcpy(word, &value, sizeof(value)); }
+/* The scene words the shader walks; tables[] receives the section offsets. */
+static uint32_t *BounceWords(const lq_scene *s, const uint8_t (*emit_styles)[4], lq_bounce_uniforms *u, size_t *bytes)
+{
+    size_t nodes = 0, leaves = nodes + (size_t)s->bsp_node_count * BOUNCE_NODE_WORDS;
+    size_t faces = leaves + s->leaf_count, vertices = faces + (size_t)s->draw_count * BOUNCE_FACE_WORDS;
+    size_t samples = vertices + (size_t)s->vertex_count * 3, lights = samples + (size_t)s->sample_count * 4;
+    size_t reach = lights + (size_t)s->light_source_count * BOUNCE_LIGHT_WORDS;
+    uint32_t reach_words = s->light_visibility ? s->light_visibility_words : 0;
+    size_t total = reach + (size_t)s->draw_count * reach_words;
+    if (total * 4 > UINT32_MAX) return NULL;
+    uint32_t *w = calloc(total, 4);
+    if (!w) return NULL;
+    for (uint32_t i = 0; i < s->bsp_node_count; ++i) {
+        const lq_bsp_node *n = &s->bsp_nodes[i]; uint32_t *o = w + nodes + (size_t)i * BOUNCE_NODE_WORDS;
+        for (int k = 0; k < 3; ++k) PutFloat(&o[k], n->normal[k]);
+        PutFloat(&o[3], n->dist); o[4] = (uint32_t)n->children[0]; o[5] = (uint32_t)n->children[1];
+        o[6] = n->first_face; o[7] = n->face_count;
+    }
+    for (uint32_t i = 0; i < s->leaf_count; ++i) w[leaves + i] = s->leaf_contents[i];
+    for (uint32_t f = 0; f < s->draw_count; ++f) {
+        const lq_draw *d = &s->draws[f]; const lq_face_samples *grid = &s->face_samples[f];
+        uint32_t *o = w + faces + (size_t)f * BOUNCE_FACE_WORDS;
+        if (d->first_index >= s->index_count) continue; /* kind 0: never hit */
+        uint32_t base = s->indices[d->first_index];
+        int sky = (d->flags & LQ_SURFACE_SKY) != 0;
+        o[0] = sky ? 2 : !d->flags && grid->width ? 1 : 0;
+        o[1] = base; o[2] = d->index_count / 3 + 2;
+        o[3] = emit_styles ? (uint32_t)emit_styles[f][0] | (uint32_t)emit_styles[f][1] << 8 |
+            (uint32_t)emit_styles[f][2] << 16 | (uint32_t)emit_styles[f][3] << 24 : 0xffffffffu;
+        for (int k = 0; k < 3; ++k) PutFloat(&o[4 + k], s->vertices[base].normal[k]);
+        o[7] = grid->width | (uint32_t)grid->height << 16; o[8] = grid->first_sample;
+        for (int k = 0; k < 4; ++k) { PutFloat(&o[9 + k], grid->s[k]); PutFloat(&o[13 + k], grid->t[k]); }
+        PutFloat(&o[17], grid->mins[0]); PutFloat(&o[18], grid->mins[1]);
+    }
+    for (uint32_t i = 0; i < s->vertex_count; ++i)
+        for (int k = 0; k < 3; ++k) PutFloat(&w[vertices + (size_t)i * 3 + k], s->vertices[i].position[k]);
+    for (size_t i = 0; i < s->sample_count; ++i) w[samples + i * 4 + 3] = 0xffffffffu;
+    for (uint32_t f = 0; f < s->draw_count; ++f) {
+        const lq_face_samples *grid = &s->face_samples[f];
+        for (uint32_t i = 0; grid->width && i < (uint32_t)grid->width * grid->height; ++i) {
+            size_t sample = grid->first_sample + i;
+            const float *p = s->sample_positions[sample];
+            if (sample >= s->sample_count || !isfinite(p[0])) continue;
+            for (int k = 0; k < 3; ++k) PutFloat(&w[samples + sample * 4 + k], p[k]);
+            w[samples + sample * 4 + 3] = f;
+        }
+    }
+    u->tree[0] = (uint32_t)nodes; u->tree[1] = s->bsp_node_count; u->tree[2] = (uint32_t)leaves; u->tree[3] = s->leaf_count;
+    /* Lights with no direct reach (local minlight, too faint) get range 0. */
+    for (uint32_t i = 0; i < s->light_source_count; ++i) {
+        const lq_light_source *l = &s->light_sources[i]; uint32_t *o = w + lights + (size_t)i * BOUNCE_LIGHT_WORDS;
+        for (int k = 0; k < 3; ++k) {
+            PutFloat(&o[k], l->origin[k]); PutFloat(&o[9 + k], l->color[k]); PutFloat(&o[13 + k], l->spot_direction[k]);
+        }
+        PutFloat(&o[3], LQ_LightSourceRange(l)); PutFloat(&o[4], l->intensity); PutFloat(&o[5], l->attenuation);
+        o[6] = l->formula; PutFloat(&o[7], l->angle_scale); PutFloat(&o[8], l->output_scale);
+        o[12] = l->spotlight != 0; PutFloat(&o[16], l->spot_outer); PutFloat(&o[17], l->spot_inner);
+        PutFloat(&o[18], l->source_radius); o[19] = (uint8_t)l->style;
+    }
+    if (reach_words) memcpy(w + reach, s->light_visibility, (size_t)s->draw_count * reach_words * 4);
+    u->tables[0] = (uint32_t)faces; u->tables[1] = s->draw_count; u->tables[2] = (uint32_t)vertices; u->tables[3] = (uint32_t)samples;
+    u->lights[0] = (uint32_t)lights; u->lights[1] = s->light_source_count; u->lights[2] = (uint32_t)reach; u->lights[3] = reach_words;
+    for (int k = 0; k < 3; ++k) u->sun[k] = s->sun_direction[k];
+    u->sun[3] = s->sun_penumbra;
+    *bytes = total * 4;
+    return w;
+}
+static SDL_GPUBuffer *StorageBuffer(lq_gpu *g, SDL_GPUBufferUsageFlags usage, uint32_t bytes)
+{
+    SDL_GPUBufferCreateInfo info = {usage, bytes, 0};
+    return SDL_CreateGPUBuffer(g->device, &info);
+}
+/* Traces every sample (mode 0: sky visibility, 1: gather, 2: sun visibility,
+ * 3: direct light) and reads back
+ * `output_bytes`. Work is split across command buffers so no single
+ * submission runs long enough to trip a GPU watchdog. */
+static int BounceRun(lq_gpu *g, const lq_scene *s, uint32_t mode, uint32_t rays,
+    const float (*emit)[4][3], const uint8_t (*emit_styles)[4], void *output, size_t output_bytes)
+{
+    if (!s->bsp_nodes || !s->face_samples || !s->sample_count || output_bytes > UINT32_MAX) return 0;
+    if (!g->bounce_pipeline) {
+        int metal = (SDL_GetGPUShaderFormats(g->device) & SDL_GPU_SHADERFORMAT_MSL) != 0;
+        SDL_GPUComputePipelineCreateInfo info = {0};
+        info.code = metal ? lq_bounce_comp_msl : lq_bounce_comp_spv;
+        info.code_size = metal ? sizeof(lq_bounce_comp_msl) : sizeof(lq_bounce_comp_spv);
+        info.entrypoint = metal ? "main0" : "main";
+        info.format = metal ? SDL_GPU_SHADERFORMAT_MSL : SDL_GPU_SHADERFORMAT_SPIRV;
+        info.num_readonly_storage_buffers = 2; info.num_readwrite_storage_buffers = 1; info.num_uniform_buffers = 1;
+        info.threadcount_x = 64; info.threadcount_y = info.threadcount_z = 1;
+        g->bounce_pipeline = SDL_CreateGPUComputePipeline(g->device, &info);
+        if (!g->bounce_pipeline) return 0;
+    }
+    lq_bounce_uniforms u = {{mode, 0, 0, rays}, {0}, {0}, {0}, {0}};
+    size_t scene_bytes, emit_bytes = emit ? (size_t)s->sample_count * sizeof(*emit) : 16;
+    uint32_t *words = BounceWords(s, emit_styles, &u, &scene_bytes);
+    if (!words || emit_bytes > UINT32_MAX || scene_bytes + emit_bytes > UINT32_MAX) { free(words); return 0; }
+    static const float empty[4];
+    SDL_GPUBuffer *scene = StorageBuffer(g, SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ, (uint32_t)scene_bytes);
+    SDL_GPUBuffer *values = StorageBuffer(g, SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ, (uint32_t)emit_bytes);
+    SDL_GPUBuffer *results = StorageBuffer(g, SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_WRITE, (uint32_t)output_bytes);
+    SDL_GPUTransferBuffer *upload = Transfer(g, (uint32_t)(scene_bytes + emit_bytes), SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, NULL);
+    SDL_GPUTransferBuffer *download = Transfer(g, (uint32_t)output_bytes, SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, NULL);
+    SDL_GPUFence *fence = NULL;
+    int ok = 0;
+    void *mapped = upload ? SDL_MapGPUTransferBuffer(g->device, upload, false) : NULL;
+    if (!scene || !values || !results || !download || !mapped) goto done;
+    memcpy(mapped, words, scene_bytes);
+    memcpy((uint8_t *)mapped + scene_bytes, emit ? (const void *)emit : empty, emit_bytes);
+    SDL_UnmapGPUTransferBuffer(g->device, upload);
+    SDL_GPUCommandBuffer *command = SDL_AcquireGPUCommandBuffer(g->device);
+    if (!command) goto done;
+    SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(command);
+    SDL_GPUTransferBufferLocation from = {upload, 0};
+    SDL_GPUBufferRegion to = {scene, 0, (uint32_t)scene_bytes};
+    SDL_UploadToGPUBuffer(copy, &from, &to, false);
+    from.offset = (uint32_t)scene_bytes; to = (SDL_GPUBufferRegion){values, 0, (uint32_t)emit_bytes};
+    SDL_UploadToGPUBuffer(copy, &from, &to, false);
+    SDL_EndGPUCopyPass(copy);
+    for (uint32_t first = 0; first < s->sample_count; first += BOUNCE_CHUNK) {
+        if (!command && !(command = SDL_AcquireGPUCommandBuffer(g->device))) goto done;
+        u.job[1] = first; u.job[2] = s->sample_count - first < BOUNCE_CHUNK ? s->sample_count - first : BOUNCE_CHUNK;
+        SDL_GPUStorageBufferReadWriteBinding writes = {results, false};
+        SDL_GPUComputePass *pass = SDL_BeginGPUComputePass(command, NULL, 0, &writes, 1);
+        if (!pass) { SDL_CancelGPUCommandBuffer(command); goto done; }
+        SDL_GPUBuffer *reads[2] = {scene, values};
+        SDL_BindGPUComputePipeline(pass, g->bounce_pipeline);
+        SDL_BindGPUComputeStorageBuffers(pass, 0, reads, 2);
+        SDL_PushGPUComputeUniformData(command, 0, &u, sizeof(u));
+        SDL_DispatchGPUCompute(pass, (u.job[2] + 63) / 64, 1, 1);
+        SDL_EndGPUComputePass(pass);
+        if (first + BOUNCE_CHUNK >= s->sample_count) break;
+        if (!SDL_SubmitGPUCommandBuffer(command)) { command = NULL; goto done; }
+        command = NULL;
+    }
+    copy = SDL_BeginGPUCopyPass(command);
+    SDL_GPUBufferRegion source = {results, 0, (uint32_t)output_bytes};
+    SDL_GPUTransferBufferLocation destination = {download, 0};
+    SDL_DownloadFromGPUBuffer(copy, &source, &destination);
+    SDL_EndGPUCopyPass(copy);
+    fence = SDL_SubmitGPUCommandBufferAndAcquireFence(command);
+    if (!fence || !SDL_WaitForGPUFences(g->device, true, &fence, 1)) goto done;
+    void *read = SDL_MapGPUTransferBuffer(g->device, download, false);
+    if (!read) goto done;
+    memcpy(output, read, output_bytes);
+    SDL_UnmapGPUTransferBuffer(g->device, download);
+    ok = 1;
+done:
+    if (fence) SDL_ReleaseGPUFence(g->device, fence);
+    if (scene) SDL_ReleaseGPUBuffer(g->device, scene);
+    if (values) SDL_ReleaseGPUBuffer(g->device, values);
+    if (results) SDL_ReleaseGPUBuffer(g->device, results);
+    if (upload) SDL_ReleaseGPUTransferBuffer(g->device, upload);
+    if (download) SDL_ReleaseGPUTransferBuffer(g->device, download);
+    free(words);
+    return ok;
+}
+static int BounceSky(void *context, const lq_scene *s, uint32_t rays, float *visible)
+{ return BounceRun(context, s, 0, rays, NULL, NULL, visible, (size_t)s->sample_count * sizeof(float)); }
+static int BounceSun(void *context, const lq_scene *s, float *visible)
+{ return BounceRun(context, s, 2, 1, NULL, NULL, visible, (size_t)s->sample_count * sizeof(float)); }
+static int BounceDirect(void *context, const lq_scene *s, lq_bounce_entry *entries)
+{ return BounceRun(context, s, 3, 1, NULL, NULL, entries, (size_t)s->sample_count * LQ_BOUNCE_ENTRIES * sizeof(*entries)); }
+static int BounceGather(void *context, const lq_scene *s, uint32_t rays, const float (*emit)[4][3],
+    const uint8_t (*emit_styles)[4], lq_bounce_entry *entries)
+{
+    return BounceRun(context, s, 1, rays, emit, emit_styles, entries,
+        (size_t)s->sample_count * LQ_BOUNCE_ENTRIES * sizeof(*entries));
+}
+lq_bounce_tracer LQ_GPUBounceTracer(lq_gpu *g)
+{
+    lq_bounce_tracer tracer = {g, BounceSky, BounceSun, BounceDirect, BounceGather, 0};
+    return tracer;
 }

@@ -43,6 +43,60 @@ static int InFrustum(const float m[16], const float bounds[6])
 }
 static int Has(int argc, char **argv, const char *name)
 { for (int i = 1; i < argc; ++i) if (!strcmp(argv[i], name)) return 1; return 0; }
+/* --compare-bounce: bounce with CPU rays, then GPU rays, and how far the
+ * results differ over every face sample of each atlas layer and every probe. */
+static int CompareBounce(lq_scene *s, uint32_t rays, lq_gpu *device, char *error, size_t size)
+{
+    uint64_t started = SDL_GetTicksNS();
+    if (!LQ_SceneComputeBounceTraced(s, rays, LQ_JobsRunRange, NULL, error, size)) return 0;
+    double cpu_seconds = (SDL_GetTicksNS() - started) / 1e9;
+    size_t atlas = (size_t)s->bounce.width * s->bounce.height * 4;
+    size_t probes = (size_t)s->probe_size[0] * s->probe_size[1] * s->probe_size[2] * 6 * 4 * 4;
+    uint8_t *cpu = malloc(atlas), *cpu_probes = malloc(probes ? probes : 1), (*cpu_styles)[4] = malloc(s->draw_count * 4);
+    if (!cpu || !cpu_probes || !cpu_styles) { free(cpu); free(cpu_probes); free(cpu_styles); snprintf(error, size, "no memory"); return 0; }
+    memcpy(cpu, s->bounce.pixels, atlas);
+    if (probes && s->probe_static) memcpy(cpu_probes, s->probe_static, probes);
+    for (uint32_t f = 0; f < s->draw_count; ++f) memcpy(cpu_styles[f], s->draws[f].bounce_styles, 4);
+    lq_bounce_tracer tracer = LQ_GPUBounceTracer(device);
+    started = SDL_GetTicksNS();
+    int ok = LQ_SceneComputeBounceTraced(s, rays, LQ_JobsRunRange, &tracer, error, size);
+    double gpu_seconds = (SDL_GetTicksNS() - started) / 1e9;
+    if (ok && tracer.passes == 0) { snprintf(error, size, "the GPU traced no bounce passes"); ok = 0; }
+    if (ok) {
+        printf("Bounce: CPU rays %.2f s, GPU rays %.2f s (%u GPU passes), %u samples x %u rays\n",
+            cpu_seconds, gpu_seconds, tracer.passes, s->sample_count, rays);
+        uint32_t styles_differ = 0;
+        for (uint32_t f = 0; f < s->draw_count; ++f) styles_differ += memcmp(cpu_styles[f], s->draws[f].bounce_styles, 4) != 0;
+        printf("  faces whose bounce styles differ: %u of %u\n", styles_differ, s->draw_count);
+        for (int layer = 0; layer < 4; ++layer) for (int channel = 0; channel < 2; ++channel) {
+            double total = 0; int peak = 0; uint64_t count = 0, off = 0;
+            for (uint32_t f = 0; f < s->draw_count; ++f) {
+                const lq_face_samples *grid = &s->face_samples[f];
+                for (uint32_t y = 0; y < grid->height; ++y) for (uint32_t x = 0; x < grid->width; ++x) {
+                    size_t texel = ((size_t)(layer * s->atlas_height + grid->atlas_y + y) * s->bounce.width + grid->atlas_x + x) * 4;
+                    for (int k = channel ? 3 : 0; k < (channel ? 4 : 3); ++k) {
+                        int d = abs((int)cpu[texel + k] - (int)s->bounce.pixels[texel + k]);
+                        total += d; peak = d > peak ? d : peak; off += d > 2; ++count;
+                    }
+                }
+            }
+            printf("  layer %d %s: mean difference %.3f, largest %d, %.2f%% differ by more than 2 (of %llu values)\n",
+                layer, channel ? "alpha (sky/sun visibility)" : "rgb (bounce)", count ? total / count : 0, peak,
+                count ? 100.0 * off / count : 0, (unsigned long long)count);
+        }
+        if (probes && s->probe_static) {
+            double total = 0; int peak = 0; uint64_t off = 0;
+            for (size_t i = 0; i < probes; ++i) {
+                int d = abs((int)cpu_probes[i] - (int)s->probe_static[i]);
+                total += d; peak = d > peak ? d : peak; off += d > 2;
+            }
+            printf("  probes: mean difference %.3f, largest %d, %.2f%% differ by more than 2\n",
+                total / probes, peak, 100.0 * off / probes);
+        }
+    }
+    free(cpu); free(cpu_probes); free(cpu_styles);
+    return ok;
+}
 static int SaveFrame(const char *path, char *error, size_t size)
 {
     uint8_t *pixels; uint32_t width, height;
@@ -674,10 +728,26 @@ int LQ_GPUViewer(int argc, char **argv)
         result = 0; goto done;
     }
     if (Has(argc, argv, "--scene-info") || Has(argc, argv, "--light-analysis")) { result = 0; goto done; }
+    int compare = Has(argc, argv, "--compare-bounce");
+    SDL_SetMainReady();
+    if (!SDL_Init(SDL_INIT_VIDEO)) { snprintf(error, sizeof(error), "SDL3: %s", SDL_GetError()); goto done; }
+    window = SDL_CreateWindow("LuminousQuake GPU world viewer / WASD fly / E Q vertical / F1 capture / Esc exit",
+        960, 720, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
+        (test || compare || Has(argc, argv, "--light-budget") ? SDL_WINDOW_HIDDEN : 0));
+    if (!window) { snprintf(error, sizeof(error), "window: %s", SDL_GetError()); goto done; }
+    gpu = LQ_GPUCreate(window, 1, error, sizeof(error));
+    if (!gpu) goto done;
+    if (enhanced && compare) {
+        LQ_JobsRegister();
+        result = CompareBounce(&scene, (uint32_t)rays, gpu, error, sizeof(error)) ? 0 : 1;
+        goto done;
+    }
     if (enhanced && !view.disable_bounce) {
         LQ_JobsRegister();
         uint64_t started = SDL_GetTicksNS();
-        if (!LQ_SceneComputeBounce(&scene, (uint32_t)rays, LQ_JobsRunRange, error, sizeof(error))) goto done;
+        lq_bounce_tracer tracer = LQ_GPUBounceTracer(gpu);
+        if (!LQ_SceneComputeBounceTraced(&scene, (uint32_t)rays, LQ_JobsRunRange,
+                Has(argc, argv, "--cpu-bounce") ? NULL : &tracer, error, sizeof(error))) goto done;
         /* Over every face sample: first-layer bounce, and sky/sun visibility. */
         double total = 0, peak = 0, sky = 0; uint64_t texels = 0, open = 0, sunlit = 0;
         int has_sky = scene.sky_light[0] + scene.sky_light[1] + scene.sky_light[2] > 0;
@@ -693,9 +763,10 @@ int LQ_GPUViewer(int argc, char **argv)
                 if (has_sun) sunlit += sun[3] > 0;
             }
         }
-        printf("Enhanced bounce: %u samples, %ld rays each, %u workers, %.2f s; first layer mean %.1f, peak %.0f brightness; "
+        printf("Enhanced bounce: %u samples, %ld rays each, %s, %.2f s; first layer mean %.1f, peak %.0f brightness; "
             "sky seen by %.1f%% (mean visibility %.3f), sun by %.1f%%\n",
-            scene.sample_count, rays, LQ_JobsWorkerCount(), (double)(SDL_GetTicksNS() - started) / 1e9,
+            scene.sample_count, rays, tracer.passes ? "rays on the GPU" : "rays on the CPU",
+            (double)(SDL_GetTicksNS() - started) / 1e9,
             texels ? total / texels : 0, peak, texels ? 100.0 * open / texels : 0, texels ? sky / texels : 0,
             texels ? 100.0 * sunlit / texels : 0);
         if (scene.probe_static) {
@@ -749,13 +820,7 @@ int LQ_GPUViewer(int argc, char **argv)
         }
         free(visible); free(game); free(all); result = 0; goto done;
     }
-    SDL_SetMainReady();
-    if (!SDL_Init(SDL_INIT_VIDEO)) { snprintf(error, sizeof(error), "SDL3: %s", SDL_GetError()); goto done; }
-    window = SDL_CreateWindow("LuminousQuake GPU world viewer / WASD fly / E Q vertical / F1 capture / Esc exit",
-        960, 720, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | (test ? SDL_WINDOW_HIDDEN : 0));
-    if (!window) { snprintf(error, sizeof(error), "window: %s", SDL_GetError()); goto done; }
-    gpu = LQ_GPUCreate(window, 1, error, sizeof(error));
-    if (!gpu || !LQ_GPUUpload(gpu, &scene, error, sizeof(error))) goto done;
+    if (!LQ_GPUUpload(gpu, &scene, error, sizeof(error))) goto done;
     if (enhanced) {
         interaction_draws = malloc(scene.draw_count*sizeof(*interaction_draws));
         if (interaction_draws && !LQ_SceneDrawBounds(&scene)) { free(interaction_draws); interaction_draws = NULL; }

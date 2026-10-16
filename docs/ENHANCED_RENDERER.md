@@ -187,7 +187,7 @@ map's compiled `_bounce`.
 ## Bounce light
 
 Light also bounces off lit textures as a secondary source. At map load,
-`LQ_SceneComputeBounce` runs on the worker pool:
+`LQ_SceneComputeBounceTraced` computes it:
 1. **Direct light per sample.** For each sample on LIGHT's 16-unit lattice, sum
    every source's direct light using the same falloff, cone and BSP occlusion as
    the runtime path. Multiply by the face's mean texture color to get exitance.
@@ -202,9 +202,37 @@ styles in four stacked layers of an atlas that mirrors the lightmap layout. The
 shader weights each layer by its live style value, so switched and flickering
 lights still drive their bounce. The baked lightmap is never read.
 
-One bounce is gathered. E1M3 takes 1.6 s on six workers (183,046 samples × 64
-rays); E1M1 takes 1.7 s. A closed white room test checks hits, cosine weighting,
-style layers and albedo. E1M3's stone textures reflect only about 20–25% and
+One bounce is gathered. A closed white room test checks hits, cosine weighting,
+style layers and albedo.
+
+**GPU rays.** The passes that walk the BSP per sample run as a compute shader
+(`renderer/shaders/bounce.comp`, through SDL's GPU API on Metal and Vulkan):
+sky visibility, sun visibility, direct light and the gather. It uses the same
+ray directions, BSP order and polygon containment as the CPU code, with an
+explicit stack in place of recursion. The CPU keeps each face's style choice,
+the sky and sun reflection, the atlas and the static probes (0.14–0.27 s).
+Every pass stays in `bounce.c` as the reference and the fallback if the GPU
+cannot run one. Dispatches cover 65,536 samples each, so no command buffer
+runs long enough to trip a GPU watchdog on slower hardware.
+
+Whole-bounce time on an M1 Max, 64 rays per sample:
+
+| Map (samples) | CPU, six workers | GPU rays |
+| --- | ---: | ---: |
+| Shareware E1M2 (188,813) | 4.65 s | 0.75 s |
+| Rerelease E1M1 (179,600) | 3.83 s | 0.69 s |
+| Rerelease E2M2 (207,615) | 4.01 s | 0.75 s |
+| Arcane Dimensions `ad_e1m1` (305,680, sun) | 10.05 s | 1.99 s |
+
+CPU bounce had grown from 1.6 s on E1M3 since the sky became an area light
+and the map-light limit rose to 120, which made the Enhanced load wait
+seconds. `--compare-bounce` in the viewer runs both and reports the
+differences. Across eight id maps and `ad_e1m1`, 16 of about 59,000 faces
+choose different styles (8 of them on `ad_e1m1`), under 0.04% of atlas values differ by more
+than 2 brightness units, and probes differ by at most 1 on id maps. A few
+grazing samples, under 0.02%, differ more: a ray landing on the other side of
+a face edge or split plane in single-precision GPU arithmetic. Rendered frames
+differ only where animated sky and liquids differ between any two runs. E1M3's stone textures reflect only about 20–25% and
 the map sets `_bouncescale 0.5`, so physically based bounce there is subtle
 (mean 3 brightness units).
 
@@ -213,6 +241,9 @@ Viewer tuning flags:
 - `--bounce-gain G` scales bounce artistically.
 - `--no-bounce` disables bounce.
 - `--bounce-rays N` sets the rays per sample.
+- `--cpu-bounce` traces every pass on the CPU.
+- `--compare-bounce` computes bounce both ways, prints timings and
+  differences, and exits.
 
 For example, `--exposure 0.7 --bounce-gain 8` gives a darker scene with a
 visible fill. The defaults (1, 1) are physically based.
