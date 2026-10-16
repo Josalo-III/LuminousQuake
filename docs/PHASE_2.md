@@ -113,4 +113,5 @@ extension warnings remain visible. This is a compatibility sample, not an authen
 
 SDL presentation retains Quake's original `Host_Frame` timing gate. Vsync is
 optional; this phase does not redesign simulation pacing or establish performance
-improvements. See README for build, launch, controls and diagnostic commands.
+improvements. (Superseded in October 2026: rendering is now decoupled from
+the 72 Hz simulation and VSync defaults to on; see FRAME_TIMING.md.) See README for build, launch, controls and diagnostic commands.

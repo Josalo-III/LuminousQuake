@@ -48,6 +48,11 @@ double		realtime;				// without any filtering or bounding
 double		oldrealtime;			// last frame run
 int			host_framecount;
 
+// The server, the move messages and "wait" keep id's 72 Hz cadence; frames
+// are drawn as often as the display (or host_maxfps) allows in between.
+#define	HOST_TICK	(1.0/72.0)
+static double	host_tickaccum;		// time not yet covered by a whole tick
+
 int			host_hunklevel;
 
 int			minimum_memory;
@@ -61,6 +66,7 @@ byte		*host_colormap;
 
 cvar_t	host_framerate = {"host_framerate","0"};	// set for slow motion
 cvar_t	host_speeds = {"host_speeds","0"};			// set for running times
+cvar_t	host_maxfps = {"host_maxfps","0",true};		// 0: draw every display refresh
 
 cvar_t	sys_ticrate = {"sys_ticrate","0.05"};
 cvar_t	serverprofile = {"serverprofile","0"};
@@ -226,6 +232,7 @@ void Host_InitLocal (void)
 	
 	Cvar_RegisterVariable (&host_framerate);
 	Cvar_RegisterVariable (&host_speeds);
+	Cvar_RegisterVariable (&host_maxfps);
 
 	Cvar_RegisterVariable (&sys_ticrate);
 	Cvar_RegisterVariable (&serverprofile);
@@ -523,9 +530,17 @@ Returns false if the time is too short to run a frame
 */
 qboolean Host_FilterTime (float time)
 {
+	double	maxfps;
+
 	realtime += time;
 
-	if (!cls.timedemo && realtime - oldrealtime < 1.0/72.0)
+	if (cls.state == ca_dedicated)
+		maxfps = 72;	// nothing to draw, so wake once per server tick
+	else if (host_maxfps.value > 0)
+		maxfps = host_maxfps.value < 10 ? 10 : host_maxfps.value > 1000 ? 1000 : host_maxfps.value;
+	else
+		maxfps = 1000;	// vsync paces the frames
+	if (!cls.timedemo && realtime - oldrealtime < 1.0/maxfps)
 		return false;		// framerate is too high
 
 	host_frametime = realtime - oldrealtime;
@@ -542,6 +557,35 @@ qboolean Host_FilterTime (float time)
 	}
 	
 	return true;
+}
+
+/*
+===================
+Host_CountTicks
+
+Returns how many 72 Hz ticks have come due during this frame
+===================
+*/
+static int Host_CountTicks (double frametime)
+{
+	int		ticks;
+
+	host_tickaccum += frametime;
+	for (ticks = 0 ; host_tickaccum >= HOST_TICK ; ticks++)
+		host_tickaccum -= HOST_TICK;
+	return ticks;
+}
+
+/*
+===================
+Host_TickFraction
+
+How far the current frame lies between the last tick and the next one
+===================
+*/
+double Host_TickFraction (void)
+{
+	return host_tickaccum / HOST_TICK;
 }
 
 
@@ -659,6 +703,8 @@ void _Host_Frame (float time)
 	static double		time2 = 0;
 	static double		time3 = 0;
 	int			pass1, pass2, pass3;
+	double		frametime;
+	int			ticks, i;
 
 	if (setjmp (host_abortserver) )
 		return;			// something bad happened, or the server disconnected
@@ -668,7 +714,9 @@ void _Host_Frame (float time)
 	
 // decide the simulation time
 	if (!Host_FilterTime (time))
-		return;			// don't run too fast, or packets will flood out
+		return;			// don't run faster than host_maxfps
+	frametime = host_frametime;
+	ticks = Host_CountTicks (frametime);
 	LQ_ProfileBegin (LQ_PROFILE_FRAME);
 		
 // get new key events
@@ -685,13 +733,17 @@ void _Host_Frame (float time)
 	 * the saved renderer only after that command pass, before the game frame. */
 	LQ_RenderAfterCommands ();
 #endif
+	host_frametime = frametime;	// starting a map changes it
+
+// turn the view every frame; movement is sent once per tick
+	CL_AccumulateInput ();
 	LQ_ProfileEnd (LQ_PROFILE_INPUT_COMMANDS);
 
 	LQ_ProfileBegin (LQ_PROFILE_NETWORK);
 	NET_Poll();
 
 // if running the server locally, make intentions now
-	if (sv.active)
+	if (sv.active && ticks)
 		CL_SendCmd ();
 	LQ_ProfileEnd (LQ_PROFILE_NETWORK);
 	
@@ -705,8 +757,12 @@ void _Host_Frame (float time)
 	Host_GetConsoleCommands ();
 	
 	LQ_ProfileBegin (LQ_PROFILE_SIMULATION);
-	if (sv.active)
+	for (i=0 ; i<ticks && sv.active ; i++)
+	{
+		host_frametime = HOST_TICK;
 		Host_ServerFrame ();
+	}
+	host_frametime = frametime;
 	LQ_ProfileEnd (LQ_PROFILE_SIMULATION);
 
 //-------------------
@@ -718,8 +774,12 @@ void _Host_Frame (float time)
 // if running the server remotely, send intentions now after
 // the incoming messages have been read
 	LQ_ProfileBegin (LQ_PROFILE_CLIENT);
-	if (!sv.active)
+	if (!sv.active && ticks)
 		CL_SendCmd ();
+
+// a "wait" in the command buffer lasts until the next tick
+	if (ticks)
+		Cbuf_Waited ();
 
 	host_time += host_frametime;
 

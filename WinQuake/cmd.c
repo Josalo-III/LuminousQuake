@@ -46,7 +46,7 @@ qboolean	cmd_wait;
 Cmd_Wait_f
 
 Causes execution of the remainder of the command buffer to be delayed until
-next frame.  This allows commands like:
+the next tick has been sent.  This allows commands like:
 bind g "impulse 5 ; +attack ; wait ; -attack ; impulse 2"
 ============
 */
@@ -147,7 +147,7 @@ void Cbuf_Execute (void)
 	char	line[1024];
 	int		quotes;
 	
-	while (cmd_text.cursize)
+	while (cmd_text.cursize && !cmd_wait)
 	{
 // find a \n or ; line break
 		text = (char *)cmd_text.data;
@@ -182,14 +182,17 @@ void Cbuf_Execute (void)
 
 // execute the command line
 		Cmd_ExecuteString (line, src_command);
-		
-		if (cmd_wait)
-		{	// skip out while text still remains in buffer, leaving it
-			// for next frame
-			cmd_wait = false;
-			break;
-		}
-	}
+	}	// after a wait, the rest stays in the buffer until the next tick
+}
+
+/*
+============
+Cbuf_Waited
+============
+*/
+void Cbuf_Waited (void)
+{
+	cmd_wait = false;
 }
 
 /*

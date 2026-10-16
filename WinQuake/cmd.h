@@ -53,6 +53,9 @@ void Cbuf_Execute (void);
 // Normally called once per frame, but may be explicitly invoked.
 // Do not call inside a command function!
 
+void Cbuf_Waited (void);
+// Ends a "wait"; the host calls it once the next tick has been sent.
+
 //===========================================================================
 
 /*

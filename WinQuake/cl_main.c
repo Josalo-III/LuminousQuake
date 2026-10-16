@@ -401,10 +401,18 @@ float	CL_LerpPoint (void)
 
 	f = cl.mtime[0] - cl.mtime[1];
 	
-	if (!f || cl_nolerp.value || cls.timedemo || sv.active)
+	if (!f || cl_nolerp.value || cls.timedemo || (sv.active && f > 0.1))
 	{
 		cl.time = cl.mtime[0];
 		return 1;
+	}
+
+	if (sv.active)
+	{	// the local server ticks at 72 Hz while frames are drawn in between,
+		// so show the world part of the way from its previous tick to its last
+		frac = Host_TickFraction ();
+		cl.time = cl.mtime[1] + frac*f;
+		return frac;
 	}
 		
 	if (f > 0.1)
@@ -687,11 +695,9 @@ void CL_SendCmd (void)
 
 	if (cls.signon == SIGNONS)
 	{
-	// get basic movement from keyboard
+	// get basic movement from keyboard, plus the mouse movement that
+	// CL_AccumulateInput gathered since the last move
 		CL_BaseMove (&cmd);
-	
-	// allow mice or other external controllers to add to the move
-		IN_Move (&cmd);
 	
 	// send the unreliable message
 		CL_SendMove (&cmd);

@@ -204,6 +204,20 @@ Applying video settings writes the profile immediately; quitting also saves it.
 Sound-device failure is nonfatal; `-nosound` explicitly disables audio.
 CD/music output is still absent.
 
+### Frame timing and VSync
+
+Rendering no longer stops at WinQuake's 72 fps. The server, QuakeC, the
+client's move messages and `wait` still run in fixed 1/72 s ticks, so physics
+behaves as at 72 Hz. Mouse look, keyboard turning, entity interpolation,
+rendering and sound run every frame. In local games, entities are drawn
+between the last two server ticks. VSync (`vid_vsync`) now defaults to on, so
+frames follow the display refresh without tearing. Set `vid_vsync 0` with
+`vid_restart` for benchmarks or lower latency. Profiles that already saved
+`vid_vsync "0"` keep that setting. `host_maxfps` (default 0, meaning no cap)
+optionally caps the render rate. Design notes and the checks still to run (frame
+rate at the display rate, movement and jump traces against the previous build,
+a demo round trip) are in [docs/FRAME_TIMING.md](docs/FRAME_TIMING.md).
+
 ## Headless builds and checks
 
 ```sh

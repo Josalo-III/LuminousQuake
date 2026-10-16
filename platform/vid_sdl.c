@@ -26,7 +26,7 @@ static qboolean direct_active, cvars_registered;
 static cvar_t vid_width = {"vid_width", "640", true};
 static cvar_t vid_height = {"vid_height", "480", true};
 static cvar_t vid_fullscreen = {"vid_fullscreen", "0", true};
-static cvar_t vid_vsync = {"vid_vsync", "0", true};
+static cvar_t vid_vsync = {"vid_vsync", "1", true};
 static cvar_t gpu_filter = {"gpu_filter", "0", true};
 static cvar_t gpu_mipmaps = {"gpu_mipmaps", "0", true};
 static cvar_t gpu_anisotropy = {"gpu_anisotropy", "1", true};

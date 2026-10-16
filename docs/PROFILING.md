@@ -108,6 +108,9 @@ machine; eight did not improve the median work enough to justify its higher
 observed tail. Automatic sizing therefore reserves four logical cores on
 machines with more than six and caps the pool at eight. These are CPU-stage
 figures, not GPU execution times, and the original 72 Hz processing gate keeps
-reported wall-clock FPS near 69 in both cases. The 800×600, VSync-on and future
+reported wall-clock FPS near 69 in both cases. That gate has since been removed
+(see FRAME_TIMING.md): rendering now runs at the display rate with VSync, or
+up to `host_maxfps` with VSync off. Measure processed FPS again before
+comparing it with these figures. The 800×600, VSync-on and future
 Enhanced comparisons remain part of the broader matrix rather than claims from
 this result.

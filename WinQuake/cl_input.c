@@ -221,6 +221,8 @@ cvar_t	cl_pitchspeed = {"cl_pitchspeed","150"};
 
 cvar_t	cl_anglespeedkey = {"cl_anglespeedkey","1.5"};
 
+usercmd_t	cl_pendingmove;		// mouse movement since the last move message
+
 
 /*
 ================
@@ -275,6 +277,22 @@ void CL_AdjustAngles (void)
 
 /*
 ================
+CL_AccumulateInput
+
+Turns the view every frame, and keeps any mouse movement for the next move
+================
+*/
+void CL_AccumulateInput (void)
+{
+	if (cls.state != ca_connected || cls.signon != SIGNONS)
+		return;
+
+	CL_AdjustAngles ();
+	IN_Move (&cl_pendingmove);
+}
+
+/*
+================
 CL_BaseMove
 
 Send the intended movement message to the server
@@ -283,9 +301,10 @@ Send the intended movement message to the server
 void CL_BaseMove (usercmd_t *cmd)
 {	
 	if (cls.signon != SIGNONS)
+	{
+		Q_memset (&cl_pendingmove, 0, sizeof(cl_pendingmove));
 		return;
-			
-	CL_AdjustAngles ();
+	}
 	
 	Q_memset (cmd, 0, sizeof(*cmd));
 	
@@ -316,6 +335,12 @@ void CL_BaseMove (usercmd_t *cmd)
 		cmd->sidemove *= cl_movespeedkey.value;
 		cmd->upmove *= cl_movespeedkey.value;
 	}
+
+// add the mouse movement gathered by CL_AccumulateInput
+	cmd->forwardmove += cl_pendingmove.forwardmove;
+	cmd->sidemove += cl_pendingmove.sidemove;
+	cmd->upmove += cl_pendingmove.upmove;
+	Q_memset (&cl_pendingmove, 0, sizeof(cl_pendingmove));
 
 #ifdef QUAKE2
 	cmd->lightlevel = cl.light_level;
