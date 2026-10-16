@@ -351,10 +351,13 @@ static int TestPlatform(qboolean no_audio)
     VERIFY(Cvar_VariableValue("gpu_mipmaps") == 0 && Cvar_VariableValue("gpu_anisotropy") == 1);
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_LEFTARROW); /* 40% opaque liquids */
     VERIFY(Cvar_VariableValue("r_wateralpha") == 1);
+    vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); /* NTSC tube camera */
+    VERIFY(Cvar_VariableValue("r_fluorescent") == 1);
     vid_menukeyfn(K_DOWNARROW);
     vid_menukeyfn(K_ENTER); Cbuf_Execute();
     VERIFY(fabsf(Cvar_VariableValue("r_wateralpha") - 0.4f) < 0.001f && Cvar_FindVar("r_wateralpha")->archive);
-    Cvar_SetValue("r_wateralpha", 1);
+    VERIFY(Cvar_VariableValue("r_fluorescent") == 2 && Cvar_FindVar("r_fluorescent")->archive);
+    Cvar_SetValue("r_wateralpha", 1); Cvar_SetValue("r_fluorescent", 1);
     VERIFY(vid.width == 960 && vid.height == 540);
     VERIFY(Cvar_FindVar("vid_width")->archive && Cvar_FindVar("vid_height")->archive);
     VERIFY(Cvar_VariableValue("fov") == 95 && Cvar_FindVar("fov")->archive);
@@ -362,9 +365,9 @@ static int TestPlatform(qboolean no_audio)
     VERIFY(Cvar_VariableValue("gpu_mipmaps") == 2 && Cvar_FindVar("gpu_mipmaps")->archive);
     VERIFY(Cvar_VariableValue("gpu_anisotropy") == 16 && Cvar_FindVar("gpu_anisotropy")->archive);
     /* Reach 1080p through the same selector used by the player. */
-    for (int i = 0; i < 9; ++i) vid_menukeyfn(K_UPARROW);
+    for (int i = 0; i < 10; ++i) vid_menukeyfn(K_UPARROW);
     for (int i = 0; i < 12; ++i) vid_menukeyfn(K_RIGHTARROW);
-    for (int i = 0; i < 9; ++i) vid_menukeyfn(K_DOWNARROW);
+    for (int i = 0; i < 10; ++i) vid_menukeyfn(K_DOWNARROW);
     vid_menukeyfn(K_ENTER); Cbuf_Execute();
     VERIFY(vid.width == 1920 && vid.height == 1080);
     Cvar_SetValue("vid_width", 640); Cvar_SetValue("vid_height", 480);

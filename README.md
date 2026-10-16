@@ -195,6 +195,11 @@ Options includes a saved **Renderer** preference: **Software** (original CPU
 renderer), **Classic GPU** (GLQuake-style appearance with baked lightmaps), and
 **Enhanced** (Tenebrae-inspired lighting, shadows and materials). Left/right
 cycle in either direction; Enter advances. `lq_renderer` stores 0, 1 or 2.
+Video Options' **Tube camera** (`r_fluorescent`, Enhanced only) picks how
+fluorescent tubes record: **eye** (0, steady), **film 24p** (1, the default:
+slow breathing), **NTSC 1/60** (2, in sync, steady), **NTSC 1/250** (3, deep
+slow breathing) or **PAL 25p** (4, a 5 Hz flutter). Failing tubes drop out and
+restrike under every camera.
 Classic GPU is now available as the feature implementation checkpoint described above;
 Enhanced is experimental (runtime lights, soft shadows, bounce and weapon light). Restart the game or use `vid_restart` to apply the
 saved choice. The experimental GPU viewer remains a separate `luminousquake-gpu`
