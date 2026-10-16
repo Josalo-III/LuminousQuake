@@ -355,11 +355,23 @@ texture limits. Each probe stores an ambient cube: irradiance toward ±X, ±Y an
   that miss out fold into style 0; switchable ones are left out rather than shown
   while off. On E1M3 the grid is 57×53×25 (4,525 probes in open space), adding
   little to the 1.7 s load.
-- **Dynamic layer.** Rebuilt every frame on the worker pool, only for probes near
-  active gameplay lights. 16 rays per probe find the surfaces a rocket, muzzle
-  flash or explosion lights (with a BSP occlusion test toward the light) and
-  gather what they reflect. World surfaces and actors both sample it, so weapon
-  light bounces onto nearby walls.
+- **Dynamic layer.** Rebuilt every frame, only for probes near active gameplay
+  lights. 16 rays per probe find the surfaces a rocket, muzzle flash or
+  explosion lights (with a BSP occlusion test toward the light) and gather what
+  they reflect. World surfaces and actors both sample it, so weapon light
+  bounces onto nearby walls. The CPU picks the lights and the box of probes
+  they reach (`LQ_SceneDynamicProbeLights`). The GPU traces them in the frame's
+  own command buffer, writing the probe texture directly: `bounce.comp` built
+  with `LQ_PROBES`, one thread per ray and 16 to a probe, summed in shared
+  memory. The map's BSP, faces and probe validity stay resident. Each dispatch
+  also clears the previous frame's box. This replaced about 1 ms of CPU per
+  frame during fights in the shareware demos (six workers, plus re-uploading
+  the whole 0.6–1.7 MB probe texture) with about 0.3–0.5 ms of GPU work. A
+  first version with one thread per probe took 3–4 ms: a few thousand
+  probes are too few threads to keep the GPU busy. Without storage-texture
+  support, the worker pool and upload remain. The viewer's
+  `--compare-probes` runs both, with lights near the camera, then again after
+  moving them. On E1M2 and E1M3 they match exactly apart from one value off by 1.
 - **Actors.** MDL models (except flames, which stay fullbright emitters), the
   view weapon and standalone ammo/health boxes carry `LQ_SURFACE_ACTOR`. In
   Enhanced they are lit per pixel by the same runtime lights and shadow cubes as

@@ -6,6 +6,8 @@
 // rays hit; mode 2 stores the fraction of rays toward the sun that reach sky;
 // mode 3 sums, per style, the light arriving from each unoccluded map light
 // (falloff, incidence and cone; the CPU applies the texture's color).
+// Compiled with LQ_PROBES instead, it writes the dynamic irradiance probes
+// around gameplay lights each frame, as bounce.c's DynamicProbes does.
 // GPL-2.0-or-later.
 layout(local_size_x = 64) in;
 // SDL numbers Metal buffers as uniforms, read-only storage, then read-write
@@ -21,6 +23,23 @@ layout(local_size_x = 64) in;
 // contents, faces (FACE_WORDS each), vertex positions, samples (xyz, face),
 // lights (LIGHT_WORDS each) and per-face light reach bits.
 layout(std430, set = 0, binding = READONLY(0)) readonly buffer Scene { uint words[]; } scene;
+#ifdef LQ_PROBES
+// One read-write storage texture comes before any read-write buffer.
+layout(set = 1, binding = 0, rgba8) uniform writeonly image3D probes; // depth: direction * nz + z
+layout(std140, set = 2, binding = 0) uniform Parameters {
+    uvec4 tree;          // node offset, node count, leaf offset, leaf count
+    uvec4 tables;        // face offset, face count, vertex offset, probe validity offset
+    vec4 grid;           // origin of probe (0, 0, 0), spacing
+    uvec4 size;          // probes per axis, light count
+    uvec4 box_min;       // probes traced: first corner, rays
+    uvec4 box_size;      // probes traced per axis
+    uvec4 dispatch_min;  // probes written (the traced box and the last one, cleared): first corner
+    uvec4 dispatch_size; // probes written per axis, w: bounce scale bits
+    vec4 light_position[8]; // xyz, radius
+    vec4 light_color[8];    // rgb, strength
+    vec4 light_falloff[8];  // light value, attenuation, angle scale, formula
+} parameters;
+#else
 layout(std430, set = 0, binding = READONLY(1)) readonly buffer Emit { float values[]; } emit; // [sample][4 slots][rgb]
 layout(std430, set = 1, binding = READWRITE(0)) buffer Result { uint words[]; } result;
 layout(std140, set = 2, binding = 0) uniform Parameters {
@@ -30,14 +49,16 @@ layout(std140, set = 2, binding = 0) uniform Parameters {
     uvec4 lights; // light offset, light count, reach offset, reach words per face (0: every light)
     vec4 sun;     // direction sunlight travels, penumbra in degrees
 } parameters;
+#endif
 
-const uint NODE_WORDS = 8u, FACE_WORDS = 20u, LIGHT_WORDS = 20u, ENTRIES = 16u, NO_FACE = 0xffffffffu;
+const uint NODE_WORDS = 8u, FACE_WORDS = 24u, LIGHT_WORDS = 20u, ENTRIES = 16u, NO_FACE = 0xffffffffu;
 const uint LEAF_SOLID = 1u, LEAF_SKY = 2u;
 const int TRACE_SOLID = -1, TRACE_SKY = -2;
 const float RAY_LENGTH = 4096.0;
 // Face words: 0 kind (0 skipped, 1 lit, 2 sky), 1 first vertex, 2 vertex count,
 // 3 emit styles (a byte per slot), 4-6 normal, 7 sample width | height << 16,
-// 8 first sample, 9-12 s axis and offset, 13-16 t axis and offset, 17-18 mins.
+// 8 first sample, 9-12 s axis and offset, 13-16 t axis and offset, 17-18 mins,
+// 19-21 albedo.
 // Light words: 0-2 origin, 3 range, 4 light value, 5 attenuation, 6 formula,
 // 7 angle scale, 8 output scale, 9-11 color, 12 spotlight, 13-15 spot axis,
 // 16 outer cosine, 17 inner cosine, 18 emitter radius, 19 style.
@@ -172,6 +193,7 @@ vec3 CosineDirection(vec3 normal, vec3 tangent, vec3 bitangent, uint r, uint ray
     float radius = sqrt(u), angle = 6.2831853 * v;
     return tangent * (radius * cos(angle)) + bitangent * (radius * sin(angle)) + normal * sqrt(max(1.0 - u, 0.0));
 }
+#ifndef LQ_PROBES
 vec3 EmitValue(uint sample_index, uint slot)
 {
     uint i = (sample_index * 4u + slot) * 3u;
@@ -191,11 +213,97 @@ vec3 HitValue(uint face, vec3 hit, uint slot)
     vec3 bottom = EmitValue(first + uint(y1 * width + x), slot) * (1.0 - fx) + EmitValue(first + uint(y1 * width + x1), slot) * fx;
     return top * (1.0 - fy) + bottom * fy;
 }
+#endif
 void Basis(vec3 normal, out vec3 tangent, out vec3 bitangent)
 {
     vec3 helper = abs(normal.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
     tangent = normalize(cross(helper, normal)); bitangent = cross(normal, tangent);
 }
+#ifdef LQ_PROBES
+// Even sphere coverage (Fibonacci lattice), rotated per probe about Z.
+vec3 SphereDirection(uint i, uint count, float rotation)
+{
+    float z = 1.0 - (2.0 * float(i) + 1.0) / float(count), radius = sqrt(max(1.0 - z * z, 0.0));
+    float angle = float(i) * 2.39996323 + rotation;
+    return vec3(radius * cos(angle), radius * sin(angle), z);
+}
+// A runtime light's value at a distance, as the world shader evaluates it.
+float RuntimeValue(vec4 falloff, float distance)
+{
+    float value = falloff.x, scaled = falloff.y * distance;
+    int formula = int(falloff.w + 0.5);
+    if (formula == 0) return max(value - scaled, 0.0);
+    if (formula == 1) return value * 128.0 / max(scaled, 1.0);
+    if (formula == 2) return value * 16384.0 / max(scaled * scaled, 1.0);
+    if (formula == 3) return value;
+    if (formula == 5) return value * 16384.0 / ((scaled + 128.0) * (scaled + 128.0));
+    return 0.0;
+}
+// Light arriving from direction d adds irradiance to the cube faces it faces.
+void CubeAdd(inout vec3 cube[6], vec3 d, vec3 value)
+{
+    for (int axis = 0; axis < 3; ++axis) cube[axis * 2 + (d[axis] < 0.0 ? 1 : 0)] += value * abs(d[axis]);
+}
+// A probe's rays run on neighbouring threads of one workgroup (RAYS of them;
+// 64 / RAYS probes per group), and their light is summed in shared memory.
+// Probes in the dispatch box are traced when they lie in the traced box, are in
+// open space and are within reach of a light; every other probe is cleared.
+const uint RAYS = 16u, GROUP = 64u;
+shared vec3 partial[GROUP][6];
+void main()
+{
+    uvec3 count = parameters.dispatch_size.xyz;
+    uint i = gl_GlobalInvocationID.x / RAYS, r = gl_LocalInvocationID.x % RAYS, lane = gl_LocalInvocationID.x;
+    bool inside = i < count.x * count.y * count.z;
+    uvec3 at = parameters.dispatch_min.xyz + uvec3(i % count.x, i / count.x % count.y, i / max(count.x * count.y, 1u));
+    uvec3 n = parameters.size.xyz;
+    uint p = at.x + n.x * (at.y + n.y * at.z), lights = parameters.size.w;
+    vec3 cube[6] = vec3[6](vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0));
+    bool live = inside && all(greaterThanEqual(at, parameters.box_min.xyz)) &&
+        all(lessThan(at, parameters.box_min.xyz + parameters.box_size.xyz)) &&
+        ((Word(parameters.tables.w + p / 4u) >> (8u * (p % 4u))) & 255u) != 0u;
+    float spacing = parameters.grid.w;
+    vec3 origin = vec3(parameters.grid.x + float(at.x) * spacing, parameters.grid.y + float(at.y) * spacing,
+        parameters.grid.z + float(at.z) * spacing);
+    bool near = false;
+    for (uint l = 0u; live && l < lights; ++l) {
+        vec4 light = parameters.light_position[l];
+        vec3 d = light.xyz - origin;
+        near = near || dot(d, d) < (light.w + spacing) * (light.w + spacing);
+    }
+    live = live && near;
+    if (live) {
+        float rotation = float(Hash(p ^ 0x5bd1e995u) & 0xffffu) / 65536.0 * 6.2831853;
+        vec3 d = SphereDirection(r, RAYS, rotation), hit;
+        uint face;
+        if (Trace(origin, origin + d * RAY_LENGTH, d, face, hit) == 1) {
+            uint record = FaceRecord(face);
+            vec3 normal = Vector(record + 4u), albedo = Vector(record + 19u), lifted = hit + normal;
+            for (uint l = 0u; l < lights; ++l) {
+                vec4 light = parameters.light_position[l], color = parameters.light_color[l], falloff = parameters.light_falloff[l];
+                vec3 toward = light.xyz - hit;
+                float distance = sqrt(dot(toward, toward));
+                if (distance >= light.w || distance < 0.001) continue;
+                float facing = dot(normal, toward) / distance;
+                if (facing <= 0.0) continue;
+                float value = RuntimeValue(falloff, distance) * ((1.0 - falloff.z) + falloff.z * facing) * color.w;
+                if (value < 0.01 || !SegmentClear(lifted, light.xyz)) continue;
+                CubeAdd(cube, d, value * color.rgb * albedo);
+            }
+        }
+    }
+    for (uint f = 0u; f < 6u; ++f) partial[lane][f] = cube[f];
+    barrier();
+    if (r != 0u || !inside) return;
+    float scale = 4.0 / float(RAYS) * uintBitsToFloat(parameters.dispatch_size.w);
+    for (uint f = 0u; f < 6u; ++f) {
+        vec3 sum = vec3(0.0);
+        for (uint k = 0u; k < RAYS; ++k) sum += partial[lane + k][f];
+        vec4 texel = live ? vec4(floor(clamp(sum * scale + 0.5, 0.0, 255.0)) / 255.0, 1.0) : vec4(0.0);
+        imageStore(probes, ivec3(at.x, at.y, f * n.z + at.z), texel);
+    }
+}
+#else
 // LIGHT/ericw-tools falloff (scene.c's LQ_LightFalloff).
 float Falloff(uint light, float distance)
 {
@@ -329,3 +437,4 @@ void main()
         result.words[at + 3u] = floatBitsToUint(sums[j].z);
     }
 }
+#endif

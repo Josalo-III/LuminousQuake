@@ -236,6 +236,11 @@ int LQ_SceneComputeBounceTraced(lq_scene *scene, uint32_t rays, lq_range_runner 
  * only: rays from each probe find surfaces they light (BSP-occluded) and gather
  * the reflected light. `output` holds size[0]*size[1]*size[2]*6 RGBA texels,
  * depth index direction*size[2] + z. Returns 1 when any gameplay light wrote. */
+/* The gameplay lights (at most LQ_MAX_DYNAMIC_LIGHTS) whose probes need
+ * tracing this frame, and the box of probes within their reach. Returns 0
+ * when no gameplay light reaches the grid. */
+uint32_t LQ_SceneDynamicProbeLights(const lq_scene *scene, const lq_runtime_light *lights, uint32_t count,
+    const lq_runtime_light *selected[LQ_MAX_DYNAMIC_LIGHTS], uint32_t box_min[3], uint32_t box_size[3]);
 int LQ_SceneDynamicProbes(const lq_scene *scene, const lq_runtime_light *lights, uint32_t count,
     uint32_t rays, lq_range_runner run, uint8_t *output);
 uint32_t LQ_BuildRuntimeLights(const lq_scene *scene, const float styles[256],

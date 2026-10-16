@@ -43,6 +43,57 @@ static int InFrustum(const float m[16], const float bounds[6])
 }
 static int Has(int argc, char **argv, const char *name)
 { for (int i = 1; i < argc; ++i) if (!strcmp(argv[i], name)) return 1; return 0; }
+/* --compare-probes: dynamic probes around gameplay lights near the camera on
+ * the CPU and the GPU, twice, the lights moving between, so the GPU must also
+ * clear the probes they left. */
+static int CompareProbes(lq_scene *s, lq_gpu *device, const float camera[3])
+{
+    size_t bytes = LQ_GPUDynamicProbeBytes(device);
+    uint8_t *cpu = malloc(bytes ? bytes : 1), *gpu_probes = malloc(bytes ? bytes : 1);
+    int ok = bytes && cpu && gpu_probes;
+    static const float flash[3] = {1.0f, 0.85f, 0.55f}, blast[3] = {1.0f, 0.7f, 0.35f};
+    for (int round = 0; ok && round < 2; ++round) {
+        lq_runtime_light lights[3];
+        float a[3] = {camera[0], camera[1], camera[2]}, b[3] = {camera[0] + 96, camera[1], camera[2] + 16};
+        float c[3] = {camera[0], camera[1] + 160, camera[2]};
+        if (round) for (int k = 0; k < 3; ++k) { a[k] += k == 0 ? 192 : 0; b[k] += k == 1 ? -128 : 0; c[k] += k == 2 ? 32 : 0; }
+        LQ_DynamicRuntimeLight(&lights[0], a, 200, flash, 4, 0);
+        LQ_DynamicRuntimeLight(&lights[1], b, 350, blast, 12, 1);
+        LQ_DynamicRuntimeLight(&lights[2], c, 200, flash, 4, 2);
+        const lq_runtime_light *selected[LQ_MAX_DYNAMIC_LIGHTS]; uint32_t box_min[3], box_size[3];
+        uint32_t count = LQ_SceneDynamicProbeLights(s, lights, 3, selected, box_min, box_size);
+        uint64_t started = SDL_GetTicksNS();
+        int active = LQ_SceneDynamicProbes(s, lights, 3, 16, LQ_JobsRunRange, cpu);
+        double cpu_ms = (SDL_GetTicksNS() - started) / 1e6;
+        if (!count || !active || !LQ_GPUTraceDynamicProbes(device, selected, count, box_min, box_size, 16) ||
+            !LQ_GPUReadDynamicProbes(device, gpu_probes)) { ok = 0; break; }
+        double total = 0; int peak = 0; uint64_t off = 0, lit_cpu = 0, lit_gpu = 0;
+        for (size_t i = 0; i < bytes; ++i) {
+            int d = abs((int)cpu[i] - (int)gpu_probes[i]);
+            total += d; peak = d > peak ? d : peak; off += d > 2;
+            if (i % 4 != 3) { lit_cpu += cpu[i] > 0; lit_gpu += gpu_probes[i] > 0; }
+        }
+        printf("Dynamic probes, round %d: %u lights, box %ux%ux%u; CPU %.2f ms; lit values CPU %llu, GPU %llu;"
+            " mean difference %.4f, largest %d, %.3f%% differ by more than 2\n", round + 1, count,
+            box_size[0], box_size[1], box_size[2], cpu_ms, (unsigned long long)lit_cpu, (unsigned long long)lit_gpu,
+            total / bytes, peak, 100.0 * off / bytes);
+        /* GPU time: tracing plus readback, less readback alone, over 30 runs. */
+        uint64_t traced = 0, read = 0;
+        for (int i = 0; ok && i < 30; ++i) {
+            uint64_t t0 = SDL_GetTicksNS();
+            ok = LQ_GPUTraceDynamicProbes(device, selected, count, box_min, box_size, 16) &&
+                LQ_GPUReadDynamicProbes(device, gpu_probes);
+            uint64_t t1 = SDL_GetTicksNS();
+            ok = ok && LQ_GPUReadDynamicProbes(device, gpu_probes);
+            traced += t1 - t0; read += SDL_GetTicksNS() - t1;
+        }
+        printf("  GPU tracing about %.2f ms per frame (%.2f ms with readback, %.2f ms readback alone)\n",
+            (double)(traced - read) / 30e6, traced / 30e6, read / 30e6);
+    }
+    if (!ok) fprintf(stderr, "Dynamic probe comparison failed: no probes, no light reach, or no GPU probe path\n");
+    free(cpu); free(gpu_probes);
+    return ok;
+}
 /* --compare-bounce: bounce with CPU rays, then GPU rays, and how far the
  * results differ over every face sample of each atlas layer and every probe. */
 static int CompareBounce(lq_scene *s, uint32_t rays, lq_gpu *device, char *error, size_t size)
@@ -733,7 +784,7 @@ int LQ_GPUViewer(int argc, char **argv)
     if (!SDL_Init(SDL_INIT_VIDEO)) { snprintf(error, sizeof(error), "SDL3: %s", SDL_GetError()); goto done; }
     window = SDL_CreateWindow("LuminousQuake GPU world viewer / WASD fly / E Q vertical / F1 capture / Esc exit",
         960, 720, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
-        (test || compare || Has(argc, argv, "--light-budget") ? SDL_WINDOW_HIDDEN : 0));
+        (test || compare || Has(argc, argv, "--compare-probes") || Has(argc, argv, "--light-budget") ? SDL_WINDOW_HIDDEN : 0));
     if (!window) { snprintf(error, sizeof(error), "window: %s", SDL_GetError()); goto done; }
     gpu = LQ_GPUCreate(window, 1, error, sizeof(error));
     if (!gpu) goto done;
@@ -821,6 +872,7 @@ int LQ_GPUViewer(int argc, char **argv)
         free(visible); free(game); free(all); result = 0; goto done;
     }
     if (!LQ_GPUUpload(gpu, &scene, error, sizeof(error))) goto done;
+    if (enhanced && Has(argc, argv, "--compare-probes")) { result = CompareProbes(&scene, gpu, view.origin) ? 0 : 1; goto done; }
     if (enhanced) {
         interaction_draws = malloc(scene.draw_count*sizeof(*interaction_draws));
         if (interaction_draws && !LQ_SceneDrawBounds(&scene)) { free(interaction_draws); interaction_draws = NULL; }

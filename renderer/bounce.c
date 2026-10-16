@@ -716,19 +716,17 @@ static void DynamicProbes(void *opaque, size_t begin, size_t end)
         StoreCube(c, x, y, z, 0, cube, 4.0f / c->rays * s->bounce_scale, NULL);
     }
 }
-int LQ_SceneDynamicProbes(const lq_scene *s, const lq_runtime_light *lights, uint32_t count,
-    uint32_t rays, lq_range_runner run, uint8_t *output)
+uint32_t LQ_SceneDynamicProbeLights(const lq_scene *s, const lq_runtime_light *lights, uint32_t count,
+    const lq_runtime_light *selected[LQ_MAX_DYNAMIC_LIGHTS], uint32_t box_min[3], uint32_t box_size[3])
 {
-    if (!s || !s->probe_valid || !output || !rays) return 0;
-    size_t texels = (size_t)s->probe_size[0] * s->probe_size[1] * s->probe_size[2] * 6;
-    memset(output, 0, texels * 4);
-    probe_context c = {s, NULL, {0}, {0}, 0, rays, {0}, {0}, output, 1};
+    if (!s || !s->probe_valid) return 0;
+    uint32_t chosen = 0;
     int64_t low[3] = {INT64_MAX, INT64_MAX, INT64_MAX}, high[3] = {INT64_MIN, INT64_MIN, INT64_MIN};
     for (uint32_t i = 0; i < count && i < LQ_MAX_RUNTIME_LIGHTS; ++i) {
         const lq_runtime_light *light = &lights[i];
         if (!(light->source_index & LQ_DYNAMIC_LIGHT_SOURCE) || light->position_radius[3] <= 0 ||
-            light->color_strength[3] <= 0 || c.light_count == LQ_MAX_DYNAMIC_LIGHTS) continue;
-        c.lights[c.light_count++] = light;
+            light->color_strength[3] <= 0 || chosen == LQ_MAX_DYNAMIC_LIGHTS) continue;
+        selected[chosen++] = light;
         for (int k = 0; k < 3; ++k) {
             float reach = light->position_radius[3] + s->probe_spacing;
             int64_t a = (int64_t)floorf((light->position_radius[k] - reach - s->probe_origin[k]) / s->probe_spacing);
@@ -737,13 +735,24 @@ int LQ_SceneDynamicProbes(const lq_scene *s, const lq_runtime_light *lights, uin
             if (b > high[k]) high[k] = b;
         }
     }
-    if (!c.light_count) return 0;
+    if (!chosen) return 0;
     for (int k = 0; k < 3; ++k) {
         if (low[k] < 0) low[k] = 0;
         if (high[k] >= (int64_t)s->probe_size[k]) high[k] = (int64_t)s->probe_size[k] - 1;
         if (high[k] < low[k]) return 0;
-        c.box_min[k] = (uint32_t)low[k]; c.box_size[k] = (uint32_t)(high[k] - low[k] + 1);
+        box_min[k] = (uint32_t)low[k]; box_size[k] = (uint32_t)(high[k] - low[k] + 1);
     }
+    return chosen;
+}
+int LQ_SceneDynamicProbes(const lq_scene *s, const lq_runtime_light *lights, uint32_t count,
+    uint32_t rays, lq_range_runner run, uint8_t *output)
+{
+    if (!s || !s->probe_valid || !output || !rays) return 0;
+    size_t texels = (size_t)s->probe_size[0] * s->probe_size[1] * s->probe_size[2] * 6;
+    memset(output, 0, texels * 4);
+    probe_context c = {s, NULL, {0}, {0}, 0, rays, {0}, {0}, output, 1};
+    c.light_count = LQ_SceneDynamicProbeLights(s, lights, count, c.lights, c.box_min, c.box_size);
+    if (!c.light_count) return 0;
     if (!run) run = Serial;
     run((size_t)c.box_size[0] * c.box_size[1] * c.box_size[2], 16, DynamicProbes, &c);
     return 1;

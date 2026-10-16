@@ -15,13 +15,14 @@ args = parser.parse_args()
 with tempfile.TemporaryDirectory(prefix='lq-shaders-') as temporary:
     root = args.root
     result = ['/* Generated from renderer/shaders by tools/build_shaders.py. GPL-2.0-or-later. */']
-    shaders = [(name, stage) for name in ('world', 'overlay', 'shadow') for stage in ('vert', 'frag')]
-    shaders.append(('bounce', 'comp'))
-    for name, stage in shaders:
-        source = str(root / 'renderer/shaders' / (name + '.' + stage))
+    # (output name, stage, source, defines): bounce.comp also builds the probes kernel.
+    shaders = [(name, stage, name, []) for name in ('world', 'overlay', 'shadow') for stage in ('vert', 'frag')]
+    shaders += [('bounce', 'comp', 'bounce', []), ('probes', 'comp', 'bounce', ['-DLQ_PROBES'])]
+    for name, stage, file, defines in shaders:
+        source = str(root / 'renderer/shaders' / (file + '.' + stage))
         spirv = Path(temporary) / (name + '.' + stage + '.spv')
         metal = Path(temporary) / (name + '.' + stage + '.msl')
-        subprocess.run(['glslangValidator', '-V', '--target-env', 'vulkan1.0', source, '-o', str(spirv)], check=True)
+        subprocess.run(['glslangValidator', '-V', '--target-env', 'vulkan1.0', *defines, source, '-o', str(spirv)], check=True)
         if shutil.which('spirv-val'):
             subprocess.run(['spirv-val', '--target-env', 'vulkan1.0', str(spirv)], check=True)
         # SDL numbers a compute shader's Metal buffers across all resource
@@ -29,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix='lq-shaders-') as temporary:
         metal_spirv = spirv
         if stage == 'comp':
             metal_spirv = Path(temporary) / (name + '.' + stage + '.metal.spv')
-            subprocess.run(['glslangValidator', '-V', '--target-env', 'vulkan1.0', '-DLQ_MSL', source,
+            subprocess.run(['glslangValidator', '-V', '--target-env', 'vulkan1.0', '-DLQ_MSL', *defines, source,
                             '-o', str(metal_spirv)], check=True)
         subprocess.run(['spirv-cross', str(metal_spirv), '--msl', '--msl-version', '20100',
                         '--msl-decoration-binding', '--output', str(metal)], check=True)

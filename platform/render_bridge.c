@@ -363,11 +363,17 @@ qboolean LQ_RenderBridgePresent(void)
     }
     lq_image image = {overlay_width, overlay_height, 4, rgba};
     lq_frame empty = {0};
-    /* Gameplay lights bounce through the probe grid; recomputed around them each frame. */
+    /* Gameplay lights bounce through the probe grid, around them each frame:
+     * traced on the GPU when it can write the probe texture, else here. */
     if (enhanced && direct_frame && dynamic_probes) {
-        int active = LQ_SceneDynamicProbes(&map_scene, view.runtime_lights, view.runtime_light_count, 16,
-            LQ_JobsRunRange, dynamic_probes);
-        if (!LQ_GPUDynamicProbes(gpu, active ? dynamic_probes : NULL, error, sizeof(error))) goto failed;
+        const lq_runtime_light *lights[LQ_MAX_DYNAMIC_LIGHTS]; uint32_t box_min[3], box_size[3];
+        uint32_t count = LQ_SceneDynamicProbeLights(&map_scene, view.runtime_lights, view.runtime_light_count,
+            lights, box_min, box_size);
+        if (!count || !LQ_GPUTraceDynamicProbes(gpu, lights, count, box_min, box_size, 16)) {
+            int active = count && LQ_SceneDynamicProbes(&map_scene, view.runtime_lights, view.runtime_light_count, 16,
+                LQ_JobsRunRange, dynamic_probes);
+            if (!LQ_GPUDynamicProbes(gpu, active ? dynamic_probes : NULL, error, sizeof(error))) goto failed;
+        }
     }
     if (!LQ_GPUFrame(gpu, direct_frame ? LQ_EntitiesFrame() : &empty, error, sizeof(error)) ||
         !LQ_GPUOverlay(gpu, &image, error, sizeof(error)) ||

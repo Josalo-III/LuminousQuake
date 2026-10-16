@@ -16,6 +16,15 @@ int LQ_GPURender(lq_gpu *gpu, const lq_view *view, uint32_t width, uint32_t heig
 /* Enhanced bounce rays on this GPU, for LQ_SceneComputeBounceTraced. A pass
  * the GPU cannot run returns 0 and falls back to the CPU. */
 lq_bounce_tracer LQ_GPUBounceTracer(lq_gpu *gpu);
+/* Enhanced: trace this frame's dynamic probes on the GPU for the gameplay
+ * lights and box from LQ_SceneDynamicProbeLights; the next render writes
+ * them before drawing. Returns 0 when this GPU cannot (then use
+ * LQ_SceneDynamicProbes and LQ_GPUDynamicProbes). */
+int LQ_GPUTraceDynamicProbes(lq_gpu *gpu, const lq_runtime_light *const *lights, uint32_t count,
+    const uint32_t box_min[3], const uint32_t box_size[3], uint32_t rays);
+/* Diagnostics: write any pending probes now and read the dynamic probe texture
+ * (LQ_GPUDynamicProbeBytes bytes). */
+int LQ_GPUReadDynamicProbes(lq_gpu *gpu, uint8_t *pixels);
 /* Shadow cube slots redrawn by the most recent render; unchanged slots reuse
  * their cached static-world shadows. */
 uint32_t LQ_GPUShadowUpdates(const lq_gpu *gpu);
