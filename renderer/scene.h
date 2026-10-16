@@ -44,6 +44,15 @@ enum { LQ_LIGHT_LINEAR, LQ_LIGHT_INVERSE, LQ_LIGHT_INVERSE2, LQ_LIGHT_INFINITE,
  * white). Luminous scales their output so they draw the eye in a darker scene
  * without dominating it. Linear spotlights keep their compiler strength. */
 #define LQ_ACCENT_SPOT_GAIN 0.15f
+/* Luminous bounce is gathered repeatedly, as ericw-tools' radiosity is: each
+ * bounce reflects the previous one's light off the texture color and scales
+ * it by bounce_scale, so it fades geometrically. */
+#define LQ_BOUNCE_MAX 16u
+#define LQ_BOUNCE_CONVERGED 0.01f
+/* Per-reflection scale for maps whose bake had no bounce (no worldspawn
+ * _bounce or _bouncescale), such as every 1996 map: enough indirect light to
+ * carry moving and switched lights without lifting authored darkness. */
+#define LQ_BOUNCE_SCALE_UNBAKED 0.25f
 /* Luminous sky light: brightness under an open sky per unit of the sky's mean
  * displayed color times 128 (where a white surface matches the sky). */
 #define LQ_SKY_LIGHT_GAIN 1.0f
@@ -100,7 +109,14 @@ typedef struct {
     lq_face_samples *face_samples;
     float (*sample_positions)[3];
     uint32_t sample_count, atlas_height;
-    float bounce_scale; /* worldspawn _bouncescale; 1 when absent */
+    /* Worldspawn _bouncescale, applied at every reflection; 1 when only _bounce
+     * is given, LQ_BOUNCE_SCALE_UNBAKED when neither is. */
+    float bounce_scale;
+    /* Worldspawn _bounce: ericw-tools' bounce count, at most LQ_BOUNCE_MAX; 0
+     * when absent, meaning LQ_BOUNCE_MAX. Bouncing stops sooner once a bounce
+     * adds less than LQ_BOUNCE_CONVERGED of the first one's light. */
+    uint32_t bounce_limit;
+    uint32_t bounces; /* set by LQ_SceneComputeBounce: bounces gathered */
     /* Optional Luminous bounce: four stacked RGBA layers of atlas_height rows,
      * brightness units, selected per draw by bounce_styles. Layer 0 alpha is
      * the sample's sky visibility (cosine-weighted fraction of rays reaching

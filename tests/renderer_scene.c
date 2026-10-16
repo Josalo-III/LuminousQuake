@@ -223,7 +223,7 @@ static int BounceRoomTest(void)
         room.materials[0].indices.pixels);
     room.vertex_count = 24; room.index_count = 36; room.draw_count = 6; room.material_count = 1;
     room.bsp_node_count = 6; room.leaf_count = 2; room.leaf_contents[0] = LQ_LEAF_SOLID;
-    room.atlas_height = 2 + GRID; room.bounce_scale = 1;
+    room.atlas_height = 2 + GRID; room.bounce_scale = 1; room.bounce_limit = 1;
     for (int wall = 0; wall < 6; ++wall) {
         int axis = wall / 2, u = (axis + 1) % 3, v = (axis + 2) % 3;
         float inward = wall & 1 ? -1.0f : 1.0f; /* even walls sit at -HALF */
@@ -282,6 +282,22 @@ static int BounceRoomTest(void)
         if (first_value < 0) first_value = texel[0];
         CHECK(texel[0] > 85 && texel[0] < 125 && abs((int)texel[0] - first_value) <= 6);
     }
+    /* Repeated bounces: a closed room returns all its light, so each bounce is
+     * 0.4 of the last and their sum 1/(1 - 0.4) of the first, reached once a
+     * bounce adds under 1% (0.4^5 < 0.01). */
+    const uint8_t *bounced_wall = room.bounce.pixels + ((size_t)(1 + GRID/2) * room.bounce.width + 1 + GRID/2 + 3 * (GRID + 2)) * 4;
+    int single = bounced_wall[0];
+    CHECK(room.bounces == 1);
+    room.bounce_limit = 0;
+    CHECK(LQ_SceneComputeBounce(&room, 128, NULL, error, sizeof(error)));
+    bounced_wall = room.bounce.pixels + ((size_t)(1 + GRID/2) * room.bounce.width + 1 + GRID/2 + 3 * (GRID + 2)) * 4;
+    CHECK(room.bounces >= 5 && room.bounces <= 7);
+    CHECK(fabsf(bounced_wall[0] - single / 0.6f) <= 0.06f * single / 0.6f && bounced_wall[0] == bounced_wall[1]);
+    room.bounce_limit = 2;
+    CHECK(LQ_SceneComputeBounce(&room, 128, NULL, error, sizeof(error)));
+    bounced_wall = room.bounce.pixels + ((size_t)(1 + GRID/2) * room.bounce.width + 1 + GRID/2 + 3 * (GRID + 2)) * 4;
+    CHECK(room.bounces == 2 && abs((int)bounced_wall[0] - (int)(single * 1.4f + 0.5f)) <= 2);
+    room.bounce_limit = 1;
     /* Gameplay light: a muzzle-flash-sized light in the room bounces into
      * probes near it and nowhere when absent. */
     size_t dynamic_bytes = (size_t)room.probe_size[0] * room.probe_size[1] * room.probe_size[2] * 6 * 4;

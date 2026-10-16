@@ -757,6 +757,14 @@ int LQ_GPUViewer(int argc, char **argv)
         }
         LQ_SceneSetAccentGain(&scene, gain);
     }
+    const char *bounce_scale = Argument(argc, argv, "--bounce-scale");
+    if (bounce_scale) { /* replaces the map's per-reflection bounce scale */
+        char *end; float scale = strtof(bounce_scale, &end);
+        if (!*bounce_scale || *end || !isfinite(scale) || scale < 0 || scale > 16) {
+            fprintf(stderr, "--bounce-scale needs 0..16\n"); return 1;
+        }
+        scene.bounce_scale = scale;
+    }
     const char *light_radius = Argument(argc, argv, "--light-radius");
     if (light_radius) {
         char *end; float radius = strtof(light_radius, &end);
@@ -824,9 +832,9 @@ int LQ_GPUViewer(int argc, char **argv)
                 if (has_sun) sunlit += sun[3] > 0;
             }
         }
-        printf("Luminous bounce: %u samples, %ld rays each, %s, %.2f s; first layer mean %.1f, peak %.0f brightness; "
+        printf("Luminous bounce: %u samples, %ld rays each, %u bounces at scale %.2f, %s, %.2f s; first layer mean %.1f, peak %.0f brightness; "
             "sky seen by %.1f%% (mean visibility %.3f), sun by %.1f%%\n",
-            scene.sample_count, rays, tracer.passes ? "rays on the GPU" : "rays on the CPU",
+            scene.sample_count, rays, scene.bounces, scene.bounce_scale, tracer.passes ? "rays on the GPU" : "rays on the CPU",
             (double)(SDL_GetTicksNS() - started) / 1e9,
             texels ? total / texels : 0, peak, texels ? 100.0 * open / texels : 0, texels ? sky / texels : 0,
             texels ? 100.0 * sunlit / texels : 0);

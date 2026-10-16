@@ -194,13 +194,13 @@ static int Spawn(model_t *world, lq_scene *scene)
     light_extra *extras = NULL;
     char world_sunlight[128] = "", world_sun_mangle[128] = "", world_sun_color[128] = "", world_penumbra[128] = "";
     memset(switched_off, 0, sizeof(switched_off));
-    scene->bounce_scale = 1;
+    scene->bounce_scale = 1; scene->bounce_limit = 0;
     memset(scene->sun_direction, 0, sizeof(scene->sun_direction)); memset(scene->sun_light, 0, sizeof(scene->sun_light));
     scene->sun_angle_scale = 0.5f; scene->sun_penumbra = 0;
     while (text && (text = COM_Parse(text)) && !strcmp(com_token, "{")) {
         char classname[128] = "", origin[128] = "", angles[128] = "", yaw[128] = "";
         char delay[128] = "", wait[128] = "", mangle[128] = "", soft[128] = "", incidence[128] = "";
-        char world_range[128] = "", world_distance[128] = "", deviance[128] = "", bounce[128] = "";
+        char world_range[128] = "", world_distance[128] = "", deviance[128] = "", bounce[128] = "", bounces[128] = "";
         char sun[128] = "", surface[128] = "", surface_offset[128] = "", surface_spotlight[128] = "";
         char sunlight[128] = "", sun_mangle[128] = "", sun_color[128] = "", penumbra[128] = "";
         int style = 0, spawnflags = 0;
@@ -222,6 +222,7 @@ static int Spawn(model_t *world, lq_scene *scene)
             else if (!strcmp(key, "_range")) snprintf(world_range, sizeof(world_range), "%s", com_token);
             else if (!strcmp(key, "_deviance")) snprintf(deviance, sizeof(deviance), "%s", com_token);
             else if (!strcmp(key, "_bouncescale")) snprintf(bounce, sizeof(bounce), "%s", com_token);
+            else if (!strcmp(key, "_bounce")) snprintf(bounces, sizeof(bounces), "%s", com_token);
             else if (!strcmp(key, "_dist")) snprintf(world_distance, sizeof(world_distance), "%s", com_token);
             else if (!strcmp(key, "_sun")) snprintf(sun, sizeof(sun), "%s", com_token);
             else if (!strcmp(key, "_surface")) snprintf(surface, sizeof(surface), "%s", com_token);
@@ -249,6 +250,11 @@ static int Spawn(model_t *world, lq_scene *scene)
             if (world_distance[0] && Number(world_distance,&value) && value > 0) distance_scale = value;
             if (incidence[0] && Number(incidence,&value) && value >= 0 && value <= 1) angle_scale = value;
             if (bounce[0] && Number(bounce,&value) && value >= 0 && value <= 16) scene->bounce_scale = value;
+            if (bounces[0] && Number(bounces,&value) && value >= 1 && value == floorf(value))
+                scene->bounce_limit = value < LQ_BOUNCE_MAX ? (uint32_t)value : LQ_BOUNCE_MAX;
+            /* Neither key: the bake had no radiosity (the 1996 LIGHT never
+             * bounced), so its darkness was authored without indirect light. */
+            if (!bounces[0] && !bounce[0]) scene->bounce_scale = LQ_BOUNCE_SCALE_UNBAKED;
             snprintf(world_sunlight, sizeof(world_sunlight), "%s", sunlight);
             snprintf(world_sun_mangle, sizeof(world_sun_mangle), "%s", sun_mangle);
             snprintf(world_sun_color, sizeof(world_sun_color), "%s", sun_color);

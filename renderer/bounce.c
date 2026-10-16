@@ -1,7 +1,8 @@
 /* Luminous static-world bounce light from runtime light sources.
  * Direct light at LIGHT's sample lattice is computed from each source's own
  * falloff with BSP occlusion, reflected by the face's texture color, and
- * gathered once by cosine-weighted rays. The baked lightmap is never read.
+ * gathered by cosine-weighted rays; that bounce is reflected and gathered
+ * again until it fades (see LQ_BOUNCE_MAX). The baked lightmap is never read.
  * The sky is an area light: each sample's cosine-weighted sky visibility is
  * kept for the shader, which scales it by the sky's brightness, and the
  * sky-lit surfaces' reflection joins the style 0 bounce. An ericw-tools sun
@@ -340,7 +341,7 @@ static void HitValue(const lq_scene *s, const float (*values)[FACE_STYLES][3], u
         out[k] = top * (1-fy) + bottom * fy;
     }
 }
-/* Pass 2: one cosine-weighted gather per sample. With cosine-weighted rays and
+/* Pass 2: one cosine-weighted gather per sample, once per bounce. With cosine-weighted rays and
  * Lambertian emitters, irradiance is the mean exitance of the surfaces hit. */
 static void GatherFaces(void *opaque, size_t begin, size_t end)
 {
@@ -418,6 +419,44 @@ static void GatherFaces(void *opaque, size_t begin, size_t end)
         }
     }
     free(accumulate);
+}
+/* Adds one bounce's gather to the running total, style by style, and returns
+ * its light. A face keeps four styles; a style that first reaches it in a
+ * later bounce, with all four taken, is left out. */
+static double AddBounce(const lq_scene *s, const bounce_context *c, float (*total)[FACE_STYLES][3],
+    uint8_t (*total_styles)[FACE_STYLES])
+{
+    double energy = 0;
+    for (uint32_t f = 0; f < s->draw_count; ++f) {
+        const lq_face_samples *grid = &s->face_samples[f];
+        uint32_t samples = (uint32_t)grid->width * grid->height;
+        for (int k = 0; k < FACE_STYLES; ++k) {
+            uint8_t style = c->gather_styles[f][k];
+            if (style == 255) continue;
+            int slot = 0;
+            while (slot < FACE_STYLES && total_styles[f][slot] != style && total_styles[f][slot] != 255) ++slot;
+            if (slot == FACE_STYLES) continue;
+            total_styles[f][slot] = style;
+            for (uint32_t i = 0; i < samples; ++i)
+                for (int j = 0; j < 3; ++j) {
+                    float value = c->gather[grid->first_sample + i][k][j];
+                    total[grid->first_sample + i][slot][j] += value; energy += value;
+                }
+        }
+    }
+    return energy;
+}
+/* The next bounce's exitance: this bounce reflected off the texture color. */
+static void ReflectBounce(const lq_scene *s, bounce_context *c)
+{
+    for (uint32_t f = 0; f < s->draw_count; ++f) {
+        const lq_face_samples *grid = &s->face_samples[f];
+        memcpy(c->emit_styles[f], c->gather_styles[f], FACE_STYLES);
+        for (uint32_t i = 0; i < (uint32_t)grid->width * grid->height; ++i)
+            for (int k = 0; k < FACE_STYLES; ++k)
+                for (int j = 0; j < 3; ++j)
+                    c->emit[grid->first_sample + i][k][j] = c->gather[grid->first_sample + i][k][j] * grid->albedo[j];
+    }
 }
 /* ---- Irradiance probes ---------------------------------------------------- */
 #define PROBE_SPACING 64.0f
@@ -836,11 +875,36 @@ int LQ_SceneComputeBounceTraced(lq_scene *s, uint32_t rays, lq_range_runner run,
     if (direct && tracer->direct(tracer->context, s, direct)) { c.direct = direct; ++tracer->passes; }
     run(s->draw_count, 16, EmitFaces, &c);
     free(direct); c.direct = NULL;
+    /* The first bounce gathers the direct exitance; each later one gathers the
+     * last bounce reflected off the texture color. Probes still see the direct
+     * exitance, and the summed bounce through the color. */
+    float (*direct_emit)[FACE_STYLES][3] = malloc(samples * sizeof(*direct_emit));
+    float (*total)[FACE_STYLES][3] = calloc(samples, sizeof(*total));
+    uint8_t (*total_styles)[FACE_STYLES] = malloc(s->draw_count * sizeof(*total_styles));
     lq_bounce_entry *entries = tracer && tracer->gather ? malloc(samples * LQ_BOUNCE_ENTRIES * sizeof(*entries)) : NULL;
-    if (entries && tracer->gather(tracer->context, s, rays, (const float (*)[4][3])c.emit,
-            (const uint8_t (*)[4])c.emit_styles, entries)) { c.entries = entries; ++tracer->passes; }
-    run(s->draw_count, 8, GatherFaces, &c);
+    if (!direct_emit || !total || !total_styles) {
+        free(direct_emit); free(total); free(total_styles); free(entries);
+        free(c.emit); free(c.gather); free(c.sky); free(c.sun); free(c.emit_styles); free(c.gather_styles); free(pixels);
+        snprintf(error, size, "cannot allocate bounce buffers"); return 0;
+    }
+    memcpy(direct_emit, c.emit, samples * sizeof(*direct_emit));
+    memset(total_styles, 255, s->draw_count * sizeof(*total_styles));
+    uint32_t limit = s->bounce_limit ? s->bounce_limit : LQ_BOUNCE_MAX;
+    double first = 0;
+    for (s->bounces = 0; s->bounces < limit; ) {
+        c.entries = NULL;
+        if (entries && tracer->gather(tracer->context, s, rays, (const float (*)[4][3])c.emit,
+                (const uint8_t (*)[4])c.emit_styles, entries)) { c.entries = entries; ++tracer->passes; }
+        run(s->draw_count, 8, GatherFaces, &c);
+        double energy = AddBounce(s, &c, total, total_styles);
+        if (++s->bounces == 1) first = energy;
+        if (energy <= first * LQ_BOUNCE_CONVERGED || s->bounces == limit) break;
+        ReflectBounce(s, &c);
+    }
     free(entries); c.entries = NULL;
+    free(c.emit); c.emit = direct_emit;
+    free(c.gather); c.gather = total;
+    free(c.gather_styles); c.gather_styles = total_styles;
     /* Stack four style layers vertically, each with the lightmap's layout and
      * its one-texel clamped border for filtering. Values are brightness units. */
     uint32_t width = s->lightmap.width, layer = s->atlas_height;

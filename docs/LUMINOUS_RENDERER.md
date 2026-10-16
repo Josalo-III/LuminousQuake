@@ -231,15 +231,26 @@ Light also bounces off lit textures as a secondary source. At map load,
    The ray-to-face test follows GLQuake's RecursiveLightPoint, with exact convex
    polygon containment. The mean exitance of the surfaces hit is the bounced
    irradiance.
-3. **Scale.** Multiply by worldspawn `_bouncescale` (default 1).
+3. **Scale.** Multiply by worldspawn `_bouncescale`. A map that sets `_bounce`
+   without `_bouncescale` uses 1. A map with neither was baked without bounce
+   (every 1996 map) and uses 0.25: enough indirect light for moving and switched
+   lights without lifting darkness the original authored without it.
+4. **Repeat.** Reflect that bounce off the texture color as the next exitance
+   and gather again, as ericw-tools' radiosity does. Each bounce is the last
+   times color times scale, so it fades geometrically. Bouncing stops at the
+   map's `_bounce` count (at most 16) or once a bounce adds under 1% of the
+   first; id maps converge in three or four.
 
 Results are kept per light style: each face keeps its four strongest bounce
 styles in four stacked layers of an atlas that mirrors the lightmap layout. The
 shader weights each layer by its live style value, so switched and flickering
 lights still drive their bounce. The baked lightmap is never read.
 
-One bounce is gathered. A closed white room test checks hits, cosine weighting,
-style layers and albedo.
+A closed room test checks hits, cosine weighting, style layers and albedo for
+one bounce. It also checks that repeated bounces at 0.4 reflectance sum to
+1/(1 − 0.4) of the first and stop after five to seven bounces. Static probes
+see each surface's direct exitance plus its summed bounce through its color.
+Gameplay lights' per-frame probe bounce is still a single bounce.
 
 **GPU rays.** The passes that walk the BSP per sample run as a compute shader
 (`renderer/shaders/bounce.comp`, through SDL's GPU API on Metal and Vulkan):
@@ -251,7 +262,9 @@ Every pass stays in `bounce.c` as the reference and the fallback if the GPU
 cannot run one. Dispatches cover 65,536 samples each, so no command buffer
 runs long enough to trip a GPU watchdog on slower hardware.
 
-Whole-bounce time on an M1 Max, 64 rays per sample:
+Whole-bounce time on an M1 Max, 64 rays per sample (measured with a single
+bounce; each further bounce repeats only the gather, which on the GPU adds
+about 0.2–0.4 s on id maps):
 
 | Map (samples) | CPU, six workers | GPU rays |
 | --- | ---: | ---: |
@@ -275,6 +288,7 @@ the map sets `_bouncescale 0.5`, so physically based bounce there is subtle
 Viewer tuning flags:
 - `--exposure S` scales all Luminous light; below 1 is darker.
 - `--bounce-gain G` scales bounce artistically.
+- `--bounce-scale S` replaces the map's per-reflection bounce scale.
 - `--no-bounce` disables bounce.
 - `--bounce-rays N` sets the rays per sample.
 - `--cpu-bounce` traces every pass on the CPU.
