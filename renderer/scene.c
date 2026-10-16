@@ -174,15 +174,67 @@ void LQ_DynamicRuntimeLight(lq_runtime_light *light, const float origin[3], floa
     light->source_radius = source_radius;
     light->source_index = LQ_DYNAMIC_LIGHT_SOURCE | key;
 }
+void LQ_ShadowSlot(uint32_t slot, uint32_t *array, uint32_t *cube)
+{
+    static const uint32_t cubes[] = LQ_SHADOW_ARRAY_CUBES;
+    const uint32_t dynamic = LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS;
+    _Static_assert(16 + 32 + 40 + 40 == LQ_MAX_RUNTIME_LIGHTS, "every slot owns one cube");
+    if (slot >= dynamic) { *array = 0; *cube = slot - dynamic; return; }
+    slot += LQ_MAX_DYNAMIC_LIGHTS; /* map slots follow the gameplay cubes */
+    for (*array = 0; *array + 1 < LQ_SHADOW_ARRAYS && slot >= cubes[*array]; ++*array) slot -= cubes[*array];
+    *cube = slot;
+}
+/* Resolution class of a slot (0 sharpest): arrays of equal size share one. */
+#define LQ_SHADOW_TIERS 3
+static uint32_t SlotTier(uint32_t slot)
+{
+    static const uint32_t sizes[] = LQ_SHADOW_ARRAY_SIZES;
+    uint32_t array, cube; LQ_ShadowSlot(slot, &array, &cube);
+    return sizes[array] >= 512 ? 0 : sizes[array] >= 256 ? 1 : 2;
+}
+static void DrawBounds(const lq_scene *scene, const lq_draw *draw, float out[6]);
+/* Whether a source can light a visible draw, by the interaction test below. */
+static int ReachesVisible(const lq_scene *scene, uint32_t index, float range, const lq_draw *visible)
+{
+    const lq_light_source *source = &scene->light_sources[index];
+    for (uint32_t d = 0; d < scene->draw_count; ++d) {
+        const lq_draw *draw = &scene->draws[d];
+        if (!visible[d].index_count || draw->flags & LQ_SURFACE_SKY || draw->index_count < 3) continue;
+        if (scene->light_visibility &&
+            !(scene->light_visibility[d * scene->light_visibility_words + index / 32] & (1u << (index % 32)))) continue;
+        float computed[6];
+        const float *bounds = scene->draw_bounds ? scene->draw_bounds[d] : computed;
+        if (!scene->draw_bounds) DrawBounds(scene, draw, computed);
+        const lq_vertex *first = &scene->vertices[scene->indices[draw->first_index]];
+        float distance2 = 0, facing = 0;
+        for (int axis = 0; axis < 3; ++axis) {
+            float p = source->origin[axis];
+            float outside = p < bounds[axis] ? bounds[axis] - p : p > bounds[axis+3] ? p - bounds[axis+3] : 0;
+            distance2 += outside * outside; facing += (p - first->position[axis]) * first->normal[axis];
+        }
+        if (facing > 0 && distance2 < range * range) return 1;
+    }
+    return 0;
+}
+typedef struct { float score; uint32_t entity, source; } light_candidate;
+static int CandidateOrder(const void *a, const void *b)
+{
+    const light_candidate *x = a, *y = b;
+    if (x->score != y->score) return x->score < y->score ? -1 : 1;
+    return x->entity < y->entity ? -1 : x->entity > y->entity;
+}
 uint32_t LQ_BuildRuntimeLightsLimited(const lq_scene *scene, const float styles[256],
     const float camera[3], lq_runtime_light output[LQ_MAX_RUNTIME_LIGHTS], uint32_t slots)
+{ return LQ_BuildRuntimeLightsVisible(scene, styles, camera, NULL, output, slots); }
+uint32_t LQ_BuildRuntimeLightsVisible(const lq_scene *scene, const float styles[256],
+    const float camera[3], const lq_draw *visible, lq_runtime_light output[LQ_MAX_RUNTIME_LIGHTS], uint32_t slots)
 {
-    typedef struct { float score; uint32_t entity, source; } candidate;
-    candidate selected[LQ_MAX_RUNTIME_LIGHTS];
     lq_runtime_light previous[LQ_MAX_RUNTIME_LIGHTS];
     uint32_t count = 0, used = 0;
     if (!scene || !styles || !camera || !output) return 0;
     if (slots > LQ_MAX_RUNTIME_LIGHTS) slots = LQ_MAX_RUNTIME_LIGHTS;
+    light_candidate *list = malloc((scene->light_source_count ? scene->light_source_count : 1) * sizeof(*list));
+    if (!list) return 0;
     memcpy(previous, output, sizeof(previous));
     const uint32_t *view = NULL;
     if (scene->leaf_pvs && scene->light_leaves && scene->leaf_words) {
@@ -204,30 +256,54 @@ uint32_t LQ_BuildRuntimeLightsLimited(const lq_scene *scene, const float styles[
             if (!overlap) continue;
         }
         float dx = source->origin[0]-camera[0], dy = source->origin[1]-camera[1], dz = source->origin[2]-camera[2];
-        candidate value = {sqrtf(dx*dx+dy*dy+dz*dz)-fminf(range,1024), source->entity_index, i};
-        uint32_t at = count;
-        while (at && (value.score < selected[at-1].score ||
-            (value.score == selected[at-1].score && value.entity < selected[at-1].entity))) --at;
-        if (at >= slots) continue;
-        if (count < slots) ++count;
-        memmove(selected+at+1,selected+at,(count-at-1)*sizeof(*selected));
-        selected[at] = value;
+        list[count++] = (light_candidate){sqrtf(dx*dx+dy*dy+dz*dz)-fminf(range,1024), source->entity_index, i};
+    }
+    /* Over budget: first drop sources that light nothing in view. */
+    if (count > slots && visible) {
+        uint32_t kept = 0;
+        for (uint32_t j = 0; j < count; ++j)
+            if (ReachesVisible(scene, list[j].source, LQ_LightSourceRange(&scene->light_sources[list[j].source]), visible))
+                list[kept++] = list[j];
+        count = kept;
+    }
+    qsort(list, count, sizeof(*list), CandidateOrder);
+    if (count > slots) count = slots;
+    /* Rank r belongs in the tier of the r-th sharpest slot. A source keeps its
+     * slot (and cached cube) while its rank stays within half again of that
+     * slot's tier band; otherwise it moves to a free slot of its own tier. */
+    uint32_t band_start[LQ_SHADOW_TIERS] = {0}, band_end[LQ_SHADOW_TIERS] = {0}, tier_slots[LQ_SHADOW_TIERS] = {0};
+    for (uint32_t slot = 0; slot < slots; ++slot) ++tier_slots[SlotTier(slot)];
+    for (uint32_t t = 0, first = 0; t < LQ_SHADOW_TIERS; ++t) {
+        band_start[t] = first; first += tier_slots[t]; band_end[t] = first;
     }
     uint8_t placed[LQ_MAX_RUNTIME_LIGHTS] = {0};
     memset(output, 0, sizeof(*output) * slots);
     for (uint32_t slot = 0; slot < slots; ++slot) {
         output[slot].source_index = UINT32_MAX;
         if (previous[slot].position_radius[3] <= 0) continue;
-        for (uint32_t j = 0; j < count; ++j) if (!placed[j] && selected[j].source == previous[slot].source_index) {
-            FillRuntimeLight(&output[slot], &scene->light_sources[selected[j].source], selected[j].source, styles);
+        uint32_t tier = SlotTier(slot);
+        for (uint32_t j = 0; j < count; ++j) if (!placed[j] && list[j].source == previous[slot].source_index) {
+            if (j < band_start[tier] / 1.5f || j >= band_end[tier] * 1.5f) break; /* re-tier */
+            FillRuntimeLight(&output[slot], &scene->light_sources[list[j].source], list[j].source, styles);
             placed[j] = 1; break;
         }
     }
-    for (uint32_t j = 0, slot = 0; j < count; ++j) {
+    for (uint32_t j = 0; j < count; ++j) {
         if (placed[j]) continue;
-        while (output[slot].position_radius[3] > 0) ++slot;
-        FillRuntimeLight(&output[slot], &scene->light_sources[selected[j].source], selected[j].source, styles);
+        uint32_t want = 0;
+        while (want + 1 < LQ_SHADOW_TIERS && j >= band_end[want]) ++want;
+        uint32_t chosen = UINT32_MAX;
+        /* Desired tier, then coarser ones, then sharper ones. */
+        for (uint32_t step = 0; step < 2 * LQ_SHADOW_TIERS && chosen == UINT32_MAX; ++step) {
+            int tier = step < LQ_SHADOW_TIERS ? (int)(want + step) : (int)want - (int)(step - LQ_SHADOW_TIERS + 1);
+            if (tier < 0 || tier >= LQ_SHADOW_TIERS) continue;
+            for (uint32_t slot = 0; slot < slots && chosen == UINT32_MAX; ++slot)
+                if (output[slot].position_radius[3] <= 0 && SlotTier(slot) == (uint32_t)tier) chosen = slot;
+        }
+        if (chosen == UINT32_MAX) break;
+        FillRuntimeLight(&output[chosen], &scene->light_sources[list[j].source], list[j].source, styles);
     }
+    free(list);
     for (uint32_t slot = 0; slot < slots; ++slot)
         if (output[slot].position_radius[3] > 0) {
             output[slot].submerged = (uint8_t)LQ_SceneLiquid(scene, output[slot].position_radius);
@@ -271,7 +347,7 @@ uint32_t LQ_BuildVisibleLightInteractions(const lq_scene *scene, const lq_runtim
     memcpy(output,scene->draws,scene->draw_count*sizeof(*output));
     for (uint32_t d = 0; d < scene->draw_count; ++d) {
         lq_draw *draw = &output[d];
-        draw->light_bits = 0;
+        memset(draw->light_bits, 0, sizeof(draw->light_bits));
         if (draw->flags & LQ_SURFACE_SKY || draw->index_count < 3) continue;
         if (visible && !visible[d].index_count) continue;
         float computed[6];
@@ -279,8 +355,14 @@ uint32_t LQ_BuildVisibleLightInteractions(const lq_scene *scene, const lq_runtim
         if (!scene->draw_bounds) DrawBounds(scene, draw, computed);
         const float *bounds_min = bounds, *bounds_max = bounds + 3;
         const lq_vertex *first = &scene->vertices[scene->indices[draw->first_index]];
+        const uint32_t *reach = scene->light_visibility ? scene->light_visibility + d * scene->light_visibility_words : NULL;
         for (uint32_t i = 0; i < light_count; ++i) {
             const float *position = lights[i].position_radius;
+            uint32_t source = lights[i].source_index;
+            /* The precomputed reach bit rejects most pairs; gameplay lights have
+             * no static reach entry, so range and facing bound them. */
+            if (position[3] <= 0 ||
+                (reach && source < scene->light_source_count && !(reach[source / 32] & (1u << (source % 32))))) continue;
             float toward[3], distance2 = 0;
             for (int axis = 0; axis < 3; ++axis) {
                 toward[axis] = position[axis]-first->position[axis];
@@ -290,18 +372,121 @@ uint32_t LQ_BuildVisibleLightInteractions(const lq_scene *scene, const lq_runtim
             }
             float facing = toward[0]*first->normal[0]+toward[1]*first->normal[1]+toward[2]*first->normal[2];
             float radius = position[3];
-            /* Gameplay lights have no static reach entry; range and facing bound them. */
-            int visible = !scene->light_visibility || lights[i].source_index >= scene->light_source_count ||
-                (
-                 (scene->light_visibility[d * scene->light_visibility_words +
-                     lights[i].source_index / 32] & (1u << (lights[i].source_index % 32))));
-            if (radius > 0 && facing > 0 && distance2 < radius*radius && visible) {
-                draw->light_bits |= 1u << i;
+            if (facing > 0 && distance2 < radius*radius) {
+                draw->light_bits[i / 32] |= 1u << (i % 32);
                 ++relationships;
             }
         }
     }
     return relationships;
+}
+#define SURFACE_POLYGON 64
+static void SurfacePieces(const float (*polygon)[3], uint32_t count, float subdivide,
+    float (*out)[3], uint32_t capacity, uint32_t *written, int depth)
+{
+    float low[3] = {INFINITY, INFINITY, INFINITY}, high[3] = {-INFINITY, -INFINITY, -INFINITY};
+    for (uint32_t i = 0; i < count; ++i) for (int k = 0; k < 3; ++k) {
+        low[k] = fminf(low[k], polygon[i][k]); high[k] = fmaxf(high[k], polygon[i][k]);
+    }
+    for (int axis = 0; axis < 3 && depth < 32; ++axis) {
+        float middle = subdivide * floorf((low[axis] + high[axis]) * 0.5f / subdivide + 0.5f);
+        if (high[axis] - middle < 8 || middle - low[axis] < 8) continue;
+        float front[SURFACE_POLYGON][3], back[SURFACE_POLYGON][3];
+        uint32_t fronts = 0, backs = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            const float *a = polygon[i], *b = polygon[(i + 1) % count];
+            float da = a[axis] - middle, db = b[axis] - middle;
+            if (da >= 0 && fronts < SURFACE_POLYGON) memcpy(front[fronts++], a, sizeof(front[0]));
+            if (da <= 0 && backs < SURFACE_POLYGON) memcpy(back[backs++], a, sizeof(back[0]));
+            if ((da > 0 && db < 0) || (da < 0 && db > 0)) {
+                float t = da / (da - db), cut[3];
+                for (int k = 0; k < 3; ++k) cut[k] = a[k] + t * (b[k] - a[k]);
+                cut[axis] = middle;
+                if (fronts < SURFACE_POLYGON) memcpy(front[fronts++], cut, sizeof(cut));
+                if (backs < SURFACE_POLYGON) memcpy(back[backs++], cut, sizeof(cut));
+            }
+        }
+        if (fronts >= 3) SurfacePieces((const float (*)[3])front, fronts, subdivide, out, capacity, written, depth + 1);
+        if (backs >= 3) SurfacePieces((const float (*)[3])back, backs, subdivide, out, capacity, written, depth + 1);
+        return;
+    }
+    if (*written < capacity) {
+        float *centroid = out[*written];
+        for (int k = 0; k < 3; ++k) {
+            centroid[k] = 0;
+            for (uint32_t i = 0; i < count; ++i) centroid[k] += polygon[i][k] / count;
+        }
+    }
+    ++*written;
+}
+uint32_t LQ_SurfaceLightPoints(const float (*polygon)[3], uint32_t count, float subdivide,
+    float (*out)[3], uint32_t capacity)
+{
+    uint32_t written = 0;
+    if (!polygon || count < 3 || count > SURFACE_POLYGON || !(subdivide >= 16) || (capacity && !out)) return 0;
+    SurfacePieces(polygon, count, subdivide, out, capacity, &written, 0);
+    return written;
+}
+uint32_t LQ_LightBudget(const lq_scene *scene, const float styles[256], const float camera[3],
+    const uint8_t *visible, uint32_t slots, lq_light_drop *dropped, uint32_t capacity,
+    uint32_t *dropped_count)
+{
+    uint32_t reaching = 0, drops = 0;
+    if (dropped_count) *dropped_count = 0;
+    if (!scene || !styles || !camera || (capacity && !dropped)) return 0;
+    lq_runtime_light selection[LQ_MAX_RUNTIME_LIGHTS];
+    memset(selection, 0, sizeof(selection)); /* no slots held from a previous frame */
+    /* Select as the game does, preferring lights that reach the visible draws. */
+    lq_draw *shown = visible ? malloc((scene->draw_count ? scene->draw_count : 1) * sizeof(*shown)) : NULL;
+    if (visible && !shown) return 0;
+    for (uint32_t d = 0; shown && d < scene->draw_count; ++d) {
+        shown[d] = scene->draws[d];
+        if (!visible[d]) shown[d].index_count = 0;
+    }
+    uint32_t used = LQ_BuildRuntimeLightsVisible(scene, styles, camera, shown, selection, slots);
+    free(shown);
+    for (uint32_t i = 0; i < scene->light_source_count; ++i) {
+        const lq_light_source *source = &scene->light_sources[i];
+        float range = LQ_LightSourceRange(source);
+        if (range <= 0) continue;
+        float level = LQ_LightSourceIntensity(source, styles) / source->intensity; /* live style */
+        if (level <= 0) continue;
+        float peak = 0;
+        for (uint32_t d = 0; d < scene->draw_count; ++d) {
+            const lq_draw *draw = &scene->draws[d];
+            if ((visible && !visible[d]) || draw->flags & LQ_SURFACE_SKY || draw->index_count < 3) continue;
+            if (scene->light_visibility &&
+                !(scene->light_visibility[d * scene->light_visibility_words + i / 32] & (1u << (i % 32)))) continue;
+            float computed[6];
+            const float *bounds = scene->draw_bounds ? scene->draw_bounds[d] : computed;
+            if (!scene->draw_bounds) DrawBounds(scene, draw, computed);
+            const lq_vertex *first = &scene->vertices[scene->indices[draw->first_index]];
+            float distance2 = 0, facing = 0;
+            for (int axis = 0; axis < 3; ++axis) {
+                float p = source->origin[axis];
+                float outside = p < bounds[axis] ? bounds[axis] - p : p > bounds[axis+3] ? p - bounds[axis+3] : 0;
+                distance2 += outside * outside;
+                facing += (p - first->position[axis]) * first->normal[axis];
+            }
+            if (facing <= 0 || distance2 >= range * range) continue;
+            peak = fmaxf(peak, LQ_LightFalloff(source, sqrtf(distance2)) * source->output_scale * level);
+        }
+        if (peak <= 0) continue;
+        ++reaching;
+        int kept = 0;
+        for (uint32_t slot = 0; slot < used && !kept; ++slot)
+            kept = selection[slot].position_radius[3] > 0 && selection[slot].source_index == i;
+        if (kept) continue;
+        ++drops;
+        uint32_t at = drops - 1 < capacity ? drops - 1 : capacity;
+        while (at && peak > dropped[at-1].peak) --at;
+        if (at >= capacity) continue;
+        uint32_t last = drops < capacity ? drops - 1 : capacity - 1;
+        memmove(dropped + at + 1, dropped + at, (last - at) * sizeof(*dropped));
+        dropped[at] = (lq_light_drop){i, peak};
+    }
+    if (dropped_count) *dropped_count = drops;
+    return reaching;
 }
 static int ImageCheck(const lq_image *image, uint32_t channels)
 {

@@ -85,17 +85,35 @@ comes from each light's falloff and from occlusion.
   dominating it. Linear spotlights, such as id's targeted fixtures, keep their
   compiler strength. The viewer's `--accent-gain G` overrides the gain for
   comparison; 0.3 still dominates the wall, and 0.08 nearly disappears.
-- **Selection.** Up to 32 sources are chosen per frame from those whose PVS reach
-  (leaves their own leaf can see, within range) meets the camera's PVS. A
-  selected source keeps its slot, and so its cached shadow cube, while it stays
-  selected, including while its style is momentarily dark.
-- **Occlusion.** Each slot owns a 512² reversed-depth (`near / distance`) D32 cube
-  in a cube-array texture. Both sides of occluders cast, retaining the nearest
+- **Selection.** Up to 128 sources are chosen per frame from those whose PVS
+  reach (leaves their own leaf can see, within range) meets the camera's PVS,
+  nearest (range-weighted) first. In game, map lights get 120 slots and gameplay
+  lights the last 8. When more sources qualify than there are slots, those that
+  light no visible face are dropped first. The limit comes from the shader's
+  light uniform block: 80 bytes per light, 10 KB for 128, inside the 16 KB every
+  Vulkan device guarantees. Each face carries a 128-bit mask of the lights that
+  reach it, and the shader visits only the set bits; actors, effects and moving
+  brushes get the lights whose range meets their bounds. A selected source keeps
+  its slot, and so its cached shadow cube, while it stays selected (including
+  while its style is momentarily dark) and while its rank stays within half
+  again of its resolution band. LIGHT summed every source at every sample; this
+  previously stopped at 24 map lights, which left E1M1's rerelease exterior
+  facade unlit (50 of the 70 lights reaching that view were dropped; now 3).
+- **Occlusion.** Each slot owns a reversed-depth (`near / distance`) D32 cube:
+  gameplay lights and the 8 highest-ranked map lights at 512², the next 32 at
+  256², the remaining 80 at 128², 174 MB in all. A cube is six layers of a 2D
+  array texture and the shader selects the face. SDL 3.4's Metal backend sizes
+  cube arrays six times too large (it passes the layer count as Metal's cube
+  count), and SDL addresses depth-target layers with 8 bits, so each array holds
+  at most 42 cubes: the 128² cubes span two arrays. Both sides of occluders cast, retaining the nearest
   wall surface instead of only its exit face. This seals grazing joins such as
   the first E1M1 lift entrance. Receiver-plane comparisons and a one-texel normal
-  offset keep the receiving face from shadowing itself. Water does not cast.
-  A cube is redrawn in full only when
-  its slot's light or position changes.
+  offset keep the receiving face from shadowing itself. Water and sky do not
+  cast: LIGHT's `TestLine` stops only at solid space, so a light in a sky
+  volume still reaches the room below. The bounce pass traces light-to-sample
+  visibility the same way; its gathering rays still end at sky, which is the
+  sky light's emitter. A cube is redrawn in full only when its slot's light or
+  position changes.
 - **Moving casters.** In game, actors cast with their live geometry: monsters,
   items and ammo/health boxes, and also moving brush models (doors, lifts,
   plats). The view weapon, flames, particles and sprites do not cast. The static
@@ -124,6 +142,22 @@ Commands (standalone viewer; the playable client uses `lq_renderer 2`):
 
 `--light-info` also lists each source's formula, attenuation, range and cone.
 On exit the viewer reports active slots and how many cubes were drawn.
+
+`--light-budget` reports, without opening a window, how many map lights could
+light faces seen from `--camera` and how many the slot limit drops there, for the
+game's 120 map slots and the viewer's 128. A light counts when a face is in its PVS
+reach and range and in front of it. The report covers the camera's whole PVS
+(what the game submits), then faces whose bounds meet a 4:3 view. It lists the
+lights the game drops for faces in view, strongest first, by falloff at the
+nearest such face. That value is an upper bound: it ignores incidence, spot
+cones and shadows. At E1M1's exterior (`176 1240 -180 -28 90`, rerelease data)
+70 lights reach faces in view; 24 map slots dropped 50 of them, 120 drop 3.
+The shareware map at the same camera has 37, all kept.
+
+```sh
+./build/luminousquake-gpu -basedir "$PWD/quake-complete/Quake" -map e1m1 \
+  --camera "176 1380 -170 -22 90" --light-budget
+```
 
 The earlier prototype looked fullbright in E1M3 because it treated every source
 as linear with a radius equal to its `light` value. That map's 32 `delay 3`
@@ -173,7 +207,7 @@ visible fill. The defaults (1, 1) are physically based.
 GPU path with Enhanced lighting. At map load it computes bounce for the live
 world.
 
-Each frame, map lights fill 24 stable slots. The nearest live gameplay dlights
+Each frame, map lights fill up to 120 stable slots. The nearest live gameplay dlights
 take the last eight:
 - rockets, muzzle flashes and explosions;
 - powerup glows (quad/pentagram, `EF_DIMLIGHT`/`EF_BRIGHTLIGHT`).
@@ -300,7 +334,7 @@ gives 89/105/119, E1M2's dusk sky 43/24/29 (printed with the bounce timing at
 load). `LQ_SKY_LIGHT_GAIN` scales it.
 
 - **Baked visibility, live radiance.** At map load each bounce sample casts the
-  bounce pass's 64 cosine-weighted rays; the fraction reaching a sky leaf is its
+  bounce pass's 64 cosine-weighted rays; the fraction reaching sky is its
   irradiance from a unit-radiance sky over π. It is stored in the alpha of
   bounce layer 0 and multiplied by the sky uniform in the shader, so the sky's
   whole hemisphere lights a surface with its occlusion (eaves, canyon walls,
@@ -314,6 +348,61 @@ load). `LQ_SKY_LIGHT_GAIN` scales it.
   The price is about 60–90% more bounce bake time (E1M1 debug build: 1.9 s →
   3.5 s), no sky occlusion by moving brushes or actors, and one color per map
   (no brighter sun direction in the sky texture).
+
+## Classic and rerelease data
+
+Sky: id's qbsp sealed sky brushes as solid, so original maps have no sky leaves
+(shareware E1M1: 0 of 1,149); ericw-tools keeps them (rerelease E1M1: 26). Bake
+rays end at the front of a sky face or in a sky leaf, so both kinds of map get
+sky light and sun visibility. Before this, original maps received no sky light.
+
+The engine accepts the 1.01 release's `id1/pak0.pak` (directory CRC 62751) as
+unmodified, alongside 1.06 (32981). Otherwise the original check treats 1.01
+shareware data as a modified game and refuses to start.
+
+`timedemo demo1`, Enhanced, debug build, uncapped: shareware 119 fps with 24 map
+lights → 155 fps with 120 (per-face light tests now reject on the precomputed
+reach bit before any geometry); rerelease 119 → 104 fps, which now lights with
+its 206 surface lights and up to 120 map lights. Classic shareware: 238 fps.
+
+The same binary runs on either installation and follows the keys present in
+the local map. Original id maps carry only what id's LIGHT read (`light`,
+`style`, `angle`, `target`), so nothing below applies to them. The rerelease
+maps were compiled with ericw-tools, and their entity keys describe lighting
+the baked lightmap contains:
+
+| Key (local rerelease data) | Maps | Enhanced |
+| --- | --- | --- |
+| `delay`, `wait`, `mangle`, `_softangle`, `_color` | most | Falloff formulas, cones and color (above) |
+| `_sun 1` light (start 200, E1M1 75, E4M1 75) | 3 | Directional sun (below) |
+| worldspawn `_sunlight "1.0 1.0 1.0"` | 11 | Parsed as intensity 1: too faint to add a brightness unit, so left out, as it adds nothing to the lightmap |
+| `_surface` template | 30, 206 templates | Copies on every matching face (below) |
+| `_surface_spotlight` | start (2) | Copies aim along the face normal |
+| `_dirt` (ambient occlusion), `_bounce` | all | Not reproduced; Enhanced has its own bounce |
+| `_project_texture` | 1 | Not reproduced |
+
+- **Sun.** The strongest `_sun` light (aimed by its target or `mangle`,
+  otherwise straight down) or worldspawn `_sunlight` (`_sun_mangle`, default
+  straight down; `_sunlight_color`) becomes one directional light. Its strength
+  is the intensity times the map's range scale (0.5), with the softened
+  incidence term, as ericw-tools writes it. At map load each bounce sample
+  facing the sun casts 16 rays spread over `_sunlight_penumbra` degrees; the
+  fraction reaching sky is its visibility, kept in bounce layer 1 alpha at the
+  lightmap's 16-unit resolution. Each probe keeps its own sun visibility (probe
+  layer 1 alpha) for actors and liquids, and sunlit samples reflect into the
+  style 0 bounce. E1M1's sun is 38 brightness along `0.34 −0.42 −0.84`; on a
+  rooftop with no other light (face 883) the rerelease lightmap holds 35, and
+  38 × (0.5 + 0.5 × 0.84) = 35. Moving actors and doors do not shadow the sun.
+  Bake time on E1M1 rises about 8% (3.46 s → 3.75 s, debug build).
+- **Surface lights.** A `_surface` template is copied onto each world face with
+  that texture (case-insensitive; sky excluded). Faces are split on axis planes
+  at multiples of 128 units, as ericw-tools' default `-surflight_subdivide` and
+  GLQuake's warp subdivision do, and a copy sits `_surface_offset` (default 2)
+  units out from each piece's centroid. Copies inside solid are skipped, as are
+  copies on a liquid face's underside. The template itself does not emit: maps
+  keep templates together out of sight (E3M6's sit together at `-1088 -240`).
+  E1M1's 9 templates on 163 faces become 206 lights (252 entities → 448
+  sources). They share the 120 runtime map-light slots with everything else.
 
 E1M1 profile while firing rockets (`lq_profile`, 7 s after warm-up, M1 Max,
 640×480):
@@ -338,17 +427,20 @@ Current limits:
 
 - Actor silhouettes cast from back faces chosen per vertex normal, which can thin shadows at grazing angles.
   Brush-model faces are lit and gather bounce at their compiled positions.
-- Sky light is diffuse only, one color per map, baked visibility (no sun,
-  no occlusion by moving objects).
+- Sky light is diffuse only, one color per map, baked visibility (no
+  occlusion by moving objects). Only maps that define an ericw-tools sun get
+  one; one sun per map, also baked, so moving objects do not shadow it.
 - Face bounce is static. Weapon light reaches surfaces only through the probe
   grid, which is coarser than the bounce atlas. Probes do not test visibility,
   so light can leak through thin walls between probe cells.
-- 24 shadowed map lights per view, so lights can pop as the set changes. Bounce
-  and probes take 1–2 s of map load and are not cached yet.
+- 120 shadowed map lights per view; lights can still pop as the set changes,
+  and a light can change shadow resolution when its rank leaves its band. A map
+  load or teleport draws every new cube in one frame. Bounce and probes take
+  1–2 s of map load and are not cached yet.
 - PVS reach may exclude surfaces lit through water if the map was vised with
   opaque water.
-- Only Metal has run; the Vulkan path, including `imageCubeArray`, is untested.
-  Shadow memory is about 200 MB at 512² for 32 cubes; the bounce atlas adds up to
+- Only Metal has run; the Vulkan path is untested. Shadow memory is 174 MB
+  for 128 cubes; the bounce atlas adds up to
   four layers the size of the used lightmap rows.
 
 Quake's stored data is a baked lightmap rather than a shadow map. Enhanced keeps

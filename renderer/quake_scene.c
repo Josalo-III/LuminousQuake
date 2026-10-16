@@ -26,7 +26,8 @@ void LQ_QuakeLightstyles(float time, float values[256])
         }
     }
 }
-void LQ_QuakeSceneShutdown(void) { free(legacy_heap); legacy_heap = NULL; }
+static model_t *loaded_world; /* the last world model a scene was built from */
+void LQ_QuakeSceneShutdown(void) { free(legacy_heap); legacy_heap = NULL; loaded_world = NULL; }
 static int Failure(lq_scene *s, char *error, size_t size, const char *message)
 {
     snprintf(error, size, "%s", message); LQ_SceneFree(s); return 0;
@@ -124,19 +125,84 @@ static void LightSpot(lq_light_source *light, const char *mangle, const char *so
     light->spot_outer = cosf(degrees*0.5f*(float)M_PI/180);
     light->spot_inner = inner > 0 && inner < degrees ? cosf(inner*0.5f*(float)M_PI/180) : light->spot_outer;
 }
+/* Per-source keys resolved once every entity has been read. */
+typedef struct {
+    char mangle[128], soft[128], surface[16];
+    float surface_offset;
+    uint8_t sun, surface_spotlight;
+} light_extra;
+/* Direction a "yaw pitch [roll]" mangle points along, as for spotlights. */
+static int MangleDirection(const char *mangle, float out[3])
+{
+    float yaw, pitch, roll; char extra;
+    int fields = sscanf(mangle,"%f %f %f %c",&yaw,&pitch,&roll,&extra);
+    if (fields < 2 || fields > 3 || !isfinite(yaw) || !isfinite(pitch)) return 0;
+    yaw *= (float)M_PI/180; pitch *= (float)M_PI/180;
+    out[0] = cosf(yaw)*cosf(pitch); out[1] = sinf(yaw)*cosf(pitch); out[2] = sinf(pitch);
+    return 1;
+}
+#define SURFACE_LIGHT_SPACING 128.0f /* ericw-tools -surflight_subdivide default */
+#define SURFACE_LIGHT_PIECES 256
+/* ericw-tools `_surface` templates: a copy of the template on every world
+ * face with that texture, one per ~128-unit piece, `_surface_offset` (2)
+ * units out along the face normal. The template itself does not emit; maps
+ * keep templates together out of sight. A liquid face places copies on its
+ * upper side only, and copies inside solid are skipped. */
+static uint32_t ExpandSurfaceLight(model_t *world, const lq_scene *scene, const lq_light_source *template,
+    const light_extra *extra, lq_light_source *out, uint32_t capacity, uint32_t *faces)
+{
+    uint32_t count = 0;
+    for (uint32_t d = scene->world_draw_begin; d < scene->world_draw_end && d < scene->draw_count; ++d) {
+        const lq_draw *draw = &scene->draws[d];
+        if (draw->flags & LQ_SURFACE_SKY || draw->material >= scene->material_count ||
+            Q_strcasecmp((char *)scene->materials[draw->material].name, (char *)extra->surface)) continue;
+        uint32_t corners = draw->index_count / 3 + 2, base = scene->indices[draw->first_index];
+        if (corners > 64) continue;
+        float polygon[64][3], points[SURFACE_LIGHT_PIECES][3];
+        for (uint32_t i = 0; i < corners; ++i) memcpy(polygon[i], scene->vertices[base + i].position, sizeof(polygon[i]));
+        const float *normal = scene->vertices[base].normal;
+        uint32_t pieces = LQ_SurfaceLightPoints((const float (*)[3])polygon, corners, SURFACE_LIGHT_SPACING,
+            points, SURFACE_LIGHT_PIECES);
+        if (pieces > SURFACE_LIGHT_PIECES) pieces = SURFACE_LIGHT_PIECES;
+        ++*faces;
+        for (uint32_t i = 0; i < pieces; ++i) {
+            vec3_t origin;
+            for (int k = 0; k < 3; ++k) origin[k] = points[i][k] + normal[k] * extra->surface_offset;
+            int contents = Mod_PointInLeaf(origin, world)->contents;
+            if (contents == CONTENTS_SOLID || contents == CONTENTS_SKY) continue;
+            if ((draw->flags & LQ_SURFACE_WATER) && contents != CONTENTS_EMPTY) continue;
+            if (count == capacity) return count;
+            lq_light_source *light = &out[count++];
+            *light = *template;
+            memcpy(light->origin, origin, sizeof(light->origin));
+            if (extra->surface_spotlight) {
+                float degrees = template->cone_angle > 0 && template->cone_angle < 360 ? template->cone_angle : 40;
+                memcpy(light->spot_direction, normal, sizeof(light->spot_direction));
+                light->spotlight = 1;
+                light->spot_outer = light->spot_inner = cosf(degrees*0.5f*(float)M_PI/180);
+            }
+        }
+    }
+    return count;
+}
 static int Spawn(model_t *world, lq_scene *scene)
 {
     char *text = world->entities;
     int found = 0; uint32_t capacity = 0, entity_index = 0, target_count = 0, target_capacity = 0;
     float range_scale = 0.5f, distance_scale = 1, angle_scale = 0.5f;
     light_target *targets = NULL;
-    char (*spots)[2][128] = NULL;
+    light_extra *extras = NULL;
+    char world_sunlight[128] = "", world_sun_mangle[128] = "", world_sun_color[128] = "", world_penumbra[128] = "";
     memset(switched_off, 0, sizeof(switched_off));
     scene->bounce_scale = 1;
+    memset(scene->sun_direction, 0, sizeof(scene->sun_direction)); memset(scene->sun_light, 0, sizeof(scene->sun_light));
+    scene->sun_angle_scale = 0.5f; scene->sun_penumbra = 0;
     while (text && (text = COM_Parse(text)) && !strcmp(com_token, "{")) {
         char classname[128] = "", origin[128] = "", angles[128] = "", yaw[128] = "";
         char delay[128] = "", wait[128] = "", mangle[128] = "", soft[128] = "", incidence[128] = "";
         char world_range[128] = "", world_distance[128] = "", deviance[128] = "", bounce[128] = "";
+        char sun[128] = "", surface[128] = "", surface_offset[128] = "", surface_spotlight[128] = "";
+        char sunlight[128] = "", sun_mangle[128] = "", sun_color[128] = "", penumbra[128] = "";
         int style = 0, spawnflags = 0;
         lq_light_source light = {.entity_index=entity_index++};
         LQ_LightSourceDefaults(&light);
@@ -157,6 +223,15 @@ static int Spawn(model_t *world, lq_scene *scene)
             else if (!strcmp(key, "_deviance")) snprintf(deviance, sizeof(deviance), "%s", com_token);
             else if (!strcmp(key, "_bouncescale")) snprintf(bounce, sizeof(bounce), "%s", com_token);
             else if (!strcmp(key, "_dist")) snprintf(world_distance, sizeof(world_distance), "%s", com_token);
+            else if (!strcmp(key, "_sun")) snprintf(sun, sizeof(sun), "%s", com_token);
+            else if (!strcmp(key, "_surface")) snprintf(surface, sizeof(surface), "%s", com_token);
+            else if (!strcmp(key, "_surface_offset")) snprintf(surface_offset, sizeof(surface_offset), "%s", com_token);
+            else if (!strcmp(key, "_surface_spotlight")) snprintf(surface_spotlight, sizeof(surface_spotlight), "%s", com_token);
+            else if (!strcmp(key, "_sunlight")) snprintf(sunlight, sizeof(sunlight), "%s", com_token);
+            else if (!strcmp(key, "_sun_mangle") || !strcmp(key, "_sunlight_mangle"))
+                snprintf(sun_mangle, sizeof(sun_mangle), "%s", com_token);
+            else if (!strcmp(key, "_sunlight_color")) snprintf(sun_color, sizeof(sun_color), "%s", com_token);
+            else if (!strcmp(key, "_sunlight_penumbra")) snprintf(penumbra, sizeof(penumbra), "%s", com_token);
             else if (!strcmp(key, "style")) {
                 float value; char extra;
                 style = sscanf(com_token,"%f %c",&value,&extra) == 1 && isfinite(value) && value >= 0 && value < 255 ? (int)value : -1;
@@ -174,12 +249,16 @@ static int Spawn(model_t *world, lq_scene *scene)
             if (world_distance[0] && Number(world_distance,&value) && value > 0) distance_scale = value;
             if (incidence[0] && Number(incidence,&value) && value >= 0 && value <= 1) angle_scale = value;
             if (bounce[0] && Number(bounce,&value) && value >= 0 && value <= 16) scene->bounce_scale = value;
+            snprintf(world_sunlight, sizeof(world_sunlight), "%s", sunlight);
+            snprintf(world_sun_mangle, sizeof(world_sun_mangle), "%s", sun_mangle);
+            snprintf(world_sun_color, sizeof(world_sun_color), "%s", sun_color);
+            snprintf(world_penumbra, sizeof(world_penumbra), "%s", penumbra);
         }
         if (light.targetname[0] && strncmp(classname,"light",5)) {
             if (target_count == target_capacity) {
                 target_capacity = target_capacity ? target_capacity*2 : 32;
                 light_target *next = target_capacity <= 65536 ? realloc(targets,target_capacity*sizeof(*targets)) : NULL;
-                if (!next) { free(targets); free(spots); return 0; }
+                if (!next) { free(targets); free(extras); return 0; }
                 targets = next;
             }
             light_target *entry = &targets[target_count];
@@ -227,16 +306,22 @@ static int Spawn(model_t *world, lq_scene *scene)
                     else light.flags |= LQ_LIGHT_UNRESOLVED_PARAMETERS;
                 }
                 if (scene->light_source_count == capacity) {
-                    if (capacity == 4096) { free(targets); free(spots); return 0; }
+                    if (capacity == 4096) { free(targets); free(extras); return 0; }
                     capacity = capacity ? capacity*2 : 32;
                     lq_light_source *sources = realloc(scene->light_sources,capacity*sizeof(*sources));
-                    char (*next)[2][128] = realloc(spots,capacity*sizeof(*spots));
-                    if (next) spots = next;
-                    if (!sources || !next) { if (sources) scene->light_sources = sources; free(targets); free(spots); return 0; }
+                    light_extra *next = realloc(extras,capacity*sizeof(*extras));
+                    if (next) extras = next;
+                    if (!sources || !next) { if (sources) scene->light_sources = sources; free(targets); free(extras); return 0; }
                     scene->light_sources = sources;
                 }
-                snprintf(spots[scene->light_source_count][0],128,"%s",mangle);
-                snprintf(spots[scene->light_source_count][1],128,"%s",soft);
+                light_extra *keys = &extras[scene->light_source_count];
+                memset(keys, 0, sizeof(*keys));
+                snprintf(keys->mangle,sizeof(keys->mangle),"%s",mangle);
+                snprintf(keys->soft,sizeof(keys->soft),"%s",soft);
+                keys->sun = Number(sun,&value) && value != 0;
+                snprintf(keys->surface,sizeof(keys->surface),"%s",surface);
+                keys->surface_offset = Number(surface_offset,&value) && fabsf(value) <= 256 ? value : 2;
+                keys->surface_spotlight = Number(surface_spotlight,&value) && value != 0;
                 scene->light_sources[scene->light_source_count++] = light;
             }
         }
@@ -254,10 +339,66 @@ static int Spawn(model_t *world, lq_scene *scene)
      * them and the targets only after every entity has been read. */
     for (uint32_t i = 0; i < scene->light_source_count; ++i) {
         lq_light_source *light = &scene->light_sources[i];
-        if (!light->flags) LightSpot(light,spots[i][0],spots[i][1],targets,target_count);
+        if (!light->flags) LightSpot(light,extras[i].mangle,extras[i].soft,targets,target_count);
+    }
+    free(targets);
+    /* ericw-tools sunlight: the strongest `_sun` light (aimed by target or
+     * mangle, else straight down) or worldspawn `_sunlight`. One directional
+     * light; a sun too faint to add a brightness unit is left out. */
+    float strongest = 0, value;
+    for (uint32_t i = 0; i < scene->light_source_count; ++i) {
+        const lq_light_source *light = &scene->light_sources[i];
+        float strength = light->intensity * light->output_base;
+        if (!extras[i].sun || light->flags || strength <= strongest) continue;
+        static const float down[3] = {0, 0, -1};
+        memcpy(scene->sun_direction, light->spotlight ? light->spot_direction : down, sizeof(scene->sun_direction));
+        for (int k = 0; k < 3; ++k) scene->sun_light[k] = light->color[k] * strength;
+        scene->sun_angle_scale = light->angle_scale; strongest = strength;
+    }
+    char extra_text;
+    if (world_sunlight[0] && sscanf(world_sunlight,"%f",&value) == 1 && isfinite(value) && value * range_scale > strongest) {
+        lq_light_source tint; LQ_LightSourceDefaults(&tint);
+        snprintf(tint.color_value,sizeof(tint.color_value),"%s",world_sun_color);
+        float direction[3] = {0, 0, -1};
+        if ((!world_sun_mangle[0] || MangleDirection(world_sun_mangle,direction)) && LightColor(&tint)) {
+            float length = sqrtf(DotProduct(direction,direction));
+            for (int k = 0; k < 3; ++k) {
+                scene->sun_direction[k] = direction[k] / length; scene->sun_light[k] = tint.color[k] * value * range_scale;
+            }
+            scene->sun_angle_scale = angle_scale; strongest = value * range_scale;
+        }
+    }
+    if (strongest < 1) { memset(scene->sun_light, 0, sizeof(scene->sun_light)); memset(scene->sun_direction, 0, sizeof(scene->sun_direction)); }
+    if (world_penumbra[0] && sscanf(world_penumbra,"%f %c",&value,&extra_text) == 1 && value >= 0 && value <= 90)
+        scene->sun_penumbra = value;
+    /* Suns and surface templates leave the point-light inventory; templates
+     * are replaced by their copies. */
+    uint32_t templates = 0, faces = 0, kept = 0, total = 0;
+    for (uint32_t i = 0; i < scene->light_source_count; ++i)
+        total += !extras[i].sun && !extras[i].surface[0];
+    lq_light_source *sources = malloc(4096 * sizeof(*sources));
+    if (!sources) { free(extras); return 0; }
+    for (uint32_t i = 0; i < scene->light_source_count; ++i) {
+        const lq_light_source *light = &scene->light_sources[i];
+        if (extras[i].sun) continue;
+        if (!extras[i].surface[0]) { if (kept < 4096) sources[kept++] = *light; continue; }
+        ++templates;
+        if (!light->flags) kept += ExpandSurfaceLight(world, scene, light, &extras[i], sources + kept, 4096 - kept, &faces);
+    }
+    if (kept == 4096) Con_Printf("Light inventory: surface lights stop at the 4096-source limit.\n");
+    free(scene->light_sources); free(extras);
+    lq_light_source *fitted = realloc(sources, (kept ? kept : 1) * sizeof(*sources));
+    scene->light_sources = fitted ? fitted : sources; scene->light_source_count = kept;
+    for (uint32_t i = 0; i < scene->light_source_count; ++i) {
+        lq_light_source *light = &scene->light_sources[i];
         if (LQ_LightIsAccent(light)) { light->accent_gain = LQ_ACCENT_SPOT_GAIN; light->output_scale = light->output_base * LQ_ACCENT_SPOT_GAIN; }
     }
-    free(targets); free(spots);
+    if (templates) printf("Light inventory: %u surface templates on %u faces became %u lights\n",
+        templates, faces, kept - (total < kept ? total : kept));
+    if (scene->sun_light[0] + scene->sun_light[1] + scene->sun_light[2] > 0)
+        printf("Light inventory: sun %.0f %.0f %.0f along %.2f %.2f %.2f, penumbra %.0f degrees\n",
+            scene->sun_light[0], scene->sun_light[1], scene->sun_light[2],
+            scene->sun_direction[0], scene->sun_direction[1], scene->sun_direction[2], scene->sun_penumbra);
     return 1;
 }
 /* Renderer-owned world BSP: nodes with their on-plane faces and leaf contents,
@@ -484,6 +625,7 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
       if (lighting_bytes < 0 || lighting_bytes > bytes) return Failure(s, error, size, "Invalid map lighting range"); }
     world = argc ? Mod_ForName(path, false) : cl.worldmodel;
     if (!world || world->type != mod_brush) return Failure(s, error, size, "Cannot load brush map");
+    loaded_world = world;
     if (light_analysis)
         puts("LQ_LIGHT_SAMPLE,map,face,sample_s,sample_t,x,y,z,nx,ny,nz,style,value");
     uint64_t analysis_samples = 0;
@@ -629,6 +771,25 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
         map,world->numsurfaces,(unsigned long long)analysis_samples);
     return 1;
 #undef FAIL
+}
+/* World faces in the camera leaf and its PVS, as the game submits them
+ * before frustum culling. */
+int LQ_QuakeSceneVisibleDraws(const lq_scene *s, const float camera[3], uint8_t *visible)
+{
+    if (!loaded_world || !s || !camera || !visible) return 0;
+    memset(visible, 0, s->draw_count);
+    vec3_t point = {camera[0], camera[1], camera[2]};
+    mleaf_t *own = Mod_PointInLeaf(point, loaded_world);
+    byte *pvs = Mod_LeafPVS(own, loaded_world);
+    for (int i = 0; i <= loaded_world->numleafs; ++i) {
+        mleaf_t *leaf = &loaded_world->leafs[i];
+        if (leaf != own && (!i || !(pvs[(i-1)>>3] & (1<<((i-1)&7))))) continue;
+        for (int j = 0; j < leaf->nummarksurfaces; ++j) {
+            size_t index = (size_t)(leaf->firstmarksurface[j] - loaded_world->surfaces);
+            if (index < s->draw_count) visible[index] = 1;
+        }
+    }
+    return 1;
 }
 int LQ_QuakeSceneFromWorld(lq_scene *s, char *error, size_t size)
 {

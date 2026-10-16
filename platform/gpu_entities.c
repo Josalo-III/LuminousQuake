@@ -248,7 +248,7 @@ static void Brush(entity_t *e, const lq_scene *world)
         const lq_draw *source = &world->draws[surface];
         lq_draw *d = Draw(source->index_count, LQ_AnimatedMaterial(world, model->surfaces[surface].texinfo->texture), source->flags);
         memcpy(d->styles, source->styles, 4);
-        d->light_bits = UINT32_MAX;
+        memset(d->light_bits, 0xff, sizeof(d->light_bits));
         for (uint32_t j = 0; j < source->index_count; ++j) {
             const lq_vertex *input = &world->vertices[world->indices[source->first_index+j]];
             lq_vertex *v = &vertices[frame.vertex_count++]; *v = *input;

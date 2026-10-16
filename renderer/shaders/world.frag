@@ -5,33 +5,44 @@
 layout(set=2,binding=0) uniform sampler2D indices;
 layout(set=2,binding=1) uniform sampler2D colormap;
 layout(set=2,binding=2) uniform sampler2D lightmap;
-layout(set=2,binding=3) uniform samplerCubeArrayShadow shadow_maps;
-layout(set=2,binding=4) uniform samplerCubeArray shadow_depths; // same cubes, raw depth
+// Shadow cubes in four arrays of 512, 256, 128 and 128 (see LQ_ShadowSlot);
+// each is bound for depth comparison and for raw depth (blocker search).
+layout(set=2,binding=3) uniform sampler2DArrayShadow shadow_maps0;
+layout(set=2,binding=4) uniform sampler2DArray shadow_depths0;
 layout(set=2,binding=5) uniform sampler2D bounce; // four stacked style layers, brightness/255
 layout(set=2,binding=6) uniform sampler3D probe_static; // depth: (layer*6 + direction)*nz + z
 layout(set=2,binding=7) uniform sampler3D probe_dynamic; // depth: direction*nz + z
+layout(set=2,binding=8) uniform sampler2DArrayShadow shadow_maps1;
+layout(set=2,binding=9) uniform sampler2DArray shadow_depths1;
+layout(set=2,binding=10) uniform sampler2DArrayShadow shadow_maps2;
+layout(set=2,binding=11) uniform sampler2DArray shadow_depths2;
+layout(set=2,binding=12) uniform sampler2DArrayShadow shadow_maps3;
+layout(set=2,binding=13) uniform sampler2DArray shadow_depths3;
 layout(set=3,binding=0,std140) uniform Surface {
     vec4 light_weights;
     vec4 parameters; // time, surface flags, smooth filter, mip mode
     vec4 camera_origin;
     vec4 dynamic_lights[32];
-    uvec4 light_bits;
+    uvec4 light_bits; // Enhanced: runtime-light slots reaching the face; Classic: dlights in x
     vec4 bounce_weights; // live style value per bounce layer
 } surface;
 // Enhanced runtime lights, pushed once per frame. Each slot owns a shadow cube.
 layout(set=3,binding=1,std140) uniform Lights {
-    vec4 position_range[32];
-    vec4 color_strength[32];
-    vec4 falloff[32]; // light value, attenuation, angle scale, formula
-    vec4 spot[32]; // direction, outer cosine (< -1: omnidirectional)
-    vec4 shape[32]; // inner cosine, emitter radius
-    uvec4 parameters; // slot count, Enhanced enabled, shadow resolution, shadows enabled
+    vec4 position_range[128];
+    vec4 color_strength[128];
+    vec4 falloff[128]; // light value, attenuation, angle scale, formula
+    vec4 spot[128]; // direction, outer cosine (< -1: omnidirectional)
+    vec4 shape[128]; // inner cosine, emitter radius, submerged, shadow array*1024 + cube
+    uvec4 parameters; // slot count, Enhanced enabled, shadow arrays, shadows enabled
     vec4 tuning; // exposure, lightmap-to-layer row ratio, bounce enabled, bounce gain
     vec4 probe_origin; // xyz, spacing
     vec4 probe_size; // probes per axis; w: 1 static, 2 dynamic (bits)
     vec4 probe_weights; // live style value per static layer
     vec4 liquid; // x: translucent liquid opacity; zero when liquids are opaque or unlit
     vec4 sky; // rgb: sky brightness at full visibility (bounce/probe layer 0 alpha)
+    vec4 sun_direction; // xyz: direction sunlight travels; w: incidence angle scale
+    vec4 sun_light; // rgb: sunlight at normal incidence (bounce/probe layer 1 alpha: visibility)
+    vec4 shadow_sizes; // cube face size per shadow array
 } lights;
 const float SHADOW_NEAR = 2.0;
 layout(location=0) in vec2 uv;
@@ -100,6 +111,32 @@ const vec2 DISK[16] = vec2[](
     vec2(-0.24188840,0.99706507), vec2(-0.81409955,0.91437590), vec2(0.19984126,0.78641367),
     vec2(0.14383161,-0.14100790));
 float majorAxis(vec3 v) { return max(max(abs(v.x), abs(v.y)), abs(v.z)); }
+// Cube face (+X,-X,+Y,-Y,+Z,-Z) and its texture position for a direction from
+// the light, as gpu_sdl.c's ShadowFace projects them: u along the face's
+// right, v down its up axis. xy: uv; z: cube*6 + face layer.
+const vec3 FACE_RIGHT[6] = vec3[](vec3(0,0,-1), vec3(0,0,1), vec3(1,0,0), vec3(1,0,0), vec3(1,0,0), vec3(-1,0,0));
+const vec3 FACE_UP[6] = vec3[](vec3(0,1,0), vec3(0,1,0), vec3(0,0,-1), vec3(0,0,1), vec3(0,1,0), vec3(0,1,0));
+vec3 faceTap(vec3 d, float cube) {
+    vec3 a = abs(d);
+    int face = a.x >= a.y && a.x >= a.z ? (d.x >= 0.0 ? 0 : 1) : a.y >= a.z ? (d.y >= 0.0 ? 2 : 3) : (d.z >= 0.0 ? 4 : 5);
+    float forward = max(max(a.x, a.y), a.z);
+    vec2 ndc = vec2(dot(d, FACE_RIGHT[face]), dot(d, FACE_UP[face])) / forward;
+    return vec3(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y, cube * 6.0 + float(face));
+}
+float compareTap(uint tier, vec3 direction, float cube, float reference) {
+    vec3 p = faceTap(direction, cube);
+    if (tier == 0u) return texture(shadow_maps0, vec4(p, reference));
+    if (tier == 1u) return texture(shadow_maps1, vec4(p, reference));
+    if (tier == 2u) return texture(shadow_maps2, vec4(p, reference));
+    return texture(shadow_maps3, vec4(p, reference));
+}
+float depthTap(uint tier, vec3 direction, float cube) {
+    vec3 p = faceTap(direction, cube);
+    if (tier == 0u) return texture(shadow_depths0, p).r;
+    if (tier == 1u) return texture(shadow_depths1, p).r;
+    if (tier == 2u) return texture(shadow_depths2, p).r;
+    return texture(shadow_depths3, p).r;
+}
 // Reversed depth the receiving plane would have along a tap direction. Wide
 // filters then compare like with like on tilted receivers instead of meeting
 // the far side of the receiver's own wall. Negative: this direction cannot
@@ -115,7 +152,9 @@ float planeReference(vec3 tap, vec3 origin, vec3 normal, vec3 point) {
 // sharp and distant occluders soften. Comparisons are hardware filtered.
 float shadowFactor(uint slot, vec3 origin, vec3 normal, float radius) {
     if (lights.parameters.w == 0u) return 1.0;
-    float texel = 2.0 * majorAxis(world_position - origin) / float(lights.parameters.z);
+    uint shadow = uint(lights.shape[slot].w + 0.5), tier = shadow / 1024u;
+    float cube = float(shadow % 1024u);
+    float texel = 2.0 * majorAxis(world_position - origin) / lights.shadow_sizes[tier];
     vec3 point = world_position + normal * texel;
     vec3 ray = point - origin;
     float distance = length(ray), major = majorAxis(ray);
@@ -135,7 +174,7 @@ float shadowFactor(uint slot, vec3 origin, vec3 normal, float radius) {
             vec3 tap = ray + side * offset.x + up * offset.y;
             float reference = planeReference(tap, origin, normal, point);
             if (reference < 0.0) continue;
-            float stored = texture(shadow_depths, vec4(tap, float(slot))).r;
+            float stored = depthTap(tier, tap, cube);
             if (stored > reference * 1.0005) { blockers += SHADOW_NEAR / stored; count += 1.0; }
         }
         if (count == 0.0) return 1.0;
@@ -149,7 +188,7 @@ float shadowFactor(uint slot, vec3 origin, vec3 normal, float radius) {
         float reference = planeReference(tap, origin, normal, point);
         // A grazing tap that cannot reach the receiver is not an unoccluded
         // light sample: counting it as lit opens bright seams at sealed joins.
-        sum += reference < 0.0 ? 0.0 : texture(shadow_maps, vec4(tap, float(slot)), reference * 1.0005);
+        sum += reference < 0.0 ? 0.0 : compareTap(tier, tap, cube, reference * 1.0005);
     }
     return sum / 16.0;
 }
@@ -207,8 +246,10 @@ void main() {
             if (lights.parameters.y != 0u && ((flags & 4) == 0 || actor)) {
                 vec3 normal = normalize(world_normal);
                 vec3 illumination = vec3(0.0);
-                for (uint i = 0u; i < min(lights.parameters.x,32u); ++i) {
-                    if ((surface.light_bits.x & (1u << i)) == 0u) continue;
+                for (uint word = 0u; word < 4u; ++word)
+                for (uint bits = surface.light_bits[word]; bits != 0u; bits &= bits - 1u) {
+                    uint i = word * 32u + uint(findLSB(bits));
+                    if (i >= lights.parameters.x) break;
                     vec4 origin = lights.position_range[i];
                     vec3 direction = origin.xyz-world_position;
                     float distance = length(direction);
@@ -254,6 +295,19 @@ void main() {
                 else if (sky && (actor || liquid) && lights.probe_origin.w > 0.0)
                     illumination += effectProbe(probe_static, 24.0, 0.0, world_position + normal * (actor ? 0.0 : 8.0), normal, diffuse_effect).a *
                         lights.sky.rgb;
+                // ericw-tools sun: one directional light with baked visibility,
+                // softened incidence as for point lights.
+                if (dot(lights.sun_light.rgb, vec3(1.0)) > 0.0 && ((flags & 4) == 0 || actor || liquid)) {
+                    float facing = diffuse_effect ? 1.0 : -dot(normal, lights.sun_direction.xyz);
+                    float visible = 0.0;
+                    if (facing > 0.0) {
+                        if ((flags & 4) == 0 && !liquid) visible = texture(bounce, vec2(light_uv.x, (row + 1.0) * 0.25)).a * through;
+                        else if (lights.probe_origin.w > 0.0)
+                            visible = probeCube(probe_static, 24.0, 6.0, world_position + normal * (actor ? 0.0 : 8.0), normal).a;
+                    }
+                    float as = lights.sun_direction.w;
+                    illumination += lights.sun_light.rgb * ((1.0 - as) + as * facing) * visible;
+                }
                 // Probes: static bounce for actors; gameplay-light bounce for all.
                 int probes = int(lights.probe_size.w + 0.5);
                 if (probes != 0) {

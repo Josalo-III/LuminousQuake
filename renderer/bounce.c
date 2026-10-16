@@ -4,7 +4,10 @@
  * gathered once by cosine-weighted rays. The baked lightmap is never read.
  * The sky is an area light: each sample's cosine-weighted sky visibility is
  * kept for the shader, which scales it by the sky's brightness, and the
- * sky-lit surfaces' reflection joins the style 0 bounce. GPL-2.0-or-later. */
+ * sky-lit surfaces' reflection joins the style 0 bounce. An ericw-tools sun
+ * is a directional light: each sample keeps the fraction of rays across its
+ * penumbra that reach sky, and sunlit surfaces reflect into style 0 too.
+ * GPL-2.0-or-later. */
 #include "scene.h"
 #include <math.h>
 #include <stdio.h>
@@ -14,6 +17,8 @@
 #define FACE_STYLES 4
 #define CANDIDATE_STYLES 16
 #define RAY_LENGTH 4096.0f
+#define SUN_RAYS 16u
+#define SUN_RAY_LENGTH 16384.0f
 
 typedef struct {
     lq_scene *scene;
@@ -23,17 +28,23 @@ typedef struct {
     uint8_t (*gather_styles)[FACE_STYLES];
     float *sky; /* sky visibility per sample, 0-1 */
     uint32_t rays;
+    float *sun; /* sun visibility per sample, 0-1; NULL without a sun */
 } bounce_context;
 
 static float Dot(const float a[3], const float b[3]) { return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
 static void Serial(size_t count, size_t grain, lq_range_fn function, void *context);
-static int Blocking(const lq_scene *s, int32_t node)
+static uint8_t Contents(const lq_scene *s, int32_t node)
 {
     uint32_t leaf = (uint32_t)(-(node + 1));
-    uint8_t contents = leaf < s->leaf_count ? s->leaf_contents[leaf] : LQ_LEAF_SOLID;
+    return leaf < s->leaf_count ? s->leaf_contents[leaf] : LQ_LEAF_SOLID;
+}
+static int Blocking(const lq_scene *s, int32_t node)
+{
+    uint8_t contents = Contents(s, node);
     return contents == LQ_LEAF_SOLID || contents == LQ_LEAF_SKY;
 }
-/* True when no solid or sky leaf lies on the segment. */
+/* True when no solid leaf lies on the segment. Light sources pass through
+ * sky, as LIGHT's TestLine stops only at solid; gathering rays end at sky. */
 static int SegmentClear(const lq_scene *s, int32_t node, const float a[3], const float b[3], int depth)
 {
     while (node >= 0) {
@@ -48,7 +59,7 @@ static int SegmentClear(const lq_scene *s, int32_t node, const float a[3], const
         return SegmentClear(s, n->children[side], a, middle, depth + 1) &&
             SegmentClear(s, n->children[!side], middle, b, depth + 1);
     }
-    return !Blocking(s, node);
+    return Contents(s, node) != LQ_LEAF_SOLID;
 }
 /* Convex face containment on the face plane (vertices are a triangle fan). */
 static int FaceContains(const lq_scene *s, uint32_t face, const float point[3])
@@ -68,7 +79,9 @@ static int FaceContains(const lq_scene *s, uint32_t face, const float point[3])
 }
 /* First lit face whose front a ray meets, in the manner of RecursiveLightPoint
  * but with exact polygon containment. Returns 1 on a hit, -1 when solid stops
- * the ray first, -2 when it reaches sky, 0 when it leaves the segment unobstructed. */
+ * the ray first, -2 when it reaches sky, 0 when it leaves the segment unobstructed.
+ * Sky is the front of a sky face or a sky leaf: id's qbsp sealed sky brushes as
+ * solid (original maps have no sky leaves), while ericw-tools keeps them. */
 enum { TRACE_SKY = -2 };
 static int TraceFace(const lq_scene *s, int32_t node, const float a[3], const float b[3],
     const float direction[3], uint32_t *face, float hit[3], int depth)
@@ -87,9 +100,11 @@ static int TraceFace(const lq_scene *s, int32_t node, const float a[3], const fl
         for (uint32_t i = 0; i < n->face_count; ++i) {
             uint32_t candidate = n->first_face + i;
             const lq_draw *draw = &s->draws[candidate];
-            if (draw->flags || !s->face_samples[candidate].width) continue;
+            int sky = (draw->flags & LQ_SURFACE_SKY) != 0;
+            if ((draw->flags && !sky) || (!sky && !s->face_samples[candidate].width)) continue;
             if (Dot(s->vertices[s->indices[draw->first_index]].normal, direction) >= 0) continue;
             if (!FaceContains(s, candidate, middle)) continue;
+            if (sky) return TRACE_SKY;
             *face = candidate; memcpy(hit, middle, sizeof(middle)); return 1;
         }
         return TraceFace(s, n->children[!side], middle, b, direction, face, hit, depth + 1);
@@ -167,8 +182,19 @@ static void EmitFaces(void *opaque, size_t begin, size_t end)
                 }
             }
         }
-        /* Sky light is constant, so its reflection belongs to style 0. */
+        /* Sky light and sunlight are constant, so their reflection belongs to style 0. */
         uint32_t slot = UINT32_MAX;
+        float toward_sun = -Dot(normal, s->sun_direction);
+        float sun_incidence = (1 - s->sun_angle_scale) + s->sun_angle_scale * toward_sun;
+        for (uint32_t i = 0; c->sun && toward_sun > 0 && i < samples; ++i) {
+            float visible = c->sun[grid->first_sample + i];
+            if (visible <= 0 || !ValidSample(s->sample_positions[grid->first_sample + i])) continue;
+            if (slot == UINT32_MAX && (slot = Candidate(candidates, &candidate_count, 0)) == UINT32_MAX) break;
+            for (int k = 0; k < 3; ++k) {
+                float exitance = visible * sun_incidence * s->sun_light[k] * grid->albedo[k];
+                accumulate[i][slot][k] += exitance; candidates[slot].energy += exitance;
+            }
+        }
         for (uint32_t i = 0; c->sky && i < samples; ++i) {
             float visible = c->sky[grid->first_sample + i];
             if (visible <= 0 || !ValidSample(s->sample_positions[grid->first_sample + i])) continue;
@@ -388,16 +414,55 @@ static void CubeAdd(float cube[6][3], const float d[3], const float value[3])
         for (int k = 0; k < 3; ++k) face[k] += value[k] * weight;
     }
 }
-/* Alpha holds `sky` (visibility per direction, 0-1) when given, else 255. */
+/* Fraction of rays toward the sun, spread evenly over its penumbra disc,
+ * that reach sky: ericw-tools lights a sample from a sun only when its ray
+ * meets sky. */
+static float SunVisibility(const lq_scene *s, const float point[3], uint32_t seed)
+{
+    float toward[3] = {-s->sun_direction[0], -s->sun_direction[1], -s->sun_direction[2]}, tangent[3], bitangent[3];
+    Basis(toward, tangent, bitangent);
+    float spread = tanf(s->sun_penumbra * 0.5f * 0.017453293f), turn = (seed & 0xffff) / 65536.0f;
+    uint32_t rays = spread > 0 ? SUN_RAYS : 1, hits = 0;
+    for (uint32_t r = 0; r < rays; ++r) {
+        float radius = sqrtf((r + 0.5f) / rays) * spread, angle = 6.2831853f * (Radical(r) + turn);
+        float direction[3], target[3], hit[3], length = 0; uint32_t face;
+        for (int k = 0; k < 3; ++k) {
+            direction[k] = toward[k] + (tangent[k] * cosf(angle) + bitangent[k] * sinf(angle)) * (rays > 1 ? radius : 0);
+            length += direction[k] * direction[k];
+        }
+        for (int k = 0; k < 3; ++k) { direction[k] /= sqrtf(length); target[k] = point[k] + direction[k] * SUN_RAY_LENGTH; }
+        hits += TraceFace(s, 0, point, target, direction, &face, hit, 0) == TRACE_SKY;
+    }
+    return (float)hits / rays;
+}
+/* Pass 0b: sun visibility for samples on faces turned toward the sun. */
+static void SunFaces(void *opaque, size_t begin, size_t end)
+{
+    bounce_context *c = opaque;
+    const lq_scene *s = c->scene;
+    for (size_t f = begin; f < end; ++f) {
+        const lq_face_samples *grid = &s->face_samples[f];
+        uint32_t samples = (uint32_t)grid->width * grid->height;
+        if (!samples) continue;
+        const float *normal = s->vertices[s->indices[s->draws[f].first_index]].normal;
+        int facing = Dot(normal, s->sun_direction) < 0;
+        for (uint32_t i = 0; i < samples; ++i) {
+            const float *point = s->sample_positions[grid->first_sample + i];
+            c->sun[grid->first_sample + i] = facing && ValidSample(point) ?
+                SunVisibility(s, point, Hash((uint32_t)(grid->first_sample + i) * 0x85ebca6bu ^ 0x27d4eb2fu)) : 0;
+        }
+    }
+}
+/* Alpha holds `alpha` (per direction, 0-1) when given, else 255. */
 static void StoreCube(const probe_context *c, uint32_t x, uint32_t y, uint32_t z, uint32_t layer,
-    float cube[6][3], float scale, const float *sky)
+    float cube[6][3], float scale, const float *alpha)
 {
     const lq_scene *s = c->scene;
     for (uint32_t d = 0; d < 6; ++d) {
         size_t depth = (size_t)(layer*6 + d) * s->probe_size[2] + z;
         uint8_t *texel = c->output + ((depth * s->probe_size[1] + y) * s->probe_size[0] + x) * 4;
         for (int k = 0; k < 3; ++k) texel[k] = (uint8_t)fminf(fmaxf(cube[d][k] * scale + 0.5f, 0), 255);
-        texel[3] = sky ? (uint8_t)fminf(fmaxf(sky[d] * 255 + 0.5f, 0), 255) : 255;
+        texel[3] = alpha ? (uint8_t)fminf(fmaxf(alpha[d] * 255 + 0.5f, 0), 255) : 255;
     }
 }
 static void StaticProbes(void *opaque, size_t begin, size_t end)
@@ -437,10 +502,14 @@ static void StaticProbes(void *opaque, size_t begin, size_t end)
             }
         }
         /* Irradiance E(n) = (4/N) sum M max(0, d.n) for Lambertian exitance M. */
-        float scale = 4.0f / c->rays * s->bounce_scale, visible[6];
+        float scale = 4.0f / c->rays * s->bounce_scale, visible[6], sun[6];
         for (int d = 0; d < 6; ++d) visible[d] = sky[d][0] * 4.0f / c->rays;
+        /* Sun visibility at the probe; the shader applies each normal's incidence. */
+        int has_sun = b->sun != NULL;
+        sun[0] = has_sun ? SunVisibility(s, origin, Hash((uint32_t)p ^ 0x165667b1u)) : 0;
+        for (int d = 1; d < 6; ++d) sun[d] = sun[0];
         for (uint32_t layer = 0; layer < c->layers; ++layer)
-            StoreCube(c, x, y, z, layer, cube[layer], scale, layer ? NULL : visible);
+            StoreCube(c, x, y, z, layer, cube[layer], scale, layer == 0 ? visible : layer == 1 && has_sun ? sun : NULL);
     }
 }
 /* Probes inside solid take the mean of filled neighbours, so trilinear
@@ -698,6 +767,14 @@ int LQ_SceneComputeBounce(lq_scene *s, uint32_t rays, lq_range_runner run, char 
     SkyLight(s);
     if (s->sky_light[0] + s->sky_light[1] + s->sky_light[2] > 0) run(s->draw_count, 8, SkyFaces, &c);
     else { free(c.sky); c.sky = NULL; }
+    if (s->sun_light[0] + s->sun_light[1] + s->sun_light[2] > 0) {
+        c.sun = calloc(samples, sizeof(*c.sun));
+        if (!c.sun) {
+            free(c.emit); free(c.gather); free(c.sky); free(c.emit_styles); free(c.gather_styles); free(pixels);
+            snprintf(error, size, "cannot allocate sun visibility"); return 0;
+        }
+        run(s->draw_count, 8, SunFaces, &c);
+    }
     run(s->draw_count, 16, EmitFaces, &c);
     run(s->draw_count, 8, GatherFaces, &c);
     /* Stack four style layers vertically, each with the lightmap's layout and
@@ -708,7 +785,7 @@ int LQ_SceneComputeBounce(lq_scene *s, uint32_t rays, lq_range_runner run, char 
         memcpy(s->draws[f].bounce_styles, c.gather_styles[f], FACE_STYLES);
         if (!grid->width) continue;
         for (int k = 0; k < FACE_STYLES; ++k) {
-            if (c.gather_styles[f][k] == 255 && (k || !c.sky)) continue;
+            if (c.gather_styles[f][k] == 255 && !(k == 0 && c.sky) && !(k == 1 && c.sun)) continue;
             for (int y = -1; y <= grid->height; ++y) for (int x = -1; x <= grid->width; ++x) {
                 int sx = x < 0 ? 0 : x >= grid->width ? grid->width - 1 : x;
                 int sy = y < 0 ? 0 : y >= grid->height ? grid->height - 1 : y;
@@ -717,7 +794,8 @@ int LQ_SceneComputeBounce(lq_scene *s, uint32_t rays, lq_range_runner run, char 
                 uint8_t *pixel = pixels + ((size_t)(k * layer + grid->atlas_y + y) * width + grid->atlas_x + x) * 4;
                 if (c.gather_styles[f][k] != 255)
                     for (int j = 0; j < 3; ++j) pixel[j] = (uint8_t)fminf(value[j] + 0.5f, 255);
-                pixel[3] = k || !c.sky ? 255 : (uint8_t)fminf(c.sky[sample] * 255 + 0.5f, 255);
+                pixel[3] = k == 0 && c.sky ? (uint8_t)fminf(c.sky[sample] * 255 + 0.5f, 255) :
+                    k == 1 && c.sun ? (uint8_t)fminf(c.sun[sample] * 255 + 0.5f, 255) : 255;
             }
         }
     }
@@ -727,6 +805,6 @@ int LQ_SceneComputeBounce(lq_scene *s, uint32_t rays, lq_range_runner run, char 
         free(s->probe_static); free(s->probe_valid); s->probe_static = s->probe_valid = NULL;
         memset(s->probe_size, 0, sizeof(s->probe_size));
     }
-    free(c.emit); free(c.gather); free(c.sky); free(c.emit_styles); free(c.gather_styles);
+    free(c.emit); free(c.gather); free(c.sky); free(c.sun); free(c.emit_styles); free(c.gather_styles);
     return 1;
 }

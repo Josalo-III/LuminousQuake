@@ -6,3 +6,5 @@
 /quake-complete/
 *.pak
 __pycache__/
+/quake-shareware/
+/QUAKE-SW.zip

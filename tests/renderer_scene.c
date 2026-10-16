@@ -62,6 +62,83 @@ static int EffectTest(void)
 /* A closed 256-unit white room lit from its center: one wall per BSP node,
  * a single empty leaf inside. Every wall receives direct light, so bounce at
  * each sample is the mean exitance of the walls its hemisphere sees. */
+/* ericw-tools surface-light pieces: GLQuake-style 128-unit axis splits. */
+static int SurfaceLightTest(void)
+{
+    float square[4][3] = {{0,0,0},{256,0,0},{256,256,0},{0,256,0}}, points[8][3];
+    CHECK(LQ_SurfaceLightPoints((const float (*)[3])square, 4, 128, points, 8) == 4);
+    int seen = 0;
+    for (int i = 0; i < 4; ++i) {
+        CHECK(points[i][2] == 0);
+        CHECK((points[i][0] == 64 || points[i][0] == 192) && (points[i][1] == 64 || points[i][1] == 192));
+        seen |= 1 << ((points[i][0] > 128) + 2*(points[i][1] > 128));
+    }
+    CHECK(seen == 15);
+    /* Cuts fall on the grid multiple nearest the centre: a strip inside one
+     * cell stays whole, one across a grid line is cut there, and slivers
+     * under 8 units are not cut off. */
+    float strip[4][3] = {{4,0,0},{124,0,0},{124,16,0},{4,16,0}};
+    CHECK(LQ_SurfaceLightPoints((const float (*)[3])strip, 4, 128, points, 8) == 1);
+    CHECK(points[0][0] == 64 && points[0][1] == 8);
+    for (int i = 0; i < 4; ++i) strip[i][0] -= 64;
+    CHECK(LQ_SurfaceLightPoints((const float (*)[3])strip, 4, 128, points, 8) == 2);
+    float sliver[4][3] = {{0,0,0},{132,0,0},{132,16,0},{0,16,0}};
+    CHECK(LQ_SurfaceLightPoints((const float (*)[3])sliver, 4, 128, points, 8) == 1);
+    /* Counting continues past the capacity; degenerate input yields nothing. */
+    CHECK(LQ_SurfaceLightPoints((const float (*)[3])square, 4, 128, points, 2) == 4);
+    CHECK(LQ_SurfaceLightPoints((const float (*)[3])square, 2, 128, points, 8) == 0);
+    puts("PASS surface-light pieces: axis splits at 128-unit multiples, centroids, small faces and capacity");
+    return 0;
+}
+/* Lights 0..33 along a wall, 10 units out; the camera at the first. */
+static int LightBudgetTest(void)
+{
+    enum { COUNT = LQ_MAX_RUNTIME_LIGHTS + 2, GAME = LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS };
+    lq_scene wall = {0};
+    lq_vertex vertices[4] = {0};
+    uint32_t indices[6] = {0,1,2,0,2,3};
+    lq_draw draw = {0,6,0,0,{255,255,255,255}};
+    static const float corners[4][2] = {{-50,-50},{COUNT*10,-50},{COUNT*10,50},{-50,50}};
+    for (int i = 0; i < 4; ++i) {
+        vertices[i].position[0] = corners[i][0]; vertices[i].position[2] = corners[i][1];
+        vertices[i].normal[1] = 1;
+    }
+    wall.vertices = vertices; wall.indices = indices; wall.draws = &draw;
+    wall.vertex_count = 4; wall.index_count = 6; wall.draw_count = 1;
+    lq_light_source lights[COUNT] = {0};
+    for (uint32_t i = 0; i < COUNT; ++i) {
+        LQ_LightSourceDefaults(&lights[i]);
+        lights[i].origin[0] = (float)i*10; lights[i].origin[1] = 10;
+        lights[i].intensity = 100; lights[i].entity_index = i;
+    }
+    wall.light_sources = lights; wall.light_source_count = COUNT;
+    float styles[256], camera[3] = {0,10,0};
+    for (int i = 0; i < 256; ++i) styles[i] = 1;
+    lq_light_drop dropped[COUNT];
+    uint32_t drops = 0;
+    /* Every light reaches the wall at (100 - 10) * 0.5; the nearest GAME stay. */
+    CHECK(LQ_LightBudget(&wall, styles, camera, NULL, GAME, dropped, COUNT, &drops) == COUNT);
+    CHECK(drops == COUNT - GAME && dropped[0].source == GAME && fabsf(dropped[0].peak - 45) < 0.01f);
+    for (uint32_t i = 0; i < drops; ++i) CHECK(dropped[i].source == GAME + i);
+    CHECK(LQ_LightBudget(&wall, styles, camera, NULL, LQ_MAX_RUNTIME_LIGHTS, dropped, COUNT, &drops) == COUNT && drops == 2);
+    /* A truncated list still counts every drop; stronger drops sort first. */
+    lights[COUNT-1].intensity = 150; /* longer reach, still ranked last */
+    CHECK(LQ_LightBudget(&wall, styles, camera, NULL, GAME, dropped, 3, &drops) == COUNT && drops == COUNT - GAME);
+    CHECK(dropped[0].source == COUNT-1 && fabsf(dropped[0].peak - 70) < 0.01f && dropped[1].source == GAME);
+    /* Behind the wall, dark styles and draws out of view do not reach. */
+    lights[COUNT-1].origin[1] = -10; lights[COUNT-2].style = 1; styles[1] = 0;
+    CHECK(LQ_LightBudget(&wall, styles, camera, NULL, GAME, dropped, COUNT, &drops) == COUNT - 2 && drops == COUNT - GAME - 2);
+    uint8_t hidden = 0;
+    CHECK(LQ_LightBudget(&wall, styles, camera, &hidden, GAME, dropped, COUNT, &drops) == 0 && drops == 0);
+    /* Over budget, selection first drops sources that light nothing in view. */
+    lq_runtime_light runtime[LQ_MAX_RUNTIME_LIGHTS] = {0};
+    lq_draw shown = draw, unseen = draw; unseen.index_count = 0;
+    CHECK(LQ_BuildRuntimeLightsVisible(&wall, styles, camera, &shown, runtime, GAME) == GAME);
+    memset(runtime, 0, sizeof(runtime));
+    CHECK(LQ_BuildRuntimeLightsVisible(&wall, styles, camera, &unseen, runtime, GAME) == 0);
+    puts("PASS light budget: reaching lights, dropped by slot limit, strongest first, facing, styles, visibility and the over-budget filter");
+    return 0;
+}
 static int BounceRoomTest(void)
 {
     enum { HALF = 128, GRID = HALF*2/16 + 1 };
@@ -97,7 +174,7 @@ static int BounceRoomTest(void)
         }
         static const uint32_t fan[6] = {0,1,2,0,2,3};
         for (int i = 0; i < 6; ++i) room.indices[wall*6 + i] = (uint32_t)(wall*4) + fan[i];
-        room.draws[wall] = (lq_draw){(uint32_t)wall*6, 6, 0, 0, {0,255,255,255}, 0, {255,255,255,255}};
+        room.draws[wall] = (lq_draw){(uint32_t)wall*6, 6, 0, 0, {0,255,255,255}, {0}, {255,255,255,255}};
         lq_face_samples *grid = &room.face_samples[wall];
         grid->s[u] = 1; grid->t[v] = 1; grid->mins[0] = grid->mins[1] = -HALF;
         grid->width = grid->height = GRID; grid->atlas_x = (uint16_t)(1 + wall*(GRID + 2)); grid->atlas_y = 1;
@@ -181,8 +258,48 @@ static int BounceRoomTest(void)
     const uint8_t *down = room.probe_static + ((((size_t)5 * room.probe_size[2] + pz) * room.probe_size[1] + py) *
         room.probe_size[0] + px) * 4;
     CHECK(up[3] > 125 && up[3] < 158 && down[3] == 0);
+    /* id's qbsp sealed sky brushes as solid: the sky face alone marks sky. */
+    int sky_leaf_floor = floor[3];
+    room.bsp_nodes[5].children[1] = -1;
+    CHECK(LQ_SceneComputeBounce(&room, 256, NULL, error, sizeof(error)));
+    floor = room.bounce.pixels + ((size_t)(1 + GRID/2) * room.bounce.width + 1 + 4*(GRID + 2) + GRID/2) * 4;
+    CHECK(abs((int)floor[3] - sky_leaf_floor) <= 2);
+    room.bsp_nodes[5].children[1] = -3;
+    /* LIGHT's rays stop only at solid: a source in the sky leaf above the
+     * ceiling still lights the room, so its style reaches the bounce. */
+    for (int wall = 0; wall < 6; ++wall)
+        room.face_samples[wall].albedo[0] = room.face_samples[wall].albedo[1] = room.face_samples[wall].albedo[2] = 1;
+    light->origin[2] = HALF + 64;
+    CHECK(LQ_SceneLeaf(&room, light->origin) == 2);
+    CHECK(LQ_SceneComputeBounce(&room, 64, NULL, error, sizeof(error)));
+    int sky_lit = 0;
+    for (int wall = 0; wall < 5; ++wall) for (int k = 0; k < 4; ++k) sky_lit |= room.draws[wall].bounce_styles[k] == 5;
+    CHECK(sky_lit);
+    /* Sun straight down through the sky ceiling: the floor and the centre
+     * probe see it (layer 1 alpha); walls face across it and keep none. Its
+     * reflection off the floor lights a wall's bounce. Lit from below, the
+     * solid floor hides it from everything. */
+    light->origin[2] = 0; light->style = 0; light->intensity = 1;
+    CHECK(LQ_SceneComputeBounce(&room, 64, NULL, error, sizeof(error)));
+    const uint8_t *wall_center = room.bounce.pixels + ((size_t)(1 + GRID/2) * room.bounce.width + 1 + GRID/2) * 4;
+    int unlit_wall = wall_center[0];
+    room.sun_direction[2] = -1; room.sun_light[0] = room.sun_light[1] = room.sun_light[2] = 40;
+    room.sun_angle_scale = 0.5f; room.sun_penumbra = 4;
+    CHECK(LQ_SceneComputeBounce(&room, 64, NULL, error, sizeof(error)));
+    size_t layer1 = (size_t)room.atlas_height * room.bounce.width * 4;
+    const uint8_t *sun_floor = room.bounce.pixels + layer1 +
+        ((size_t)(1 + GRID/2) * room.bounce.width + 1 + 4*(GRID + 2) + GRID/2) * 4;
+    wall_center = room.bounce.pixels + ((size_t)(1 + GRID/2) * room.bounce.width + 1 + GRID/2) * 4;
+    CHECK(sun_floor[3] == 255 && wall_center[layer1 + 3] == 0);
+    CHECK(wall_center[0] > unlit_wall + 4);
+    size_t probe_sun = (((size_t)(6 + 4) * room.probe_size[2] + pz) * room.probe_size[1] + py) * room.probe_size[0] + px;
+    CHECK(room.probe_static[probe_sun * 4 + 3] == 255);
+    room.sun_direction[2] = 1;
+    CHECK(LQ_SceneComputeBounce(&room, 64, NULL, error, sizeof(error)));
+    sun_floor = room.bounce.pixels + layer1 + ((size_t)(1 + GRID/2) * room.bounce.width + 1 + 4*(GRID + 2) + GRID/2) * 4;
+    CHECK(sun_floor[3] == 0 && room.probe_static[probe_sun * 4 + 3] == 0);
     LQ_SceneFree(&room);
-    puts("PASS static bounce and probe gather: closed room hits, cosine weighting, style layers, albedo, gameplay-light probes and sky visibility");
+    puts("PASS static bounce and probe gather: closed room hits, cosine weighting, style layers, albedo, gameplay-light probes and sky visibility through sky faces or leaves, light through sky leaves, sun visibility and bounce");
     return 0;
 }
 int main(void)
@@ -251,16 +368,16 @@ int main(void)
     lq_draw interactions[2];
     memset(runtime,0,sizeof(runtime)); runtime[0].position_radius[3] = 100;
     CHECK(LQ_BuildLightInteractions(&scene,runtime,1,interactions) == 1);
-    CHECK(interactions[0].light_bits == 1 && interactions[1].light_bits == 0);
+    CHECK(interactions[0].light_bits[0] == 1 && interactions[1].light_bits[0] == 0);
     runtime[0].position_radius[3] = 200;
     CHECK(LQ_BuildLightInteractions(&scene,runtime,1,interactions) == 2);
-    CHECK(interactions[0].light_bits == 1 && interactions[1].light_bits == 1);
+    CHECK(interactions[0].light_bits[0] == 1 && interactions[1].light_bits[0] == 1);
     runtime[0].position_radius[0] = 200;
     CHECK(LQ_BuildLightInteractions(&scene,runtime,1,interactions) == 0);
-    CHECK(interactions[0].light_bits == 0 && interactions[1].light_bits == 0);
+    CHECK(interactions[0].light_bits[0] == 0 && interactions[1].light_bits[0] == 0);
     runtime[0].position_radius[0] = 0; scene.draws[0].flags = LQ_SURFACE_SKY;
     CHECK(LQ_BuildLightInteractions(&scene,runtime,1,interactions) == 1);
-    CHECK(interactions[0].light_bits == 0 && interactions[1].light_bits == 1);
+    CHECK(interactions[0].light_bits[0] == 0 && interactions[1].light_bits[0] == 1);
     scene.draws[0].flags = 0;
     scene.light_visibility_words = 1;
     scene.light_visibility = calloc(2,sizeof(*scene.light_visibility));
@@ -268,7 +385,7 @@ int main(void)
     scene.light_visibility[0] = 1; /* draw 0 sees source 0; draw 1 is blocked. */
     runtime[0].source_index = 0;
     CHECK(LQ_BuildLightInteractions(&scene,runtime,1,interactions) == 1);
-    CHECK(interactions[0].light_bits == 1 && interactions[1].light_bits == 0);
+    CHECK(interactions[0].light_bits[0] == 1 && interactions[1].light_bits[0] == 0);
     free(scene.light_visibility); scene.light_visibility = NULL; scene.light_visibility_words = 0;
     source->attenuation = 0; CHECK(!LQ_SceneCheck(&scene,error,sizeof(error))); source->attenuation = 1;
     source->spotlight = 1; CHECK(!LQ_SceneCheck(&scene,error,sizeof(error)));
@@ -320,16 +437,37 @@ int main(void)
         selection.light_sources[i].origin[0] = (float)i*10;
         selection.light_sources[i].intensity = 100; selection.light_sources[i].entity_index = i;
     }
+    /* Nearest first, placed by rank into the sharpest free shadow slots: ranks
+     * 0-15 share the 512 cubes (map slots 0-7, then the gameplay slots 120-127
+     * the viewer gives to map lights), 16-47 the 256 cubes (slots 8-39), the
+     * rest the 128 cubes (slots 40-119). */
     memset(runtime,0,sizeof(runtime));
     CHECK(LQ_BuildRuntimeLights(&selection,styles,camera,runtime) == LQ_MAX_RUNTIME_LIGHTS);
-    CHECK(runtime[0].position_radius[0] == 0);
-    CHECK(runtime[LQ_MAX_RUNTIME_LIGHTS-1].position_radius[0] == 310);
-    /* Moving the camera admits sources 32/33 and drops 0/1, but every source
-     * still selected keeps the slot that owns its shadow cube. */
-    camera[0] = 330;
+    CHECK(runtime[0].source_index == 0 && runtime[7].source_index == 7 && runtime[120].source_index == 8);
+    CHECK(runtime[127].source_index == 15 && runtime[8].source_index == 16 && runtime[39].source_index == 47);
+    CHECK(runtime[40].source_index == 48 && runtime[119].source_index == 127);
+    uint32_t array, cube;
+    LQ_ShadowSlot(0, &array, &cube); CHECK(array == 0 && cube == LQ_MAX_DYNAMIC_LIGHTS);
+    LQ_ShadowSlot(120, &array, &cube); CHECK(array == 0 && cube == 0);
+    LQ_ShadowSlot(8, &array, &cube); CHECK(array == 1 && cube == 0);
+    LQ_ShadowSlot(79, &array, &cube); CHECK(array == 2 && cube == 39);
+    LQ_ShadowSlot(80, &array, &cube); CHECK(array == 3 && cube == 0);
+    /* A small move keeps every slot, and so every cached cube. */
+    lq_runtime_light before[LQ_MAX_RUNTIME_LIGHTS];
+    memcpy(before, runtime, sizeof(before));
+    camera[0] = 4;
     CHECK(LQ_BuildRuntimeLights(&selection,styles,camera,runtime) == LQ_MAX_RUNTIME_LIGHTS);
-    CHECK(runtime[0].source_index == 33 && runtime[0].position_radius[0] == 330 && runtime[1].source_index == 32);
-    for (uint32_t i = 2; i < LQ_MAX_RUNTIME_LIGHTS; ++i) CHECK(runtime[i].source_index == i);
+    for (uint32_t i = 0; i < LQ_MAX_RUNTIME_LIGHTS; ++i) CHECK(runtime[i].source_index == before[i].source_index);
+    /* Across the row the order reverses: sources 0/1 leave, 128/129 take the
+     * sharpest cubes, and a source keeps its slot only while its new rank
+     * stays within half again of its resolution band. */
+    camera[0] = (LQ_MAX_RUNTIME_LIGHTS + 1) * 10;
+    CHECK(LQ_BuildRuntimeLights(&selection,styles,camera,runtime) == LQ_MAX_RUNTIME_LIGHTS);
+    for (uint32_t i = 0; i < LQ_MAX_RUNTIME_LIGHTS; ++i) CHECK(runtime[i].source_index >= 2);
+    CHECK(runtime[0].source_index == 129 && runtime[1].source_index == 128);
+    CHECK(runtime[72].source_index == 80); /* rank 49, still in the 128 band */
+    for (uint32_t i = 0; i < LQ_MAX_RUNTIME_LIGHTS; ++i)
+        if (runtime[i].source_index == 5) { LQ_ShadowSlot(i, &array, &cube); CHECK(array >= 1); } /* rank 124 leaves 512 */
     camera[0] = 0;
     /* PVS reach: one plane at x=0, leaf 1 in front and leaf 2 behind, each
      * seeing only itself. A source in leaf 2 is ineligible from leaf 1. */
@@ -346,6 +484,8 @@ int main(void)
     selection.bsp_nodes = NULL; selection.leaf_pvs = selection.light_leaves = NULL;
     LQ_SceneFree(&selection);
     puts("PASS deterministic bounded runtime-light selection, stable shadow slots and PVS reach");
+    CHECK(LightBudgetTest() == 0);
+    CHECK(SurfaceLightTest() == 0);
     CHECK(BounceRoomTest() == 0);
     CHECK(EffectTest() == 0);
     puts("PASS renderer scene ownership, invalid geometry rejection and Quake/GPU camera projection"); return 0;

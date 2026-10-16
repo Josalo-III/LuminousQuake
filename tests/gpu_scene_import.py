@@ -46,16 +46,34 @@ lumps[11] = struct.pack('<H', 0)
 lumps[12] = b''.join(struct.pack('<2H', *e) for e in [(0, 0), (0, 1), (1, 2), (2, 3), (3, 0)])
 lumps[13] = struct.pack('<4i', 1, 2, 3, 4)
 lumps[14] = struct.pack('<9f7i', 127, -64, -64, 129, 64, 64, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1)
-header = [29]
-body = b''
-for lump in lumps:
-    body += bytes((-len(body)) % 4)
-    header += [124 + len(body), len(lump)]
-    body += lump
-bsp = struct.pack('<31i', *header) + body
+
+def bsp(entities):
+    header = [29]
+    body = b''
+    for lump in [entities] + lumps[1:]:
+        body += bytes((-len(body)) % 4)
+        header += [124 + len(body), len(lump)]
+        body += lump
+    return struct.pack('<31i', *header) + body
+
+# ericw-tools data (the rerelease): a `_sun` light aimed at a target, and a
+# `_surface` template copied onto the 128-unit face (four 64-unit pieces,
+# 2 units into the open leaf at x < 128). Neither stays a point light.
+ericw = (b'{"classname" "worldspawn" "_sunlight" "1.0 1.0 1.0" "_sunlight_penumbra" "4"}\n'
+         b'{"classname" "info_null" "origin" "8 16 0" "targetname" "aim"}\n'
+         b'{"classname" "light" "origin" "0 0 64" "light" "80" "_sun" "1" "target" "aim"}\n'
+         b'{"classname" "light" "origin" "-500 0 0" "light" "150" "_color" "255 0 0" '
+         b'"_surface" "FIXTURE" "_surface_offset" "-2"}\n'
+         b'{"classname" "light" "origin" "0 0 9"}\n\0')
+# Worldspawn sunlight wins when stronger: intensity times the 0.5 range scale.
+worldspawn_sun = (b'{"classname" "worldspawn" "_sunlight" "200" "_sun_mangle" "0 -60 0" '
+                  b'"_sunlight_color" "255 128 0"}\n'
+                  b'{"classname" "light" "origin" "0 0 64" "light" "80" "_sun" "1"}\n\0')
 assets = {'gfx/palette.lmp': bytes(range(256)) * 3,
           'gfx/colormap.lmp': bytes(range(256)) * 64,
-          'maps/fixture.bsp': bsp}
+          'maps/fixture.bsp': bsp(lumps[0]),
+          'maps/ericw.bsp': bsp(ericw),
+          'maps/worldsun.bsp': bsp(worldspawn_sun)}
 with tempfile.TemporaryDirectory(prefix='lq-bsp-') as temporary:
     root = Path(temporary)
     output = run(root, '-map', 'fixture', expected=1)
@@ -82,8 +100,19 @@ with tempfile.TemporaryDirectory(prefix='lq-bsp-') as temporary:
     assert 'formula 3 attenuation 2.000 range 16384.0 spot' in output, output
     assert '0.000 0.707 -0.707 outer 0.9397 inner 0.9848' in output, output  # mangle yaw 90, pitch -45
     assert 'origin 0.000 0.000 11.000 intensity 300.000' in output and 'flags 1 formula 0' in output, output
+    output = run(root, '-map', 'ericw', '--light-info')
+    assert 'Light inventory: 1 surface templates on 1 faces became 4 lights' in output, output
+    assert 'Light inventory: sun 40 40 40 along 0.12 0.24 -0.96, penumbra 4 degrees' in output, output
+    assert 'Light inventory: 5 sources' in output, output
+    for corner in ('-32.000 -32.000', '32.000 -32.000', '-32.000 32.000', '32.000 32.000'):
+        assert f'origin 126.000 {corner} intensity 150.000' in output, output
+    assert 'origin -500.000' not in output and 'origin 0.000 0.000 64.000' not in output, output
+    output = run(root, '-map', 'worldsun')
+    assert 'Light inventory: sun 100 50 0 along 0.50 0.00 -0.87, penumbra 0 degrees' in output, output
+    assert 'Light inventory: 0 sources' in output, output
     output = run(root, '-map', '../escape', expected=1)
     assert 'without a path or extension' in output, output
     output = run(root, '--run-seconds', 'nan', expected=1)
     assert '--run-seconds needs' in output, output
-print('PASS generated BSP/PAK import, scene conversion, missing data and argument rejection (no GPU required)')
+print('PASS generated BSP/PAK import, scene conversion, ericw-tools sun and surface templates, '
+      'missing data and argument rejection (no GPU required)')

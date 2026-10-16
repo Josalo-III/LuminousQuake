@@ -27,6 +27,20 @@ static const char *Argument(int argc, char **argv, const char *name)
     for (int i = 1; i < argc; ++i) if (!strcmp(argv[i], name)) return i + 1 < argc ? argv[i + 1] : "";
     return NULL;
 }
+/* Conservative clip-space test: a box is out only when all eight corners
+ * lie beyond one side or behind the eye. */
+static int InFrustum(const float m[16], const float bounds[6])
+{
+    int outside[5] = {0};
+    for (int corner = 0; corner < 8; ++corner) {
+        float p[3] = {bounds[corner & 1 ? 3 : 0], bounds[corner & 2 ? 4 : 1], bounds[corner & 4 ? 5 : 2]};
+        float x = m[0]*p[0] + m[4]*p[1] + m[8]*p[2] + m[12], y = m[1]*p[0] + m[5]*p[1] + m[9]*p[2] + m[13];
+        float w = m[3]*p[0] + m[7]*p[1] + m[11]*p[2] + m[15];
+        outside[0] += x < -w; outside[1] += x > w; outside[2] += y < -w; outside[3] += y > w; outside[4] += w <= 0;
+    }
+    for (int i = 0; i < 5; ++i) if (outside[i] == 8) return 0;
+    return 1;
+}
 static int Has(int argc, char **argv, const char *name)
 { for (int i = 1; i < argc; ++i) if (!strcmp(argv[i], name)) return 1; return 0; }
 static int SaveFrame(const char *path, char *error, size_t size)
@@ -100,7 +114,7 @@ static int FrameTest(lq_view *view, char *error, size_t size)
         !CenterColor(127,0,error,size)) goto done;
     frame.draw_count = 0;
     if (!LQ_GPUFrame(gpu,&frame,error,size) || !LQ_GPUOptions(gpu,0,0,1,error,size)) goto done;
-    fixture.draws[0].light_bits = 1;
+    fixture.draws[0].light_bits[0] = 1;
     view->world_draws = fixture.draws; view->world_draw_count = 2;
     view->dynamic_lights[0][0] = 64; view->dynamic_lights[0][3] = 128;
     if (!LQ_GPURender(gpu,view,640,480,error,size) || !CenterColor(255,0,error,size)) goto done;
@@ -122,7 +136,7 @@ static int EnhancedLightTest(lq_view *view, char *error, size_t size)
         fixture.colormap.pixels[(row*256 + 224)*4 + 3] = 255;
     }
     if (!LQ_GPUUpload(gpu,&fixture,error,size)) goto done;
-    fixture.draws[0].light_bits = fixture.draws[1].light_bits = 1;
+    fixture.draws[0].light_bits[0] = fixture.draws[1].light_bits[0] = 1;
     view->world_draws = fixture.draws; view->world_draw_count = fixture.draw_count;
     view->lightstyles[0] = 1;
     view->enhanced_lighting = 1; view->runtime_light_count = 1;
@@ -254,8 +268,8 @@ static int ShadowTest(lq_view *view, char *error, size_t size)
             ShadowQuad(&mesh, c, fu, fv, 12, 12, n);
         }
         fixture.vertex_count = mesh.vertex_count; fixture.index_count = mesh.index_count;
-        fixture.draws[0] = (lq_draw){0, 6, 0, 0, {255,255,255,255}, 0};
-        fixture.draws[1] = (lq_draw){6, 36, 0, 0, {255,255,255,255}, 0};
+        fixture.draws[0] = (lq_draw){0, 6, 0, 0, {255,255,255,255}, {0}};
+        fixture.draws[1] = (lq_draw){6, 36, 0, 0, {255,255,255,255}, {0}};
         fixture.light_sources = calloc(1, sizeof(*fixture.light_sources));
         if (!fixture.light_sources) { snprintf(error, size, "shadow fixture allocation"); goto done; }
         fixture.light_source_count = 1;
@@ -291,6 +305,32 @@ static int ShadowTest(lq_view *view, char *error, size_t size)
                 goto done;
             }
         }
+        /* Every shadow array: the same light in a 256 and each 128 slot casts
+         * the same shadow, with the same face orientation. */
+        memcpy(light->origin, origin, sizeof(origin)); light->intensity = 600;
+        for (uint32_t slot = 20; slot <= 100; slot += 40) { /* 256 and both 128 arrays */
+            memset(view->runtime_lights, 0, sizeof(view->runtime_lights));
+            if (LQ_BuildRuntimeLights(&fixture, view->lightstyles, view->origin, view->runtime_lights) != 1) {
+                snprintf(error, size, "shadow tier fixture selection"); goto done;
+            }
+            view->runtime_lights[slot] = view->runtime_lights[0]; memset(&view->runtime_lights[0], 0, sizeof(view->runtime_lights[0]));
+            view->runtime_light_count = slot + 1;
+            memcpy(interactions, fixture.draws, 2 * sizeof(*interactions));
+            interactions[0].light_bits[slot / 32] = 1u << (slot % 32); interactions[1].index_count = 0;
+            if (!LQ_GPURender(gpu, view, 640, 480, error, size)) goto done;
+            float shadow[3], lit[3];
+            for (int j = 0; j < 3; ++j) {
+                shadow[j] = origin[j] + 256*a[j] + 80*u[j] + 48*v[j];
+                lit[j] = origin[j] + 256*a[j] - 80*u[j] - 48*v[j];
+            }
+            int dark, bright;
+            if (!ScreenRed(view, shadow, &dark, error, size) || !ScreenRed(view, lit, &bright, error, size)) goto done;
+            if (dark >= 16 || bright <= 100) {
+                snprintf(error, size, "shadow axis %d slot %u: shadow red %d, lit red %d", axis, slot, dark, bright);
+                goto done;
+            }
+        }
+        memset(view->runtime_lights, 0, sizeof(view->runtime_lights));
         /* Penumbra: the box's far edge projects to u = 28 * 256 / 140 = 51.2 on
          * the receiver. A point source keeps it hard; a 32-unit emitter grades
          * both sides of it. */
@@ -364,7 +404,7 @@ static int ShadowTest(lq_view *view, char *error, size_t size)
         memcpy(view->origin, origin, sizeof(origin));
         fixture.draw_count = 2;
     }
-    puts("PASS Enhanced cube shadows on six axes, moving light, cached static shadows, range cutoff, emitter penumbrae and moving casters");
+    puts("PASS Enhanced cube shadows on six axes in all three resolution tiers, moving light, cached static shadows, range cutoff, emitter penumbrae and moving casters");
     good = 1;
 done:
     view->lightstyles[0] = saved_style;
@@ -377,14 +417,16 @@ done:
 }
 /* A thick wall meets a grazing receiver at a sealed corner, as at E1M1's
  * first lift. The source's entire eight-unit emitter is behind the wall.
- * Mirror vertically to cover the same join viewed from below. */
+ * Mirror vertically to cover the same join viewed from below. A third pass
+ * makes the wall sky, which LIGHT never treats as an occluder. */
 static int ContactShadowTest(lq_view *view, char *error, size_t size)
 {
     int good = 0;
     lq_scene fixture = {0};
     lq_view saved = *view;
     lq_draw interactions[2];
-    for (int mirror = -1; mirror <= 1; mirror += 2) {
+    for (int variant = 0; variant < 3; ++variant) {
+        int mirror = variant == 1 ? 1 : -1, sky = variant == 2;
         LQ_SceneFree(&fixture);
         if (!LQ_SceneFixture(&fixture)) goto done;
         free(fixture.vertices); free(fixture.indices);
@@ -405,8 +447,8 @@ static int ContactShadowTest(lq_view *view, char *error, size_t size)
             ShadowQuad(&mesh, center, fu, fv, half[ua], half[va], normal);
         }
         fixture.vertex_count = mesh.vertex_count; fixture.index_count = mesh.index_count;
-        fixture.draws[0] = (lq_draw){0,6,0,0,{255,255,255,255},0};
-        fixture.draws[1] = (lq_draw){6,36,0,0,{255,255,255,255},0};
+        fixture.draws[0] = (lq_draw){0,6,0,0,{255,255,255,255},{0}};
+        fixture.draws[1] = (lq_draw){6,36,0,sky ? LQ_SURFACE_SKY : 0,{255,255,255,255},{0}};
         fixture.light_source_count = 1;
         LQ_LightSourceDefaults(fixture.light_sources);
         fixture.light_sources[0].intensity = 600; fixture.light_sources[0].source_radius = 8;
@@ -424,14 +466,14 @@ static int ContactShadowTest(lq_view *view, char *error, size_t size)
             for (int x = 186; x <= 218; x += 8) {
                 float point[3] = {(float)x,-8,-64*mirror}; int red;
                 if (!ScreenRed(view, point, &red, error, size)) goto done;
-                if (shadows ? red >= 16 : red <= 80) {
-                    snprintf(error, size, "sealed corner mirror %d x %d shadows %d: red %d", mirror, x, shadows, red);
+                if (shadows && !sky ? red >= 16 : red <= 80) {
+                    snprintf(error, size, "sealed corner mirror %d sky %d x %d shadows %d: red %d", mirror, sky, x, shadows, red);
                     goto done;
                 }
             }
         }
     }
-    puts("PASS Enhanced sealed grazing corners above and below, with unshadowed controls");
+    puts("PASS Enhanced sealed grazing corners above and below, with unshadowed controls; sky does not occlude");
     good = 1;
 done:
     if (!good && !*error) snprintf(error, size, "contact shadow fixture allocation");
@@ -636,15 +678,26 @@ int LQ_GPUViewer(int argc, char **argv)
         LQ_JobsRegister();
         uint64_t started = SDL_GetTicksNS();
         if (!LQ_SceneComputeBounce(&scene, (uint32_t)rays, LQ_JobsRunRange, error, sizeof(error))) goto done;
-        double total = 0, peak = 0; uint64_t texels = 0;
-        for (uint32_t y = 0; y < scene.atlas_height; ++y) for (uint32_t x = 0; x < scene.bounce.width; ++x) {
-            const uint8_t *p = scene.bounce.pixels + ((size_t)y * scene.bounce.width + x) * 4;
-            if (!p[3]) continue;
-            double value = (p[0] + p[1] + p[2]) / 3.0; total += value; peak = value > peak ? value : peak; ++texels;
+        /* Over every face sample: first-layer bounce, and sky/sun visibility. */
+        double total = 0, peak = 0, sky = 0; uint64_t texels = 0, open = 0, sunlit = 0;
+        int has_sky = scene.sky_light[0] + scene.sky_light[1] + scene.sky_light[2] > 0;
+        int has_sun = scene.sun_light[0] + scene.sun_light[1] + scene.sun_light[2] > 0;
+        for (uint32_t f = 0; f < scene.draw_count; ++f) {
+            const lq_face_samples *grid = &scene.face_samples[f];
+            for (uint32_t y = 0; y < grid->height; ++y) for (uint32_t x = 0; x < grid->width; ++x) {
+                size_t texel = (size_t)(grid->atlas_y + y) * scene.bounce.width + grid->atlas_x + x;
+                const uint8_t *p = scene.bounce.pixels + texel * 4;
+                const uint8_t *sun = p + (size_t)scene.atlas_height * scene.bounce.width * 4;
+                double value = (p[0] + p[1] + p[2]) / 3.0; total += value; peak = value > peak ? value : peak; ++texels;
+                if (has_sky) { sky += p[3] / 255.0; open += p[3] > 0; }
+                if (has_sun) sunlit += sun[3] > 0;
+            }
         }
-        printf("Enhanced bounce: %u samples, %ld rays each, %u workers, %.2f s; style-0 mean %.1f, peak %.0f brightness\n",
+        printf("Enhanced bounce: %u samples, %ld rays each, %u workers, %.2f s; first layer mean %.1f, peak %.0f brightness; "
+            "sky seen by %.1f%% (mean visibility %.3f), sun by %.1f%%\n",
             scene.sample_count, rays, LQ_JobsWorkerCount(), (double)(SDL_GetTicksNS() - started) / 1e9,
-            texels ? total / texels : 0, peak);
+            texels ? total / texels : 0, peak, texels ? 100.0 * open / texels : 0, texels ? sky / texels : 0,
+            texels ? 100.0 * sunlit / texels : 0);
         if (scene.probe_static) {
             size_t probes = (size_t)scene.probe_size[0] * scene.probe_size[1] * scene.probe_size[2], valid = 0;
             for (size_t i = 0; i < probes; ++i) valid += scene.probe_valid[i];
@@ -657,6 +710,45 @@ int LQ_GPUViewer(int argc, char **argv)
     active = 0;
     if (!test) printf("GPU camera: %.1f %.1f %.1f; angles %.1f %.1f %.1f\n",
         view.origin[0], view.origin[1], view.origin[2], view.angles[0], view.angles[1], view.angles[2]);
+    if (Has(argc, argv, "--light-budget")) {
+        /* Which reaching map lights the runtime slot limit leaves out here,
+         * for the game's map slots and the viewer's full set. */
+        uint32_t sources = scene.light_source_count ? scene.light_source_count : 1;
+        uint8_t *visible = malloc(scene.draw_count ? scene.draw_count : 1);
+        lq_light_drop *game = calloc(sources, sizeof(*game)), *all = calloc(sources, sizeof(*all));
+        float styles[256]; LQ_QuakeLightstyles(0, styles);
+        if (!visible || !game || !all || !LQ_QuakeSceneVisibleDraws(&scene, view.origin, visible)) {
+            free(visible); free(game); free(all); snprintf(error, sizeof(error), "cannot mark PVS faces"); goto done;
+        }
+        enum { SHOWN = 16 };
+        uint32_t game_drops, all_drops, game_slots = LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS;
+        /* First the whole PVS the game submits, then the faces inside a 4:3 view. */
+        float matrix[16]; LQ_ViewMatrix(&view, 4.0f / 3, matrix);
+        if (!LQ_SceneDrawBounds(&scene)) {
+            free(visible); free(game); free(all); snprintf(error, sizeof(error), "cannot bound draws"); goto done;
+        }
+        for (int pass = 0; pass < 2; ++pass) {
+            uint32_t faces = 0;
+            for (uint32_t i = 0; i < scene.draw_count; ++i) {
+                if (pass && visible[i]) visible[i] = InFrustum(matrix, scene.draw_bounds[i]);
+                faces += visible[i] != 0;
+            }
+            uint32_t reaching = LQ_LightBudget(&scene, styles, view.origin, visible, game_slots, game, sources, &game_drops);
+            LQ_LightBudget(&scene, styles, view.origin, visible, LQ_MAX_RUNTIME_LIGHTS, all, sources, &all_drops);
+            printf("Light budget, %s: %u map lights can reach %u faces; %u game slots drop %u, %u viewer slots drop %u\n",
+                pass ? "in view" : "PVS", reaching, faces, game_slots, game_drops, LQ_MAX_RUNTIME_LIGHTS, all_drops);
+        }
+        if (game_drops) printf("Dropped in game for faces in view, strongest first (falloff at the nearest face; no incidence, cone or shadow):\n");
+        for (uint32_t i = 0; i < game_drops && i < SHOWN; ++i) {
+            const lq_light_source *light = &scene.light_sources[game[i].source];
+            int viewer = 0;
+            for (uint32_t j = 0; j < all_drops && !viewer; ++j) viewer = all[j].source == game[i].source;
+            printf("  entity %u %s light %.0f style %u at %.0f %.0f %.0f%s: up to %.0f%s\n", light->entity_index,
+                light->classname, light->intensity, light->style, light->origin[0], light->origin[1], light->origin[2],
+                light->spotlight ? " (spot)" : "", game[i].peak, viewer ? "; viewer also drops" : "");
+        }
+        free(visible); free(game); free(all); result = 0; goto done;
+    }
     SDL_SetMainReady();
     if (!SDL_Init(SDL_INIT_VIDEO)) { snprintf(error, sizeof(error), "SDL3: %s", SDL_GetError()); goto done; }
     window = SDL_CreateWindow("LuminousQuake GPU world viewer / WASD fly / E Q vertical / F1 capture / Esc exit",
@@ -666,6 +758,7 @@ int LQ_GPUViewer(int argc, char **argv)
     if (!gpu || !LQ_GPUUpload(gpu, &scene, error, sizeof(error))) goto done;
     if (enhanced) {
         interaction_draws = malloc(scene.draw_count*sizeof(*interaction_draws));
+        if (interaction_draws && !LQ_SceneDrawBounds(&scene)) { free(interaction_draws); interaction_draws = NULL; }
         if (!interaction_draws) { snprintf(error,sizeof(error),"cannot allocate light interactions"); goto done; }
         view.world_draws = interaction_draws; view.world_draw_count = scene.draw_count;
     }

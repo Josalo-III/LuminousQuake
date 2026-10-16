@@ -18,7 +18,7 @@ typedef struct { lq_image indices; char name[17]; uint32_t resource_id; } lq_mat
 typedef struct {
     uint32_t first_index, index_count, material, flags;
     uint8_t styles[4];
-    uint32_t light_bits;
+    uint32_t light_bits[4]; /* runtime-light slots reaching the face; Classic uses word 0 for dlights */
     uint8_t bounce_styles[4]; /* Enhanced bounce layer styles; 255 is unused */
 } lq_draw;
 /* Renderer-owned descriptions from BSP entity text, retained after QC discards
@@ -103,17 +103,26 @@ typedef struct {
     /* Optional Enhanced bounce: four stacked RGBA layers of atlas_height rows,
      * brightness units, selected per draw by bounce_styles. Layer 0 alpha is
      * the sample's sky visibility (cosine-weighted fraction of rays reaching
-     * sky, 0-255) whatever its styles; sky light's own bounce is in style 0. */
+     * sky, 0-255) whatever its styles; sky light's own bounce is in style 0.
+     * With a sun, layer 1 alpha is the sample's sun visibility (0-255). */
     lq_image bounce;
     /* Enhanced sky light: brightness a fully open, upward-facing sample
      * receives, from the mean displayed color of the map's sky materials.
      * Set by LQ_SceneComputeBounce; zero for maps without sky. */
     float sky_light[3];
+    /* ericw-tools sunlight, from the strongest `_sun` light entity or the
+     * worldspawn `_sunlight` keys: a directional light travelling along
+     * sun_direction (unit). sun_light is its color times strength in
+     * brightness units at normal incidence, zero for no sun; incidence is
+     * softened by sun_angle_scale as for point lights. sun_penumbra is the
+     * angular width in degrees over which its visibility is sampled. */
+    float sun_direction[3], sun_light[3], sun_angle_scale, sun_penumbra;
     /* Optional Enhanced irradiance probes: an ambient cube (irradiance toward
      * +X,-X,+Y,-Y,+Z,-Z, brightness units) at each grid point. probe_static is
      * RGBA, x-fastest, depth index (layer*6 + direction)*size[2] + z; each of
      * the four layers belongs to probe_styles[layer] (255 unused). Layer 0
-     * alpha is sky visibility toward each direction (0-255), as in bounce. */
+     * alpha is sky visibility toward each direction (0-255), as in bounce;
+     * layer 1 alpha is sun visibility at the probe, the same in all six. */
     float probe_origin[3], probe_spacing;
     uint32_t probe_size[3];
     uint8_t probe_styles[4];
@@ -133,9 +142,24 @@ typedef struct {
     uint32_t vertex_count, index_count, draw_count, material_count;
 } lq_frame;
 /* Each runtime slot owns one shadow cube; slots stay stable across frames so
- * unchanged static shadows need not be redrawn. A zero range is an empty slot. */
-#define LQ_MAX_RUNTIME_LIGHTS 32
+ * unchanged static shadows need not be redrawn. A zero range is an empty slot.
+ * The slot count is bounded by the shader's light uniform block: 80 bytes per
+ * light, 10 KB for 128, inside the 16 KB uniform range every Vulkan device
+ * guarantees. Per-face masks are LQ_LIGHT_WORDS 32-bit words. */
+#define LQ_MAX_RUNTIME_LIGHTS 128
+#define LQ_LIGHT_WORDS (LQ_MAX_RUNTIME_LIGHTS / 32)
 #define LQ_MAX_DYNAMIC_LIGHTS 8 /* gameplay lights use the last slots */
+/* Shadow cubes come in three resolutions, bounded by memory (D32: 6 MB per
+ * 512 cube, 174 MB in all). Gameplay lights and the first 8 map slots get
+ * 512, the next 32 slots 256, the remaining 80 slots 128. Selection places
+ * the most important lights in the sharper resolutions. Each cube is six
+ * layers of a 2D array texture; SDL addresses depth-target layers with 8
+ * bits, so an array holds at most 42 cubes and the 128 cubes span two. */
+#define LQ_SHADOW_ARRAYS 4
+#define LQ_SHADOW_ARRAY_SIZES {512, 256, 128, 128}
+#define LQ_SHADOW_ARRAY_CUBES {16, 32, 40, 40}
+/* Shadow array and cube within it of a runtime slot. */
+void LQ_ShadowSlot(uint32_t slot, uint32_t *array, uint32_t *cube);
 #define LQ_DYNAMIC_LIGHT_SOURCE 0x80000000u /* source_index tag for gameplay lights */
 typedef struct {
     float position_radius[4]; /* world xyz and falloff/shadow range */
@@ -195,6 +219,10 @@ uint32_t LQ_BuildRuntimeLights(const lq_scene *scene, const float styles[256],
 /* As above, but map lights occupy only the first `slots` entries. */
 uint32_t LQ_BuildRuntimeLightsLimited(const lq_scene *scene, const float styles[256],
     const float camera[3], lq_runtime_light output[LQ_MAX_RUNTIME_LIGHTS], uint32_t slots);
+/* As above. When more sources qualify than there are slots, those that cannot
+ * light any draw with nonzero index_count in `visible` are left out first. */
+uint32_t LQ_BuildRuntimeLightsVisible(const lq_scene *scene, const float styles[256],
+    const float camera[3], const lq_draw *visible, lq_runtime_light output[LQ_MAX_RUNTIME_LIGHTS], uint32_t slots);
 /* A gameplay light (rocket, muzzle flash, explosion): Quake's dlight radius as a
  * linear light of that value, unscaled, so its strength matches Classic. */
 void LQ_DynamicRuntimeLight(lq_runtime_light *light, const float origin[3], float radius,
@@ -205,6 +233,23 @@ uint32_t LQ_BuildLightInteractions(const lq_scene *scene,
  * no bits); `visible` may be NULL for all draws. */
 uint32_t LQ_BuildVisibleLightInteractions(const lq_scene *scene, const lq_runtime_light *lights,
     uint32_t light_count, const lq_draw *visible, lq_draw *output);
+/* ericw-tools surface-light placement: split a convex polygon on axis planes
+ * at multiples of `subdivide`, as GLQuake subdivides warped faces, and write
+ * each piece's vertex centroid. Returns the number of pieces (only the first
+ * `capacity` are written). */
+uint32_t LQ_SurfaceLightPoints(const float (*polygon)[3], uint32_t count, float subdivide,
+    float (*out)[3], uint32_t capacity);
+/* Light budget diagnostic. A map light reaches the view when it could light a
+ * visible draw (`visible` nonzero per draw, NULL for all): in its PVS reach and
+ * range, with the draw in front of it. `peak` bounds what it adds there in
+ * brightness units: falloff at the draw's nearest point, before incidence,
+ * spot cone and shadows. Reaching lights a fresh `slots`-light selection at
+ * `camera` leaves out are written to `dropped`, strongest first, up to
+ * `capacity`; *dropped_count gets all of them. Returns the number reaching. */
+typedef struct { uint32_t source; float peak; } lq_light_drop;
+uint32_t LQ_LightBudget(const lq_scene *scene, const float styles[256], const float camera[3],
+    const uint8_t *visible, uint32_t slots, lq_light_drop *dropped, uint32_t capacity,
+    uint32_t *dropped_count);
 /* Cache per-draw bounds for per-frame interaction building. */
 int LQ_SceneDrawBounds(lq_scene *scene);
 void LQ_SceneFree(lq_scene *scene);

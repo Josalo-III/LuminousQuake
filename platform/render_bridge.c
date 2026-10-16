@@ -164,7 +164,7 @@ int LQ_RenderGPUView(void)
                 index < (size_t)(cl.worldmodel->firstmodelsurface+cl.worldmodel->nummodelsurfaces)) {
                 world_draws[index] = map_scene.draws[index];
                 world_draws[index].material = LQ_AnimatedMaterial(&map_scene, surface->texinfo->texture);
-                world_draws[index].light_bits = surface->dlightframe == r_framecount ? surface->dlightbits : 0;
+                world_draws[index].light_bits[0] = surface->dlightframe == r_framecount ? surface->dlightbits : 0;
             }
         }
     }
@@ -249,7 +249,7 @@ static void EnhancedLights(void)
         {1.0f, 0.7f, 0.35f},  /* explosion */
         {1.0f, 1.0f, 1.0f}    /* powerup glow */
     };
-    LQ_BuildRuntimeLightsLimited(&map_scene, view.lightstyles, view.origin, runtime_lights,
+    LQ_BuildRuntimeLightsVisible(&map_scene, view.lightstyles, view.origin, world_draws, runtime_lights,
         LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS);
     lq_runtime_light selected[LQ_MAX_DYNAMIC_LIGHTS], candidate;
     float scores[LQ_MAX_DYNAMIC_LIGHTS]; uint32_t dynamic = 0;
@@ -295,7 +295,8 @@ static void EnhancedLights(void)
     view.enhanced_lighting = 1;
     LQ_BuildVisibleLightInteractions(&map_scene, runtime_lights, count, world_draws, interaction_draws);
     for (uint32_t i = 0; i < map_scene.draw_count; ++i)
-        if (world_draws[i].index_count) world_draws[i].light_bits = interaction_draws[i].light_bits;
+        if (world_draws[i].index_count)
+            memcpy(world_draws[i].light_bits, interaction_draws[i].light_bits, sizeof(world_draws[i].light_bits));
 }
 static void CaptureView(void)
 {
