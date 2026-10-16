@@ -45,8 +45,10 @@ int LQ_MacInstallation(int argc, char **argv, char *path, size_t size)
             if (!strcmp(argv[i], "-basedir")) return 1; /* explicit CLI override */
         NSString *nearby = app ? [[bundle bundlePath] stringByDeletingLastPathComponent] :
             [[[NSString stringWithUTF8String:argv[0]] stringByStandardizingPath] stringByDeletingLastPathComponent];
-        NSString *candidate = [[NSUserDefaults standardUserDefaults] stringForKey:@"QuakeInstallation"];
-        if (!Valid(candidate)) candidate = nearby;
+        /* A copy dropped into a Quake folder plays that folder; otherwise use the
+         * folder chosen last time. */
+        NSString *candidate = nearby;
+        if (!Valid(candidate)) candidate = [[NSUserDefaults standardUserDefaults] stringForKey:@"QuakeInstallation"];
         if (choose || (interactive && ([NSEvent modifierFlags] & NSEventModifierFlagOption))) candidate = nil;
         if (!Valid(candidate)) {
             if (!interactive) return 1; /* CLI discovery supplies a useful terminal error. */

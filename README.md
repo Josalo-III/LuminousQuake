@@ -134,6 +134,17 @@ and has unverified provenance/content. It is a smoke-test sample, not the
 original 1996 compatibility baseline. Extension warnings from its game code
 remain visible. See [Phase 2 notes](docs/PHASE_2.md).
 
+### Mac app (no Terminal needed)
+
+The build produces `build/LuminousQuake.app`, a self-contained app that
+carries its own copy of SDL3. Drag it into a Quake folder (the one containing
+`id1`) and double-click it. It plays the game in the folder it sits in. Placed
+anywhere else, it asks you to choose a Quake folder and remembers that
+choice. Hold Option while launching to choose a different folder. The game
+data is only read, never changed; settings and saves go to
+`~/Library/Application Support/LuminousQuake`. The app is signed ad hoc on
+the Mac that built it and is not notarized for distribution.
+
 LuminousQuake targets the original game. Rerelease installations are an expected
 compatibility case, with support still incomplete: known missing engine services
 are tracked in the [rerelease comparison](docs/RERELEASE_COMPARISON.md). The plan
