@@ -1,5 +1,5 @@
 #version 450
-// Enhanced bounce rays through the world BSP, mirroring renderer/bounce.c: the
+// Luminous bounce rays through the world BSP, mirroring renderer/bounce.c: the
 // same ray directions, BSP walk (TraceFace, without recursion) and polygon
 // containment. Per sample, mode 0 stores the fraction of cosine-weighted rays
 // reaching sky; mode 1 sums, per light style, the exitance of the faces its

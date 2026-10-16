@@ -6,12 +6,12 @@ brushes, sprites and particles to the GPU, alongside the Software comparison
 mode. A Finder-launchable Mac app and isolated profile writes are implemented.
 See [Classic GPU checkpoint](docs/CLASSIC_GPU_CHECKPOINT.md). General CPU jobs,
 broader content/platform validation, remaining Phase 3A delivery checks and
-Enhanced rendering remain pending.
+Luminous rendering remain pending.
 
-Enhanced development has begun with shared world/model normals and an owned
-BSP light inventory; see [Enhanced foundations](docs/ENHANCED_RENDERER.md).
+Luminous development has begun with shared world/model normals and an owned
+BSP light inventory; see [Luminous foundations](docs/LUMINOUS_RENDERER.md).
 The standalone viewer now renders them as falloff-correct, soft-shadowed direct
-light; Enhanced mode in the game remains disabled.
+light; Luminous mode in the game remains disabled.
 
 Classic GPU texture filtering now includes saved mipmap and anisotropy options.
 See the [texture-filtering checkpoint](docs/CLASSIC_GPU_CHECKPOINT.md) for the
@@ -33,7 +33,7 @@ Updated: October 14, 2026
 
 Build a cross-platform engine that plays the original 1996 Quake using unchanged original PAKs while providing optional dynamic lighting, shadows and improved rendering. Deliver a binary that can live beside classic Quake binaries in an existing installation. Preserve Quake's gameplay, proportions, and atmosphere, including the original choices about what lighting reveals and conceals.
 
-Enhanced game data is a separate project. This repository builds the engine and supports optional asset overlays; it does not require or produce texture upscales, replacement geometry or modified retail PAKs. Software, Classic GPU and Enhanced must all work with original assets alone. Enhanced rendering must provide useful improvements without a replacement-asset pack.
+Luminous game data is a separate project. This repository builds the engine and supports optional asset overlays; it does not require or produce texture upscales, replacement geometry or modified retail PAKs. Software, Classic GPU and Luminous must all work with original assets alone. Luminous rendering must provide useful improvements without a replacement-asset pack.
 
 The original campaign is the central development and validation target. Widely distributed rerelease data
 is an expected compatibility case: recognize its requirements, support the
@@ -94,7 +94,7 @@ For every imported component, record the upstream commit, original paths, local 
 3. Keep gameplay entities distinct from renderer objects. Translate simulation state into scene submissions rather than exposing interpreter memory to the renderer.
 4. Preserve original file encodings and VM value widths while making native code safe for 64-bit addresses and alignment.
 5. Preserve simulation behavior when improving clocks, input delivery, and presentation pacing.
-6. Preserve three renderer choices: Software, Classic GPU with original baked-lighting appearance, and Enhanced with runtime lighting/material techniques. Classic GPU describes appearance and can use Metal/Vulkan. All three share gameplay and original-content support; unavailable choices must be clearly identified.
+6. Preserve three renderer choices: Software, Classic GPU with original baked-lighting appearance, and Luminous with runtime lighting/material techniques. Classic GPU describes appearance and can use Metal/Vulkan. All three share gameplay and original-content support; unavailable choices must be clearly identified.
 7. Measure performance before adopting optimizations. Record correctness and scene-level results alongside timing.
 8. Use a bounded worker pool for independent engine work. Keep QuakeC, gameplay,
    network state and legacy allocators under their existing owner; workers receive
@@ -195,7 +195,7 @@ This is the next implementation milestone, before expanding renderer features.
 - Resolve the installation from an explicit `-basedir`, a previously selected installation, or the executable/app location. On macOS use the directory containing `LuminousQuake.app`, not `Contents/MacOS` or the shell's current directory. Support a normal `id1/pak0.pak` installation; use `pak1.pak` when present and preserve shareware behavior when it is absent.
 - Add a Finder launch flow: validate discovered data, offer a native installation-folder picker if needed, remember a successful choice, and show useful errors for missing/incompatible files. Cancellation must exit cleanly. A missing installation must not strand the user at an invisible console.
 - Build a CMake macOS app bundle with application metadata, an owned icon, embedded SDL3 runtime, and relative library paths. Bundle engine resources and shaders, but no proprietary game data. Preserve the current CLI executable/arguments for development and advanced use.
-- Keep renderer choice accessible in the game UI. Software and Classic GPU remain usable alongside each other; Enhanced stays explicitly pending until its original-asset implementation is ready.
+- Keep renderer choice accessible in the game UI. Software and Classic GPU remain usable alongside each other; Luminous stays explicitly pending until its original-asset implementation is ready.
 - Provide packaging/install instructions for a release that coexists with classic binaries. Define equivalent executable-relative discovery and separate user-data locations on Windows/Linux; retain their builds even while Mac receives the first locally validated GUI package.
 - Establish signing/notarization requirements for a publicly distributed Mac build separately from local bundle testing. Track other-platform runtime validation and distribution requirements explicitly.
 
@@ -230,7 +230,7 @@ This is the next implementation milestone, before expanding renderer features.
 ## Phase 4A: CPU jobs and measured parallelism
 
 Multithreading is an explicit engine requirement, introduced alongside the GPU
-migration and before the costlier Enhanced lighting work. The first bounded
+migration and before the costlier Luminous lighting work. The first bounded
 worker pool and measured conversion jobs are implemented. SDL audio also runs
 through its callback path; rendering simulation and QuakeC remain serial.
 
@@ -263,7 +263,7 @@ and the evidence required before parallelizing a stage.
    uploads. Bound queued work and memory; discard obsolete results by map/resource
    generation and drain dependent jobs before freeing their inputs.
 5. After explicit render snapshots exist, parallelize visibility/draw preparation
-   and, for Enhanced mode, light influence and shadow-caster preparation. Merge
+   and, for Luminous mode, light influence and shadow-caster preparation. Merge
    results in a stable order. Keep GPU submission and window operations on their
    designated owner initially. Move particles only when ownership is similarly
    explicit.
@@ -290,7 +290,7 @@ gameplay simulation without a separate compatibility and ownership design.
 
 First foundation slices implemented: renderer-owned light descriptions from
 retained BSP entity text and world-space normals for world/brush/MDL geometry.
-See [Enhanced foundations](docs/ENHANCED_RENDERER.md). The standalone viewer now
+See [Luminous foundations](docs/LUMINOUS_RENDERER.md). The standalone viewer now
 renders direct light with compiler-compatible falloff (all LIGHT/ericw-tools
 `delay` formulas, `wait`, `_range`/`_dist`), mangle/target spotlights and
 reversed-depth cube shadow maps with PCSS penumbrae from an emitter radius.
@@ -302,7 +302,7 @@ flashes, explosions) are shadowed runtime lights. An irradiance probe grid
 (static per style, plus a per-frame gameplay-light layer) lights actors and
 carries weapon light into bounce. Actors and moving brush models cast shadows,
 redrawing only the cube faces they touch. Material upgrades remain pending. Classic GPU services remain shared unless a specific
-Enhanced implementation supersedes them.
+Luminous implementation supersedes them.
 
 The static-light reconstruction approach is documented in
 [Light reconstruction](docs/LIGHT_RECONSTRUCTION.md): entity light scalars and
@@ -324,7 +324,7 @@ The first E1M3 sample/source comparison is in
   ambient/residual data outside original game files.
 - Calibrate illumination against original focal points, shadowed passages, silhouettes, and navigation cues. Document intentional departures.
 - Provide optional, inspectable per-map lighting overrides for cases where surviving entities are insufficient.
-- Establish an original-PAK-only Enhanced mode before relying on optional overrides or material packs. Keep authored enhancement data in the separate asset project.
+- Establish an original-PAK-only Luminous mode before relying on optional overrides or material packs. Keep authored enhancement data in the separate asset project.
 
 ### Exit criteria
 
@@ -372,7 +372,7 @@ Each phase should produce a reviewable change with its source provenance, valida
 
 The portable software game, SDL3 platform layer and interim Classic GPU gameplay bridge are implemented. The next delivery is Phase 3A: an engine binary usable alongside an existing Quake installation and a Finder-launchable Mac app. First establish installation discovery and independent user-data writes, then package the app and validate launch/data selection.
 
-After that delivery, replace the mixed renderer bridge with explicit GPU actor/brush/effect/UI submissions and complete the Classic GPU baseline. Then implement Enhanced runtime lighting using original assets, with optional enhancement packs produced separately. Software remains a supported renderer. Authentic original-disc comparisons and broader platform runtime testing remain pending.
+After that delivery, replace the mixed renderer bridge with explicit GPU actor/brush/effect/UI submissions and complete the Classic GPU baseline. Then implement Luminous runtime lighting using original assets, with optional enhancement packs produced separately. Software remains a supported renderer. Authentic original-disc comparisons and broader platform runtime testing remain pending.
 
 Decisions to resolve during implementation:
 

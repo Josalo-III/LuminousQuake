@@ -10,16 +10,16 @@ typedef struct { float position[3], uv[2], light_uv[2], shade, normal[3]; } lq_v
 typedef struct { uint32_t width, height, channels; uint8_t *pixels; } lq_image;
 enum { LQ_SURFACE_SKY = 1, LQ_SURFACE_WATER = 2, LQ_SURFACE_MODEL = 4,
        LQ_SURFACE_MASKED = 8, LQ_SURFACE_WEAPON = 16,
-       LQ_SURFACE_ACTOR = 32, /* model lit by Enhanced lights/probes; Classic uses shade */
+       LQ_SURFACE_ACTOR = 32, /* model lit by Luminous lights/probes; Classic uses shade */
        /* 64 is reserved for the GPU's submerged-world-face flag. */
        LQ_SURFACE_DIFFUSE_EFFECT = 128, /* small, unoriented lit particles/sprites */
-       LQ_SURFACE_NOSHADOW = 256 /* luminous projectiles must not occlude their own source */ };
+       LQ_SURFACE_NOSHADOW = 256 /* self-lit projectiles must not occlude their own source */ };
 typedef struct { lq_image indices; char name[17]; uint32_t resource_id; } lq_material;
 typedef struct {
     uint32_t first_index, index_count, material, flags;
     uint8_t styles[4];
     uint32_t light_bits[4]; /* runtime-light slots reaching the face; Classic uses word 0 for dlights */
-    uint8_t bounce_styles[4]; /* Enhanced bounce layer styles; 255 is unused */
+    uint8_t bounce_styles[4]; /* Luminous bounce layer styles; 255 is unused */
 } lq_draw;
 /* Renderer-owned descriptions from BSP entity text, retained after QC discards
  * static lights. Intensity is the compiler's light value; with the formula,
@@ -40,10 +40,10 @@ enum { LQ_LIGHT_LINEAR, LQ_LIGHT_INVERSE, LQ_LIGHT_INVERSE2, LQ_LIGHT_INFINITE,
 #define LQ_SPOT_EDGE_BLUR 16.0f
 /* Accent spotlights (ericw unbounded falloffs: delay 1, 2, 3 or 5) mark key
  * items but run far past saturation (light 2500 unattenuated is ~5x full
- * white). Enhanced scales their output so they draw the eye in a darker scene
+ * white). Luminous scales their output so they draw the eye in a darker scene
  * without dominating it. Linear spotlights keep their compiler strength. */
 #define LQ_ACCENT_SPOT_GAIN 0.15f
-/* Enhanced sky light: brightness under an open sky per unit of the sky's mean
+/* Luminous sky light: brightness under an open sky per unit of the sky's mean
  * displayed color times 128 (where a white surface matches the sky). */
 #define LQ_SKY_LIGHT_GAIN 1.0f
 float LQ_SpotFactor(const float to_light[3], float distance, const float axis[3],
@@ -67,7 +67,7 @@ typedef struct {
 typedef struct { float normal[3], dist; int32_t children[2]; uint32_t first_face, face_count; } lq_bsp_node;
 enum { LQ_LEAF_EMPTY, LQ_LEAF_SOLID, LQ_LEAF_SKY, LQ_LEAF_LIQUID };
 /* LIGHT's 16-unit sample grid for a lit face, at the same atlas texels as the
- * lightmap. Enhanced uses it for its own bounce light, never the baked values. */
+ * lightmap. Luminous uses it for its own bounce light, never the baked values. */
 typedef struct {
     float s[4], t[4], mins[2]; /* texture axes/offsets and texturemins */
     float albedo[3]; /* mean texture color at normal brightness, 0-1 */
@@ -100,13 +100,13 @@ typedef struct {
     float (*sample_positions)[3];
     uint32_t sample_count, atlas_height;
     float bounce_scale; /* worldspawn _bouncescale; 1 when absent */
-    /* Optional Enhanced bounce: four stacked RGBA layers of atlas_height rows,
+    /* Optional Luminous bounce: four stacked RGBA layers of atlas_height rows,
      * brightness units, selected per draw by bounce_styles. Layer 0 alpha is
      * the sample's sky visibility (cosine-weighted fraction of rays reaching
      * sky, 0-255) whatever its styles; sky light's own bounce is in style 0.
      * With a sun, layer 1 alpha is the sample's sun visibility (0-255). */
     lq_image bounce;
-    /* Enhanced sky light: brightness a fully open, upward-facing sample
+    /* Luminous sky light: brightness a fully open, upward-facing sample
      * receives, from the mean displayed color of the map's sky materials.
      * Set by LQ_SceneComputeBounce; zero for maps without sky. */
     float sky_light[3];
@@ -117,7 +117,7 @@ typedef struct {
      * softened by sun_angle_scale as for point lights. sun_penumbra is the
      * angular width in degrees over which its visibility is sampled. */
     float sun_direction[3], sun_light[3], sun_angle_scale, sun_penumbra;
-    /* Optional Enhanced irradiance probes: an ambient cube (irradiance toward
+    /* Optional Luminous irradiance probes: an ambient cube (irradiance toward
      * +X,-X,+Y,-Y,+Z,-Z, brightness units) at each grid point. probe_static is
      * RGBA, x-fastest, depth index (layer*6 + direction)*size[2] + z; each of
      * the four layers belongs to probe_styles[layer] (255 unused). Layer 0
@@ -180,14 +180,14 @@ typedef struct {
     float dynamic_lights[32][4]; /* xyz/radius; Classic point-light contribution */
     lq_runtime_light runtime_lights[LQ_MAX_RUNTIME_LIGHTS];
     uint32_t runtime_light_count;
-    uint32_t enhanced_lighting;
-    uint32_t disable_shadows; /* Enhanced diagnostic: falloff without occlusion */
+    uint32_t luminous_lighting;
+    uint32_t disable_shadows; /* Luminous diagnostic: falloff without occlusion */
     /* Brush models cast from their compiled positions (the viewer); in game
      * they move and cast as frame geometry instead. */
     uint32_t static_brush_shadows;
-    uint32_t disable_bounce; /* Enhanced diagnostic: direct light only */
-    float exposure; /* Enhanced brightness scale; zero means 1 */
-    float bounce_gain; /* Enhanced artistic bounce multiplier; zero means 1 */
+    uint32_t disable_bounce; /* Luminous diagnostic: direct light only */
+    float exposure; /* Luminous brightness scale; zero means 1 */
+    float bounce_gain; /* Luminous artistic bounce multiplier; zero means 1 */
     float water_warp;
     float water_alpha; /* liquid opacity; zero or one draws liquids opaque */
 } lq_view;

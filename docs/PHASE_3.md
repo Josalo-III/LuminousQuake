@@ -15,7 +15,7 @@ GPU gameplay client. `luminousquake` remains the software playable baseline.
 startup configuration, and when `vid_restart` runs. Software (0) uses the SDL
 framebuffer presenter. Classic GPU (1) claims the same SDL3 window for its GPU
 device, copies the live engine BSP into owned scene data, and renders from
-`r_refdef` with the live engine light-style values. Enhanced (2) reports that it
+`r_refdef` with the live engine light-style values. Luminous (2) reports that it
 is pending and uses Software. The preference remains archived in all cases.
 
 The Classic GPU path is an interim mixed renderer. Quake still computes its
@@ -75,14 +75,14 @@ for the gameplay renderer integration, but the standalone viewer still has its
 own entry point and camera loop.
 
 The playable Options menu has a persistent three-choice Renderer selector:
-Software (0), Classic GPU (1), and Enhanced (2), stored in `lq_renderer`.
+Software (0), Classic GPU (1), and Luminous (2), stored in `lq_renderer`.
 Classic GPU preserves GLQuake-style baked lighting through the Metal/Vulkan
-backend; Enhanced is the subsequent Tenebrae-inspired lighting/material path.
+backend; Luminous is the subsequent Tenebrae-inspired lighting/material path.
 Left/right cycle both ways and Enter advances. The menu identifies Classic GPU
-as retaining CPU actors/UI, marks Enhanced as pending, and explains restart or
+as retaining CPU actors/UI, marks Luminous as pending, and explains restart or
 `vid_restart` application of the preference.
 Software and the interim Classic GPU bridge are operational in the playable
-client. Enhanced rendering will follow explicit GPU actor/brush/effect/UI
+client. Luminous rendering will follow explicit GPU actor/brush/effect/UI
 submissions and completion of the classic appearance baseline.
 
 ## Renderer boundary and ownership

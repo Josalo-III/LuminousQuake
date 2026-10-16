@@ -15,7 +15,7 @@ static SDL_Renderer *renderer;
 static SDL_Texture *texture;
 static lq_gpu *gpu;
 static qboolean backend_applied;
-static int gpu_mode; /* 1 Classic, 2 Enhanced: the lq_renderer the GPU map was built for */
+static int gpu_mode; /* 1 Classic, 2 Luminous: the lq_renderer the GPU map was built for */
 static qboolean startup_video_applied;
 lq_gpu *LQ_PlayableGPU(void) { return gpu; }
 static uint32_t *pixels;
@@ -33,7 +33,7 @@ static cvar_t gpu_anisotropy = {"gpu_anisotropy", "1", true};
 static cvar_t gpu_msaa = {"gpu_msaa", "0", true};
 /* GLQuake's name and meaning: liquid opacity, 1 opaque; GPU renderers only. */
 static cvar_t r_wateralpha = {"r_wateralpha", "1", true};
-/* Enhanced fluorescent tubes: the camera the view stands for (LQ_CAMERA_*). */
+/* Luminous fluorescent tubes: the camera the view stands for (LQ_CAMERA_*). */
 static cvar_t r_fluorescent = {"r_fluorescent", "1", true};
 void M_Print(int x, int y, char *text);
 void M_DrawCharacter(int x, int y, int character);
@@ -219,7 +219,7 @@ void LQ_ApplyRenderer(void)
     }
     float choice = Cvar_VariableValue("lq_renderer");
     if (choice == 1 || choice == 2) {
-        /* Classic and Enhanced share the GPU; the map is rebuilt for the mode. */
+        /* Classic and Luminous share the GPU; the map is rebuilt for the mode. */
         if (gpu && choice != gpu_mode) { LQ_RenderMapChanged(); gpu_mode = (int)choice; }
         if (gpu) { GPUOptions(); return; }
         SDL_DestroyTexture(texture); texture = NULL;
@@ -227,7 +227,7 @@ void LQ_ApplyRenderer(void)
         gpu = LQ_GPUCreate(window, 0, error, sizeof(error));
         if (!gpu) { LQ_FallbackRenderer(error); return; }
         GPUOptions(); gpu_mode = (int)choice;
-        Con_Printf(choice == 2 ? "Enhanced (experimental): runtime lights, soft shadows, bounce, probes and weapon lights.\n" :
+        Con_Printf(choice == 2 ? "Luminous (experimental): runtime lights, soft shadows, bounce, probes and weapon lights.\n" :
             "Classic GPU enabled: GPU world, actors, brushes and effects.\n");
     } else if (gpu) LQ_FallbackRenderer("Software selected");
 }
@@ -424,7 +424,7 @@ static void VideoMenuDraw(void)
     else if (video_cursor == 8 && video_water)
         M_Print(32, 190, "Unvised maps draw every room.");
     else if (video_cursor == 9)
-        M_Print(32, 190, "Enhanced: how fluorescents film.");
+        M_Print(32, 190, "Luminous: how fluorescents film.");
     else M_Print(32, 190, "Left/right changes; Apply saves.");
 }
 static void VideoMenuKey(int key)

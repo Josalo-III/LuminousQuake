@@ -402,7 +402,7 @@ static int Spawn(model_t *world, lq_scene *scene)
     return 1;
 }
 /* Renderer-owned world BSP: nodes with their on-plane faces and leaf contents,
- * for point lookup and Enhanced ray casts. */
+ * for point lookup and Luminous ray casts. */
 static int BuildBSP(model_t *world, lq_scene *scene)
 {
     uint32_t leaves = (uint32_t)world->numleafs + 1;
@@ -512,7 +512,7 @@ static int SolidPoint(model_t *world, float point[3])
     int contents = Mod_PointInLeaf(point,world)->contents;
     return contents == CONTENTS_SOLID || contents == CONTENTS_SKY;
 }
-/* LIGHT's per-face sample lattice for Enhanced bounce, one unit in front of
+/* LIGHT's per-face sample lattice for Luminous bounce, one unit in front of
  * the face. Points that start inside solid move toward the face center, as
  * LIGHT does before tracing; any that cannot are NaN (no sample). */
 static int BuildSampleGrids(model_t *world, lq_scene *s, const uint16_t (*atlas)[2])

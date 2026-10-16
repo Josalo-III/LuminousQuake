@@ -3,12 +3,12 @@
 Milestone: the planned Classic GPU baseline features are implemented, including
 mipmaps and anisotropic filtering. This records implementation completion for
 that baseline, not complete campaign/platform validation or all rerelease visual
-features. Rerelease fog, the Phase 4A engine worker pool and Enhanced rendering
+features. Rerelease fog, the Phase 4A engine worker pool and Luminous rendering
 remain pending.
 
 Normal Classic GPU frames rasterize all 3D geometry on the GPU. QuakeC, physics,
 entity animation, particle simulation and asset decoding remain CPU work. The
-software renderer remains selectable; Enhanced mode is still reserved.
+software renderer remains selectable; Luminous mode is still reserved.
 
 ## Implemented
 
@@ -22,7 +22,7 @@ software renderer remains selectable; Enhanced mode is still reserved.
 - Animated world/brush textures, original sky and turbulent water conventions,
   live lightstyles, Classic point-light contribution, content/palette changes and
   underwater projection distortion. This is original-style rendering, not the
-  Enhanced shadow/material implementation.
+  Luminous shadow/material implementation.
 - Owned frame geometry, cached texture copies and cycling GPU buffers. Map
   changes and renderer restart invalidate CPU/GPU resource caches.
 - Explicit UI alpha coverage, including black UI pixels, rather than detecting

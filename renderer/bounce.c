@@ -1,4 +1,4 @@
-/* Enhanced static-world bounce light from runtime light sources.
+/* Luminous static-world bounce light from runtime light sources.
  * Direct light at LIGHT's sample lattice is computed from each source's own
  * falloff with BSP occlusion, reflected by the face's texture color, and
  * gathered once by cosine-weighted rays. The baked lightmap is never read.

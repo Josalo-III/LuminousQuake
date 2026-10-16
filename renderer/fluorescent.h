@@ -1,4 +1,4 @@
-/* Enhanced fluorescent tubes: mains flicker as a camera records it, and
+/* Luminous fluorescent tubes: mains flicker as a camera records it, and
  * failing tubes that drop out and restrike. GPL-2.0-or-later. */
 #ifndef LQ_FLUORESCENT_H
 #define LQ_FLUORESCENT_H

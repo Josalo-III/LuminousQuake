@@ -1,4 +1,4 @@
-/* Enhanced fluorescent tubes. GPL-2.0-or-later.
+/* Luminous fluorescent tubes. GPL-2.0-or-later.
  *
  * Mains flicker. A tube on a magnetic ballast lights on both halves of each
  * 60 Hz cycle, so its drive is a rectified sine: relative to its mean,

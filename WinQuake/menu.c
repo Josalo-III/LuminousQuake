@@ -1248,7 +1248,7 @@ void M_Options_Draw (void)
 
 	M_Print (16, 136, "              Renderer");
 	if (M_RendererChoice () == 2)
-		M_Print (220, 136, "Enhanced");
+		M_Print (220, 136, "Luminous");
 	else if (M_RendererChoice () == 1)
 		M_Print (220, 136, "Classic GPU");
 	else

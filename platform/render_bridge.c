@@ -21,9 +21,9 @@ void R_DrawParticles(void);
 void R_StoreEfrags(efrag_t **frags);
 static lq_scene map_scene;
 static lq_draw *world_draws, *interaction_draws;
-/* Enhanced (lq_renderer 2, experimental): map lights keep stable slots for
+/* Luminous (lq_renderer 2, experimental): map lights keep stable slots for
  * cached shadows; gameplay dlights take the last LQ_MAX_DYNAMIC_LIGHTS. */
-static qboolean enhanced;
+static qboolean luminous;
 static lq_runtime_light runtime_lights[LQ_MAX_RUNTIME_LIGHTS];
 /* Spark events live outside Quake's dlight pool so effects cannot evict
  * gameplay lights or change Classic/Software presentation. */
@@ -119,30 +119,30 @@ void LQ_RenderBegin(void)
     }
     memset(preserve, 0, count);
     if (!loaded && cls.state == ca_connected && cl.worldmodel && !con_forcedup) {
-        enhanced = Cvar_VariableValue("lq_renderer") == 2;
+        luminous = Cvar_VariableValue("lq_renderer") == 2;
         if (!LQ_QuakeSceneFromWorld(&map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }
-        if (enhanced) {
+        if (luminous) {
             /* Before bounce, so each failing tube's bounce follows it. */
             uint32_t tubes = LQ_SceneAssignFluorescentStyles(&map_scene);
-            if (tubes) Con_DPrintf("Enhanced fluorescents: %u failing tubes on private styles.\n", tubes);
+            if (tubes) Con_DPrintf("Luminous fluorescents: %u failing tubes on private styles.\n", tubes);
             double started = Sys_FloatTime();
             lq_bounce_tracer tracer = LQ_GPUBounceTracer(gpu);
             if (LQ_SceneComputeBounceTraced(&map_scene, 64, LQ_JobsRunRange, &tracer, error, sizeof(error)))
-                Con_Printf("Enhanced bounce: %u samples, sky light %.0f %.0f %.0f, in %.2f s (%s rays).\n", map_scene.sample_count,
+                Con_Printf("Luminous bounce: %u samples, sky light %.0f %.0f %.0f, in %.2f s (%s rays).\n", map_scene.sample_count,
                     map_scene.sky_light[0], map_scene.sky_light[1], map_scene.sky_light[2], Sys_FloatTime() - started,
                     tracer.passes ? "GPU" : "CPU");
-            else Con_Printf("Enhanced bounce unavailable: %s\n", error);
+            else Con_Printf("Luminous bounce unavailable: %s\n", error);
         }
         if (!LQ_GPUUpload(gpu, &map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }
-        if (enhanced && !LQ_SceneDrawBounds(&map_scene)) { LQ_FallbackRenderer("Cannot allocate draw bounds"); return; }
+        if (luminous && !LQ_SceneDrawBounds(&map_scene)) { LQ_FallbackRenderer("Cannot allocate draw bounds"); return; }
         world_draws = malloc(map_scene.draw_count*sizeof(*world_draws));
-        interaction_draws = enhanced ? malloc(map_scene.draw_count*sizeof(*interaction_draws)) : NULL;
-        if (!world_draws || (enhanced && !interaction_draws)) { LQ_FallbackRenderer("Cannot allocate world visibility"); return; }
+        interaction_draws = luminous ? malloc(map_scene.draw_count*sizeof(*interaction_draws)) : NULL;
+        if (!world_draws || (luminous && !interaction_draws)) { LQ_FallbackRenderer("Cannot allocate world visibility"); return; }
         memset(runtime_lights, 0, sizeof(runtime_lights));
         free(dynamic_probes); dynamic_probes = NULL;
-        if (enhanced && LQ_GPUDynamicProbeBytes(gpu)) dynamic_probes = malloc(LQ_GPUDynamicProbeBytes(gpu));
+        if (luminous && LQ_GPUDynamicProbeBytes(gpu)) dynamic_probes = malloc(LQ_GPUDynamicProbeBytes(gpu));
         loaded = true; palette_valid = false;
-        Con_Printf("%s: copied live BSP world; map resources replaced.\n", enhanced ? "Enhanced (experimental)" : "Classic GPU");
+        Con_Printf("%s: copied live BSP world; map resources replaced.\n", luminous ? "Luminous (experimental)" : "Classic GPU");
     }
 }
 int LQ_RenderGPUView(void)
@@ -246,7 +246,7 @@ static void SelectEffect(const lq_runtime_light *candidate, lq_runtime_light sel
     memmove(scores+at+1, scores+at, (*count-at-1)*sizeof(*scores));
     selected[at] = *candidate; scores[at] = score;
 }
-static void EnhancedLights(void)
+static void LuminousLights(void)
 {
     static const float colors[][3] = {
         {1.0f, 0.85f, 0.65f}, /* unclassified legacy light */
@@ -317,7 +317,7 @@ static void EnhancedLights(void)
     for (uint32_t i = 0; i < LQ_MAX_RUNTIME_LIGHTS; ++i) if (runtime_lights[i].position_radius[3] > 0) count = i + 1;
     memcpy(view.runtime_lights, runtime_lights, sizeof(runtime_lights));
     view.runtime_light_count = count;
-    view.enhanced_lighting = 1;
+    view.luminous_lighting = 1;
     LQ_BuildVisibleLightInteractions(&map_scene, runtime_lights, count, world_draws, interaction_draws);
     for (uint32_t i = 0; i < map_scene.draw_count; ++i)
         if (world_draws[i].index_count)
@@ -332,7 +332,7 @@ static void CaptureView(void)
     view.horizontal_fov = atanf(r_refdef.horizontalFieldOfView * 0.5f) * 360.0f / (float)M_PI;
     view.time = (float)cl.time;
     for (int i = 0; i < 256; ++i) view.lightstyles[i] = d_lightstylevalue[i] / 256.0f;
-    if (enhanced && direct_frame) LQ_FluorescentStyles(&map_scene, cl.time, view.lightstyles);
+    if (luminous && direct_frame) LQ_FluorescentStyles(&map_scene, cl.time, view.lightstyles);
     view.viewport[0] = r_refdef.vrect.x; view.viewport[1] = r_refdef.vrect.y;
     view.viewport[2] = r_refdef.vrect.width; view.viewport[3] = r_refdef.vrect.height;
     if (direct_frame) { view.world_draws = world_draws; view.world_draw_count = map_scene.draw_count; }
@@ -342,7 +342,7 @@ static void CaptureView(void)
     }
     view.water_alpha = WaterAlpha();
     view.water_warp = direct_frame && r_waterwarp.value && r_viewleaf->contents <= CONTENTS_WATER;
-    if (enhanced && direct_frame && interaction_draws) EnhancedLights();
+    if (luminous && direct_frame && interaction_draws) LuminousLights();
     captured_scene = true;
 }
 qboolean LQ_RenderBridgePresent(void)
@@ -379,7 +379,7 @@ qboolean LQ_RenderBridgePresent(void)
     lq_frame empty = {0};
     /* Gameplay lights bounce through the probe grid, around them each frame:
      * traced on the GPU when it can write the probe texture, else here. */
-    if (enhanced && direct_frame && dynamic_probes) {
+    if (luminous && direct_frame && dynamic_probes) {
         const lq_runtime_light *lights[LQ_MAX_DYNAMIC_LIGHTS]; uint32_t box_min[3], box_size[3];
         uint32_t count = LQ_SceneDynamicProbeLights(&map_scene, view.runtime_lights, view.runtime_light_count,
             lights, box_min, box_size);

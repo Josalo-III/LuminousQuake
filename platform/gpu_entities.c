@@ -19,7 +19,7 @@ static lq_frame frame;
 static lq_material materials[4095];
 static struct { const void *model; uint32_t offset; int translated; byte colors[256]; } keys[4095];
 static uint32_t owned_start, particle_material;
-static int enhanced_frame;
+static int luminous_frame;
 static uint8_t particle_pixels[256];
 static void Reserve(uint32_t count)
 {
@@ -76,7 +76,7 @@ void LQ_EntitiesReset(void)
 void LQ_EntitiesBegin(const lq_scene *world)
 {
     frame.vertex_count = frame.index_count = frame.draw_count = 0;
-    enhanced_frame = Cvar_VariableValue("lq_renderer") == 2;
+    luminous_frame = Cvar_VariableValue("lq_renderer") == 2;
     if (!frame.material_count) {
         if (world->material_count >= 4094) Sys_Error("Too many world materials");
         for (uint32_t i = 0; i < world->material_count; ++i) {
@@ -106,11 +106,11 @@ static void Basis(entity_t *e, vec3_t forward, vec3_t right, vec3_t up)
     vec3_t angles; VectorCopy(e->angles, angles); angles[PITCH] = -angles[PITCH];
     AngleVectors(angles, forward, right, up);
 }
-/* Enhanced: a torch or flame's light follows its animation. A pose's emission is
+/* Luminous: a torch or flame's light follows its animation. A pose's emission is
  * its surface area times the luminance of the skin it shows. The light's
  * strength follows each pose's emission relative to the cycle's mean, and its
  * position follows the shift of the emission centre. Quake starts every static
- * flame's cycle together, so Enhanced gives each flame, model and light alike,
+ * flame's cycle together, so Luminous gives each flame, model and light alike,
  * its own phase derived from its position. */
 #define FLAME_POSES 32
 typedef struct {
@@ -244,7 +244,7 @@ static void Alias(entity_t *e, int weapon)
     int offset = header->frames[pose].frame;
     if (header->frames[pose].type == ALIAS_GROUP) {
         maliasgroup_t *g = (maliasgroup_t *)((byte *)header+offset);
-        double time = enhanced_frame && IsFlame(e->model) ? FlameTime(e) : cl.time+e->syncbase;
+        double time = luminous_frame && IsFlame(e->model) ? FlameTime(e) : cl.time+e->syncbase;
         offset = g->frames[GroupFrame((float *)((byte *)header+g->intervals), g->numframes, time)].frame;
     }
     trivertx_t *points = (trivertx_t *)((byte *)header+offset);
@@ -263,17 +263,17 @@ static void Alias(entity_t *e, int weapon)
     for (int i = 1; i <= cl.maxclients; ++i)
         if (e == &cl_entities[i] && ambient < 8) { ambient = shade = 8; break; }
     int flame = !strcmp(e->model->name, "progs/flame.mdl") || !strcmp(e->model->name, "progs/flame2.mdl");
-    int luminous = flame || !strcmp(e->model->name, "progs/bolt.mdl") ||
+    int emissive = flame || !strcmp(e->model->name, "progs/bolt.mdl") ||
         !strcmp(e->model->name, "progs/bolt2.mdl") || !strcmp(e->model->name, "progs/bolt3.mdl") ||
         !strcmp(e->model->name, "progs/laser.mdl") || !strcmp(e->model->name, "progs/lavaball.mdl");
-    int enhanced = enhanced_frame;
-    if (flame || (enhanced && luminous)) ambient = 256, shade = 0;
-    /* Enhanced lights actors from runtime lights and probes. Flames and energy
+    int luminous = luminous_frame;
+    if (flame || (luminous && emissive)) ambient = 256, shade = 0;
+    /* Luminous lights actors from runtime lights and probes. Flames and energy
      * effects stay self-lit; a rocket cannot cast around its own light origin.
      * Classic ignores these flags and keeps its original vertex shade. */
     Draw(model->numtris*3, material, LQ_SURFACE_MODEL | (weapon ? LQ_SURFACE_WEAPON : 0) |
-        (luminous ? 0 : LQ_SURFACE_ACTOR) |
-        (luminous || (e->model->flags & EF_ROCKET) ? LQ_SURFACE_NOSHADOW : 0));
+        (emissive ? 0 : LQ_SURFACE_ACTOR) |
+        (emissive || (e->model->flags & EF_ROCKET) ? LQ_SURFACE_NOSHADOW : 0));
     for (int i = 0; i < model->numtris; ++i) for (int j = 0; j < 3; ++j) {
         int p = triangles[i].vertindex[j];
         if (p < 0 || p >= model->numverts || points[p].lightnormalindex >= 162) Sys_Error("Invalid GPU alias vertex");
@@ -312,9 +312,9 @@ static void Sprite(entity_t *e)
     }
     const int corners[] = {0,1,2,0,2,3};
     const float coords[4][2] = {{s->left,s->up},{s->right,s->up},{s->right,s->down},{s->left,s->down}};
-    int luminous = !strcmp(e->model->name, "progs/s_explod.spr") || !strcmp(e->model->name, "progs/s_light.spr");
+    int emissive = !strcmp(e->model->name, "progs/s_explod.spr") || !strcmp(e->model->name, "progs/s_light.spr");
     Draw(6, material, LQ_SURFACE_MODEL|LQ_SURFACE_MASKED|
-        (luminous ? 0 : LQ_SURFACE_ACTOR|LQ_SURFACE_DIFFUSE_EFFECT));
+        (emissive ? 0 : LQ_SURFACE_ACTOR|LQ_SURFACE_DIFFUSE_EFFECT));
     for (int i = 0; i < 6; ++i) {
         int corner = corners[i]; lq_vertex *v = &vertices[frame.vertex_count++]; memset(v,0,sizeof(*v));
         for (int j = 0; j < 3; ++j) v->position[j] = e->origin[j]+right[j]*coords[corner][0]+up[j]*coords[corner][1];
@@ -390,7 +390,7 @@ void LQ_EntitiesParticle(const float origin[3], int color, int emissive, unsigne
 {
     vec3_t delta; VectorSubtract(origin, r_origin, delta);
     float distance = DotProduct(delta, vpn), size = distance < 20 ? 1.5f : 1.5f*(1+distance*0.004f);
-    if (enhanced_frame) {
+    if (luminous_frame) {
         float corners[LQ_PARTICLE_MAX_SIDES][2];
         uint32_t sides = LQ_ParticleCorners(seed, corners), count = (sides-2)*3;
         Draw(count, particle_material, LQ_SURFACE_MODEL|

@@ -21,7 +21,7 @@ Collect these artifacts outside the repository:
    scene. It identifies expensive functions and thread scheduling; it is the
    primary source for CPU changes.
 2. **Metal System Trace**: command-buffer submission, GPU execution and present
-   waits for Classic GPU and later Enhanced. A long CPU presentation stage may
+   waits for Classic GPU and later Luminous. A long CPU presentation stage may
    be a deliberate VSync wait or GPU back-pressure; only this trace distinguishes
    those cases.
 3. **`lq_profile_report`**: stage-level CPU totals correlated with the trace,
@@ -46,7 +46,7 @@ Run the same workload in each of these configurations before and after a change:
 | --- | --- | --- | --- |
 | Software | yes | yes | CPU raster baseline and correctness reference |
 | Classic GPU | yes | yes | Shared geometry, UI, upload and present baseline |
-| Enhanced | once implemented | once implemented | Compare the added light/shadow work to Classic GPU |
+| Luminous | once implemented | once implemented | Compare the added light/shadow work to Classic GPU |
 
 Use VSync both on and off where supported. VSync-on measures a player-facing
 frame budget but can hide spare CPU capacity; VSync-off exposes CPU and GPU
@@ -112,5 +112,5 @@ reported wall-clock FPS near 69 in both cases. That gate has since been removed
 (see FRAME_TIMING.md): rendering now runs at the display rate with VSync, or
 up to `host_maxfps` with VSync off. Measure processed FPS again before
 comparing it with these figures. The 800×600, VSync-on and future
-Enhanced comparisons remain part of the broader matrix rather than claims from
+Luminous comparisons remain part of the broader matrix rather than claims from
 this result.

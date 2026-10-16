@@ -1,4 +1,4 @@
-/* Enhanced effect geometry and light placement. GPL-2.0-or-later. */
+/* Luminous effect geometry and light placement. GPL-2.0-or-later. */
 #ifndef LQ_EFFECTS_H
 #define LQ_EFFECTS_H
 #include "scene.h"

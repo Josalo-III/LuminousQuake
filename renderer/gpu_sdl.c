@@ -26,7 +26,7 @@ struct lq_gpu {
     float bounce_ratio; /* lightmap rows per bounce layer row */
     float sky_light[3]; /* sky brightness at full visibility (bounce layer 0 alpha) */
     float sun_direction[4], sun_light[4]; /* travel direction, angle scale; light at full visibility (layer 1 alpha) */
-    /* Enhanced irradiance probes: static layers per style, and a dynamic layer
+    /* Luminous irradiance probes: static layers per style, and a dynamic layer
      * rewritten each frame around gameplay lights. */
     SDL_GPUTexture *probe_static, *probe_dynamic;
     SDL_GPUTransferBuffer *probe_transfer;
@@ -43,7 +43,7 @@ struct lq_gpu {
     uint32_t frame_vertex_bytes, frame_index_bytes, frame_transfer_bytes;
     uint32_t frame_draw_count, frame_draw_capacity;
     float (*frame_bounds)[6]; /* min xyz, max xyz of each frame draw */
-    /* Enhanced shadows: one reversed-depth cube per runtime-light slot, in the
+    /* Luminous shadows: one reversed-depth cube per runtime-light slot, in the
      * slot's array (LQ_ShadowSlot). A slot is redrawn only when its
      * light changes; static world casters persist. */
     SDL_GPUGraphicsPipeline *shadow_pipeline;
@@ -59,8 +59,8 @@ struct lq_gpu {
     float shadow_keys[LQ_MAX_RUNTIME_LIGHTS][4];
     uint32_t shadow_sources[LQ_MAX_RUNTIME_LIGHTS];
     uint8_t shadow_valid[LQ_MAX_RUNTIME_LIGHTS];
-    SDL_GPUComputePipeline *bounce_pipeline; /* Enhanced bounce rays; made on first use */
-    /* Enhanced dynamic probes traced on the GPU: the map's BSP, faces and probe
+    SDL_GPUComputePipeline *bounce_pipeline; /* Luminous bounce rays; made on first use */
+    /* Luminous dynamic probes traced on the GPU: the map's BSP, faces and probe
      * validity stay resident; each frame's lights and boxes wait in
      * probe_uniforms until the render writes probe_dynamic before drawing. */
     SDL_GPUComputePipeline *probe_pipeline;
@@ -707,7 +707,7 @@ static void SurfaceUniforms(lq_surface_uniforms *uniforms, const lq_gpu *g,
     /* Actors, effects and moving brushes: the lights whose range meets the draw's bounds. */
     ptrdiff_t index = g->frame_draws ? draw - g->frame_draws : -1;
     const float *bounds = index >= 0 && (uint32_t)index < g->frame_draw_count ? g->frame_bounds[index] : NULL;
-    if (view->enhanced_lighting && bounds) {
+    if (view->luminous_lighting && bounds) {
         uint32_t count = view->runtime_light_count > LQ_MAX_RUNTIME_LIGHTS ? LQ_MAX_RUNTIME_LIGHTS : view->runtime_light_count;
         memset(uniforms->bits, 0, sizeof(uniforms->bits));
         for (uint32_t i = 0; i < count; ++i) {
@@ -744,23 +744,23 @@ static void LightUniforms(lq_light_uniforms *uniforms, const lq_gpu *g, const lq
         uniforms->shape[i][3] = (float)(array * 1024 + cube);
     }
     uniforms->parameters[0] = count;
-    uniforms->parameters[1] = view->enhanced_lighting != 0;
+    uniforms->parameters[1] = view->luminous_lighting != 0;
     uniforms->parameters[2] = LQ_SHADOW_ARRAYS;
-    uniforms->parameters[3] = view->enhanced_lighting && g->shadow_maps[0] && !view->disable_shadows;
+    uniforms->parameters[3] = view->luminous_lighting && g->shadow_maps[0] && !view->disable_shadows;
     static const uint32_t sizes[] = LQ_SHADOW_ARRAY_SIZES;
     for (int t = 0; t < LQ_SHADOW_ARRAYS; ++t) uniforms->shadow_sizes[t] = (float)sizes[t];
     uniforms->tuning[0] = view->exposure > 0 ? view->exposure : 1;
     uniforms->tuning[1] = g->bounce_ratio;
-    uniforms->tuning[2] = view->enhanced_lighting && g->bounce_ratio > 0 && !view->disable_bounce;
+    uniforms->tuning[2] = view->luminous_lighting && g->bounce_ratio > 0 && !view->disable_bounce;
     uniforms->tuning[3] = view->bounce_gain > 0 ? view->bounce_gain : 1;
     memcpy(uniforms->probe_origin, g->probe_origin, sizeof(uniforms->probe_origin));
     for (int k = 0; k < 3; ++k) uniforms->probe_size[k] = g->probe_size[k];
-    uniforms->probe_size[3] = view->enhanced_lighting && !view->disable_bounce && g->probe_origin[3] > 0 ?
+    uniforms->probe_size[3] = view->luminous_lighting && !view->disable_bounce && g->probe_origin[3] > 0 ?
         1.0f + (g->probe_dynamic_active ? 2.0f : 0.0f) : 0.0f;
     for (int k = 0; k < 4; ++k)
         uniforms->probe_weights[k] = g->probe_styles[k] == 255 ? 0 : view->lightstyles[g->probe_styles[k]];
-    uniforms->liquid[0] = view->enhanced_lighting && view->water_alpha > 0 && view->water_alpha < 1 ? view->water_alpha : 0;
-    if (view->enhanced_lighting && g->bounce_ratio > 0) {
+    uniforms->liquid[0] = view->luminous_lighting && view->water_alpha > 0 && view->water_alpha < 1 ? view->water_alpha : 0;
+    if (view->luminous_lighting && g->bounce_ratio > 0) {
         memcpy(uniforms->sky, g->sky_light, sizeof(g->sky_light));
         memcpy(uniforms->sun_direction, g->sun_direction, sizeof(g->sun_direction));
         memcpy(uniforms->sun_light, g->sun_light, sizeof(g->sun_light));
@@ -939,7 +939,7 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
     if (!g->vertices || !g->indices) { SDL_SetError("scene not uploaded"); return Error(error, size, "GPU render"); }
     if (!width || !height || width > 8192 || height > 8192 || !Targets(g, width, height))
         return Error(error, size, "GPU render target size/allocation");
-    if (v->enhanced_lighting && v->runtime_light_count && !v->disable_shadows && !ShadowMaps(g))
+    if (v->luminous_lighting && v->runtime_light_count && !v->disable_shadows && !ShadowMaps(g))
         return Error(error, size, "GPU shadow maps");
     command = SDL_AcquireGPUCommandBuffer(g->device);
     if (!command) return Error(error, size, "GPU command buffer");
@@ -948,13 +948,13 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
     }
     g->shadow_updates = 0;
     if (g->probe_pending) ProbeCompute(g, command);
-    if (v->enhanced_lighting && g->shadow_maps[0] && !v->disable_shadows) RenderShadows(g, command, v);
+    if (v->luminous_lighting && g->shadow_maps[0] && !v->disable_shadows) RenderShadows(g, command, v);
     lq_light_uniforms light_uniforms;
     LightUniforms(&light_uniforms, g, v);
     SDL_PushGPUFragmentUniformData(command, 1, &light_uniforms, sizeof(light_uniforms));
     SDL_GPUTexture *shadows[LQ_SHADOW_ARRAYS];
     for (int t = 0; t < LQ_SHADOW_ARRAYS; ++t)
-        shadows[t] = g->shadow_maps[t] && v->enhanced_lighting ? g->shadow_maps[t] : g->shadow_dummy;
+        shadows[t] = g->shadow_maps[t] && v->luminous_lighting ? g->shadow_maps[t] : g->shadow_dummy;
     SDL_GPUColorTargetInfo color = {0};
     SDL_GPUDepthStencilTargetInfo depth = {0};
     color.texture = g->samples ? g->multisample_color : g->color; color.clear_color = (SDL_FColor){0.02f, 0.02f, 0.025f, 1};
@@ -1104,7 +1104,7 @@ void LQ_GPUDestroy(lq_gpu *g)
     free(g->mip_palette); free(g->frame_draws); free(g->frame_casters); free(g->frame_bounds); free(g);
 }
 
-/* ---- Enhanced bounce rays (renderer/shaders/bounce.comp) ------------------- */
+/* ---- Luminous bounce rays (renderer/shaders/bounce.comp) ------------------- */
 enum { BOUNCE_NODE_WORDS = 8, BOUNCE_FACE_WORDS = 24, BOUNCE_LIGHT_WORDS = 20, BOUNCE_CHUNK = 65536 };
 typedef struct { uint32_t job[4], tree[4], tables[4], lights[4]; float sun[4]; } lq_bounce_uniforms;
 static void PutFloat(uint32_t *word, float value) { memcpy(word, &value, sizeof(value)); }
@@ -1283,7 +1283,7 @@ lq_bounce_tracer LQ_GPUBounceTracer(lq_gpu *g)
     return tracer;
 }
 
-/* ---- Enhanced dynamic probes (bounce.comp built with LQ_PROBES) ----------- */
+/* ---- Luminous dynamic probes (bounce.comp built with LQ_PROBES) ----------- */
 /* The resident words the probe kernel walks: the bounce scene's BSP, faces and
  * vertices, then one byte of validity per probe. */
 static int UploadProbeScene(lq_gpu *g, const lq_scene *s)

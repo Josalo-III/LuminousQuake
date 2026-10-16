@@ -10,7 +10,7 @@
   code. QuakeC, gameplay state, window operations and GPU submission remain on
   their existing owners.
 
-## Enhanced lighting foundations — October 14, 2026
+## Luminous lighting foundations — October 14, 2026
 
 - Inspected original compiler semantics in id Software's Quake-Tools revision
   `c0d1b91c74eb654365ac7755bc837e497caaca73`, `qutils/LIGHT/ENTITIES.C`,

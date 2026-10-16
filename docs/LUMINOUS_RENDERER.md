@@ -1,16 +1,19 @@
-# Enhanced renderer — October 15, 2026
+# Luminous renderer — October 15, 2026
 
-Enhanced is an experimental playable renderer (`lq_renderer 2`), using runtime
-lights, soft shadows, bounce, probes and sky illumination. **Classic GPU is the
+Luminous is an experimental playable renderer (`lq_renderer 2`), using runtime
+lights, soft shadows, bounce, probes and sky illumination. It was called
+Enhanced until October 16, 2026, and was renamed to avoid confusion with the
+existing Enhanced Quake; the setting and its saved value are unchanged, and
+the viewer still accepts `--enhanced`. **Classic GPU is the
 gold standard for testing lighting:** compare the same map, camera, lightstyle
 and gameplay event against it to judge composition, darkness and effect timing.
 Synthetic scenes test individual mechanisms; they complement the Classic GPU
-comparison. Enhanced's additional shadows and colored light need not match every
+comparison. Luminous's additional shadows and colored light need not match every
 Classic pixel, but changes must preserve the readability of its lighting.
 
 ## Shared and replaceable components
 
-| Component | Enhanced direction |
+| Component | Luminous direction |
 | --- | --- |
 | PAK/loose-file loading, original BSP/MDL/sprite formats | Retain; no replacement game data required |
 | GPU buffers, resource ownership and map/restart lifecycle | Retain and extend |
@@ -19,7 +22,7 @@ Classic pixel, but changes must preserve the readability of its lighting.
 | Translucent liquids (`r_wateralpha` < 1) | Lit by runtime lights and static probes; light crossing the surface scales by 1 − opacity (direct and static bounce) |
 | Filtering, mipmaps, anisotropy, MSAA, resolution/FOV and VSync | Shared settings; retain relevant implementations |
 | HUD, menus, console, UI scaling, input and saved settings | Shared |
-| Baked lightmaps and Classic model shading | Preserve unchanged for Classic and comparison; Enhanced replaces direct light, with an explicit map-local static composition patch only when reconstruction and authored controls cannot retain an important original scene |
+| Baked lightmaps and Classic model shading | Preserve unchanged for Classic and comparison; Luminous replaces direct light, with an explicit map-local static composition patch only when reconstruction and authored controls cannot retain an important original scene |
 | QuakeC, physics, networking, saves and demos | Shared gameplay; rendering changes must not alter their behavior |
 
 ## Implemented foundations
@@ -27,7 +30,7 @@ Classic pixel, but changes must preserve the readability of its lighting.
 - World-space normals in the renderer-owned vertex format: oriented BSP face
   normals, transformed brush normals and rotated MDL vertex normals. Sprites and
   particles retain zero normals for their existing unlit/effect paths. These are
-  geometry normals, not inferred texture normal maps. The Enhanced branch uses
+  geometry normals, not inferred texture normal maps. The Luminous branch uses
   them for incidence; Classic lighting ignores them.
 - A bounded, owned inventory of light entities read from the retained BSP entity
   text. Ordinary QuakeC light spawning can discard gameplay entities without
@@ -59,7 +62,7 @@ baked lighting. Installed assets remain unchanged.
 
 ## Runtime direct light and shadows
 
-The shared GPU shader has an explicitly gated Enhanced branch. It lights world
+The shared GPU shader has an explicitly gated Luminous branch. It lights world
 surfaces only from runtime lights; the baked lightmap is not sampled. Darkness
 comes from each light's falloff and from occlusion.
 
@@ -79,7 +82,7 @@ comes from each light's falloff and from occlusion.
   adds a smoothstep inner cone.
 - **Accent spotlights.** Spotlights using ericw's unbounded falloffs (`delay` 1,
   2, 3 or 5) are the designers' accents on key items, and they run far past
-  saturation: `light 2500` unattenuated is about five times full white. Enhanced
+  saturation: `light 2500` unattenuated is about five times full white. Luminous
   scales their output by `LQ_ACCENT_SPOT_GAIN` (0.15) at load, so bounce and
   probes dim with them. They then draw the eye in the darker scene without
   dominating it. Linear spotlights, such as id's targeted fixtures, keep their
@@ -96,7 +99,7 @@ comes from each light's falloff and from occlusion.
   up in the bright poses and down in the dim ones. The bracket a few units
   below the flame therefore casts a shadow that moves on distant walls. Quake
   starts every static flame's cycle together, which would pulse a whole room
-  in step, so Enhanced gives each flame, model and light alike, its own phase
+  in step, so Luminous gives each flame, model and light alike, its own phase
   derived from its position. The light moves only when the pose changes (ten
   times a second), so its shadow cube is redrawn at that rate rather than
   every frame. Static bounce and probes keep the mean strength. Classic and
@@ -110,7 +113,7 @@ comes from each light's falloff and from occlusion.
   first-order low-pass (red 4 ms, green 2 ms, blue 0.5 ms), so blue modulates
   deepest and the tube is bluer at its peaks. A camera's shutter T keeps
   sinc(πfT) of a term at f Hz, and its frames see the alias of f by its frame
-  rate. Enhanced evaluates the alias at continuous time, which matches the
+  rate. Luminous evaluates the alias at continuous time, which matches the
   camera's samples at its frame instants and does not depend on the display's
   rate. `r_fluorescent` picks the camera: 0 eye (fused, steady); 1 film,
   23.976 fps with a 180° shutter (default): 120 Hz aliases to 0.12 Hz, so the
@@ -183,9 +186,9 @@ comes from each light's falloff and from occlusion.
 Commands (standalone viewer; the playable client uses `lq_renderer 2`):
 
 ```sh
-./build/luminousquake-gpu -basedir "$PWD/quake-complete/Quake" -map e1m3 --enhanced
-./build/luminousquake-gpu -basedir "$PWD/quake-complete/Quake" -map e1m3 --enhanced --no-shadows
-./build/luminousquake-gpu -basedir "$PWD/quake-complete/Quake" -map e1m3 --enhanced \
+./build/luminousquake-gpu -basedir "$PWD/quake-complete/Quake" -map e1m3 --luminous
+./build/luminousquake-gpu -basedir "$PWD/quake-complete/Quake" -map e1m3 --luminous --no-shadows
+./build/luminousquake-gpu -basedir "$PWD/quake-complete/Quake" -map e1m3 --luminous \
   --light-radius 0 --camera "-620 -1800 200 10 270" --fixed-camera --run-seconds 1 --screenshot /tmp/e1m3.bmp
 ```
 
@@ -258,7 +261,7 @@ Whole-bounce time on an M1 Max, 64 rays per sample:
 | Arcane Dimensions `ad_e1m1` (305,680, sun) | 10.05 s | 1.99 s |
 
 CPU bounce had grown from 1.6 s on E1M3 since the sky became an area light
-and the map-light limit rose to 120, which made the Enhanced load wait
+and the map-light limit rose to 120, which made the Luminous load wait
 seconds. `--compare-bounce` in the viewer runs both and reports the
 differences. Across eight id maps and `ad_e1m1`, 16 of about 59,000 faces
 choose different styles (8 of them on `ad_e1m1`), under 0.04% of atlas values differ by more
@@ -270,7 +273,7 @@ the map sets `_bouncescale 0.5`, so physically based bounce there is subtle
 (mean 3 brightness units).
 
 Viewer tuning flags:
-- `--exposure S` scales all Enhanced light; below 1 is darker.
+- `--exposure S` scales all Luminous light; below 1 is darker.
 - `--bounce-gain G` scales bounce artistically.
 - `--no-bounce` disables bounce.
 - `--bounce-rays N` sets the rays per sample.
@@ -283,8 +286,8 @@ visible fill. The defaults (1, 1) are physically based.
 
 ## In-game experimental mode and weapon light
 
-`lq_renderer 2` (Options → Renderer → Enhanced, then `vid_restart`) selects the
-GPU path with Enhanced lighting. At map load it computes bounce for the live
+`lq_renderer 2` (Options → Renderer → Luminous, then `vid_restart`) selects the
+GPU path with Luminous lighting. At map load it computes bounce for the live
 world.
 
 Each frame, map lights fill up to 120 stable slots. The nearest live gameplay dlights
@@ -302,11 +305,11 @@ live light positions. Classic retains the original dlight calculation.
 Scripted E1M1 captures (rocket launcher fired from the start) show the muzzle
 flash, the rocket in flight and its explosion lighting the corridor. An ASan
 build ran the same session without reports. Switching between Classic and
-Enhanced rebuilds the map for the new mode.
+Luminous rebuilds the map for the new mode.
 
 ### Particles, sprites and travelling weapon light
 
-Enhanced particles use centred irregular polygons with three to six sides and
+Luminous particles use centred irregular polygons with three to six sides and
 deterministic variations in rotation, aspect and scale. Side counts are mixed
 evenly, with area normalized so extra sides do not make a particle larger.
 A particle keeps its shape as it moves; generating
@@ -350,25 +353,25 @@ stable variation across 4,096 seeds, all four side counts, mean coverage near
 Classic's triangle area for each side count, and continuous
 light coverage alongside a 600-unit beam.
 
-Paired 800×600 Classic GPU / Enhanced gameplay captures cover idle, a rocket in
+Paired 800×600 Classic GPU / Luminous gameplay captures cover idle, a rocket in
 flight, lightning and shotgun sparks in E1M1. Each uses `host_framerate 0.02`,
 the same input sequence, and a paused capture state with fresh temporary settings.
 Saved player and rocket states matched between the original renderer pairs.
 Mean particle area stays close to Classic's triangle while outline and scale
-vary. The polygon checks pass in Debug and ASan/UBSan. A further Enhanced rocket
+vary. The polygon checks pass in Debug and ASan/UBSan. A further Luminous rocket
 capture verified rendering with the three-to-six-side mixture; its camera moved,
 so it is not a matched comparison against Classic.
-Enhanced shows warm travelling rocket illumination and colored
+Luminous shows warm travelling rocket illumination and colored
 lighting along the live lightning beam. These bounded samples do not establish
 full-campaign lighting equivalence or GPU performance.
 
 The first button-operated lift's left entrance seam reproduces at
-`--camera "144 576 88 -5 205"`. Classic has no bright seam; Enhanced's leak
+`--camera "144 576 88 -5 205"`. Classic has no bright seam; Luminous's leak
 persists without bounce. Isolating the spotlight at `-120 504 144` confirms that
 direct light crosses a BSP-solid wall. Keeping both sides in the shadow map and
 rejecting unreachable grazing taps removes the seam in the repeated capture.
 The earlier view at `680 512 110` targeted a different lift.
-Playable captures also compare Classic, the previous Enhanced build and the
+Playable captures also compare Classic, the previous Luminous build and the
 corrected build from the lower landing looking back up, with the lift at
 `0 0 -232`. Saved player origins/view angles and lift positions match across all
 three captures. A bright sliver at the underside join disappears after the fix.
@@ -407,14 +410,14 @@ texture limits. Each probe stores an ambient cube: irradiance toward ±X, ±Y an
   moving them. On E1M2 and E1M3 they match exactly apart from one value off by 1.
 - **Actors.** MDL models (except flames, which stay fullbright emitters), the
   view weapon and standalone ammo/health boxes carry `LQ_SURFACE_ACTOR`. In
-  Enhanced they are lit per pixel by the same runtime lights and shadow cubes as
+  Luminous they are lit per pixel by the same runtime lights and shadow cubes as
   the world, plus static and dynamic probe irradiance. The view weapon keeps
   Quake's 24-brightness minimum. Classic ignores the flag and uses `shade`.
 
 The closed-room test checks probe magnitudes against hand arithmetic: a centre
 probe of about 105 in all six directions at 0.4 reflectance, and a muzzle-flash
 bounce inside its expected band. A GPU readback checks that an actor is lit by a
-runtime light in Enhanced and keeps its vertex shade in Classic.
+runtime light in Luminous and keeps its vertex shade in Classic.
 
 ## Sky light
 
@@ -452,7 +455,7 @@ The engine accepts the 1.01 release's `id1/pak0.pak` (directory CRC 62751) as
 unmodified, alongside 1.06 (32981). Otherwise the original check treats 1.01
 shareware data as a modified game and refuses to start.
 
-`timedemo demo1`, Enhanced, debug build, uncapped: shareware 119 fps with 24 map
+`timedemo demo1`, Luminous, debug build, uncapped: shareware 119 fps with 24 map
 lights → 155 fps with 120 (per-face light tests now reject on the precomputed
 reach bit before any geometry); rerelease 119 → 104 fps, which now lights with
 its 206 surface lights and up to 120 map lights. Classic shareware: 238 fps.
@@ -463,14 +466,14 @@ the local map. Original id maps carry only what id's LIGHT read (`light`,
 maps were compiled with ericw-tools, and their entity keys describe lighting
 the baked lightmap contains:
 
-| Key (local rerelease data) | Maps | Enhanced |
+| Key (local rerelease data) | Maps | Luminous |
 | --- | --- | --- |
 | `delay`, `wait`, `mangle`, `_softangle`, `_color` | most | Falloff formulas, cones and color (above) |
 | `_sun 1` light (start 200, E1M1 75, E4M1 75) | 3 | Directional sun (below) |
 | worldspawn `_sunlight "1.0 1.0 1.0"` | 11 | Parsed as intensity 1: too faint to add a brightness unit, so left out, as it adds nothing to the lightmap |
 | `_surface` template | 30, 206 templates | Copies on every matching face (below) |
 | `_surface_spotlight` | start (2) | Copies aim along the face normal |
-| `_dirt` (ambient occlusion), `_bounce` | all | Not reproduced; Enhanced has its own bounce |
+| `_dirt` (ambient occlusion), `_bounce` | all | Not reproduced; Luminous has its own bounce |
 | `_project_texture` | 1 | Not reproduced |
 
 - **Sun.** The strongest `_sun` light (aimed by its target or `mangle`,
@@ -502,9 +505,9 @@ E1M1 profile while firing rockets (`lq_profile`, 7 s after warm-up, M1 Max,
 | Mode | CPU per frame | Scene preparation |
 | --- | ---: | ---: |
 | Classic | 3.6 ms | 0.5 ms |
-| Enhanced | 4.2 ms | 0.9 ms |
+| Luminous | 4.2 ms | 0.9 ms |
 
-Enhanced figures include the dynamic probes. Interactions are built only for
+Luminous figures include the dynamic probes. Interactions are built only for
 visible faces, using cached bounds. GPU time is not measured.
 
 The six-axis GPU test also drives a moving actor box. Exactly 6 faces are
@@ -535,15 +538,15 @@ Current limits:
   for 128 cubes; the bounce atlas adds up to
   four layers the size of the used lightmap rows.
 
-Quake's stored data is a baked lightmap rather than a shadow map. Enhanced keeps
+Quake's stored data is a baked lightmap rather than a shadow map. Luminous keeps
 that image as evidence of the original composition: it can guide comparisons,
 light reconstruction and deliberate darkness, but it is not sampled or multiplied
-into Enhanced direct illumination. Runtime lights and geometry must produce the
+into Luminous direct illumination. Runtime lights and geometry must produce the
 lighting. Where the surviving entity descriptions cannot reproduce an authored
 choice, an inspectable per-map override or indirect-light control is preferable to
 quietly restoring baked direct light.
 
-If those controls still cannot recreate an important area, Enhanced may use a
+If those controls still cannot recreate an important area, Luminous may use a
 bounded, documented composition patch in the spirit of Tenebrae's dim static
 lightmap base. It is a named map-region fallback, not a general lightmap
 multiplier: it must retain only the needed stable residual, leave switched and
@@ -580,7 +583,7 @@ locations because the world-anchored 16-tap pattern varies at individual pixels.
 A separate sealed-corner fixture uses a grazing eight-unit emitter behind a
 thick wall, mirrored vertically: blocked receivers stay dark above and below,
 while disabling shadows illuminates the same samples. Both native suites (normal and
-ASan/UBSan) pass all 21 tests, and an E1M3 Enhanced run is sanitizer-clean.
+ASan/UBSan) pass all 21 tests, and an E1M3 Luminous run is sanitizer-clean.
 Other-platform runtime validation remains pending.
 
 ## Next implementation sequence
@@ -590,10 +593,10 @@ Other-platform runtime validation remains pending.
 3. Implement the staged [light reconstruction](LIGHT_RECONSTRUCTION.md): retain
    style-layer evidence, compare the runtime prediction, estimate only
    identifiable parameters, and report residual/confidence data.
-4. Refine the experimental in-game Enhanced path against Classic GPU.
+4. Refine the experimental in-game Luminous path against Classic GPU.
    Normal/specular inputs and deliberate atmosphere adjustments follow.
    A map-local static composition patch is a last resort, used only
    where falloff, occlusion and authored controls cannot recover a scene.
 
-No normal-map, specular or fog claim follows from this checkpoint. Enhanced asset
+No normal-map, specular or fog claim follows from this checkpoint. Luminous asset
 creation remains in the separate data project.

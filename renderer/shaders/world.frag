@@ -23,17 +23,17 @@ layout(set=3,binding=0,std140) uniform Surface {
     vec4 parameters; // time, surface flags, smooth filter, mip mode
     vec4 camera_origin;
     vec4 dynamic_lights[32];
-    uvec4 light_bits; // Enhanced: runtime-light slots reaching the face; Classic: dlights in x
+    uvec4 light_bits; // Luminous: runtime-light slots reaching the face; Classic: dlights in x
     vec4 bounce_weights; // live style value per bounce layer
 } surface;
-// Enhanced runtime lights, pushed once per frame. Each slot owns a shadow cube.
+// Luminous runtime lights, pushed once per frame. Each slot owns a shadow cube.
 layout(set=3,binding=1,std140) uniform Lights {
     vec4 position_range[128];
     vec4 color_strength[128];
     vec4 falloff[128]; // light value, attenuation, angle scale, formula
     vec4 spot[128]; // direction, outer cosine (< -1: omnidirectional)
     vec4 shape[128]; // inner cosine, emitter radius, submerged, shadow array*1024 + cube
-    uvec4 parameters; // slot count, Enhanced enabled, shadow arrays, shadows enabled
+    uvec4 parameters; // slot count, Luminous enabled, shadow arrays, shadows enabled
     vec4 tuning; // exposure, lightmap-to-layer row ratio, bounce enabled, bounce gain
     vec4 probe_origin; // xyz, spacing
     vec4 probe_size; // probes per axis; w: 1 static, 2 dynamic (bits)

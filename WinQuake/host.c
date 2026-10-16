@@ -96,9 +96,9 @@ cvar_t	temp1 = {"temp1","0"};
  * Original game code does not use it; do not archive it in config.cfg. */
 static cvar_t campaign = {"campaign", "0"};
 
-/* Saved renderer preference: 0 software, 1 classic GPU, 2 enhanced GPU.
+/* Saved renderer preference: 0 software, 1 classic GPU, 2 Luminous GPU.
  * Classic GPU currently composites CPU actors/effects/UI over its BSP world.
- * Enhanced is reserved; selecting it falls back to Software for now. */
+ * Luminous needs a GPU; without one it falls back to Software. */
 cvar_t lq_renderer = {"lq_renderer", "0", true};
 
 

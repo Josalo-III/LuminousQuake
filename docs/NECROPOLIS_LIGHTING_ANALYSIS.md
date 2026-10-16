@@ -143,12 +143,12 @@ after relocation; its strongest narrow cone and the many brush-submodel samples
 make it especially sensitive to the actual compiler sampling mode. The local BSP
 may have used extra filtered samples or other settings that these ordinary-grid
 probes do not recover. These numbers locate uncertainty; they are not a score for
-the desired Enhanced appearance.
+the desired Luminous appearance.
 
 The 69 remaining blocked bright style-34 records are localized rather than
 spread evenly: 30 are on face 2484, 11 on face 867, and 6 on face 2492. Faces
 2484 and 2492 lie on the `x=0` plane near the source, so this is a specific wall
-region to inspect in Classic and the Enhanced viewer. It is too early to label
+region to inspect in Classic and the Luminous viewer. It is too early to label
 that region an artistic exception; a different sample-filter setting or a
 boundary trace could change this classification.
 

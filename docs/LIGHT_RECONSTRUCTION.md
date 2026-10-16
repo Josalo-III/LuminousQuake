@@ -1,13 +1,13 @@
 # Reconstructing Quake lighting
 
-Enhanced rendering aims to preserve the original game's choices about what a
+Luminous rendering aims to preserve the original game's choices about what a
 light reveals and what it leaves in darkness, without treating the baked BSP
 lightmap as a runtime direct-light texture. The original image is an authored
 illusion, not ground truth for a unique set of physical lights. Several source,
 falloff, occlusion and indirect-light arrangements could create a similar image.
 This document uses the baked data as evidence for an estimate rather than a
 second, hidden light source or a recoverable physical solution. Reconstruction
-is a way to initialize the kind of direct lights Enhanced will actually render;
+is a way to initialize the kind of direct lights Luminous will actually render;
 the goal is to relight the scenes as closely to the original experience as we
 can manage.
 
@@ -64,7 +64,7 @@ owned static ray-query structure; camera PVS is not a substitute for light
 visibility.
 
 The runtime renderer now occludes light with cube shadow maps and bounds each
-source's reach with the compiled PVS (see [Enhanced renderer](ENHANCED_RENDERER.md)).
+source's reach with the compiled PVS (see [Luminous renderer](LUMINOUS_RENDERER.md)).
 Neither is a sample-level ray query for reconstruction: shadow maps are view-
 independent GPU images, and PVS is deliberately conservative.
 
@@ -86,11 +86,11 @@ or leave the default rather than inventing a precise-looking individual value.
 ### 4. Split direct light from the residual
 
 The estimated, visibility-tested source model provides a starting rig for
-Enhanced direct lighting. The remaining low-frequency residual is evidence for
+Luminous direct lighting. The remaining low-frequency residual is evidence for
 ambience, bounce light, minlight, deliberate artistic cheats, or information lost
 through clamping. It may inform sparse irradiance probes or deliberately authored
 per-map ambient controls, but it must not be sampled as the old direct lightmap
-during Enhanced rendering.
+during Luminous rendering.
 
 When this rig cannot reproduce a scene's composition, adjust or supplement its
 lights and indirect controls by eye. An original map may have been lit for a
@@ -106,9 +106,9 @@ properly.
 ### 5. Use a bounded static composition patch when necessary
 
 If the inferred rig plus explicit authored lights and indirect controls cannot
-recreate an important original composition, Enhanced may use a documented,
+recreate an important original composition, Luminous may use a documented,
 map-local static contribution in the spirit of Tenebrae's dim lightmap base.
-This is a fallback for a named problematic region, not the default Enhanced
+This is a fallback for a named problematic region, not the default Luminous
 lighting model. It must be derived and stored separately from the installed BSP,
 have an adjustable strength and spatial mask, and state why the direct-light rig
 was insufficient.
@@ -117,7 +117,7 @@ The patch must not restore a baked direct-light layer across the map. It should
 contain only the stable residual needed to retain the intended mood or gameplay
 cue. It cannot stand in for a switched or moving light, cannot prevent dynamic
 objects from receiving the reconstructed lights and shadows, and must remain
-inspectable in an Enhanced debugging view. Classic continues to render the
+inspectable in an Luminous debugging view. Classic continues to render the
 original lightmap unchanged.
 
 ### 6. Use the result at runtime
@@ -139,7 +139,7 @@ An original map cannot prove that our recovered lights are the unique or
 historically correct lights. For that map, Classic is a visual and gameplay
 reference for a close experience, not a pixel-exact acceptance target.
 
-For each reference map, produce paired Classic and Enhanced captures along with:
+For each reference map, produce paired Classic and Luminous captures along with:
 
 - a direct-light prediction image;
 - a residual/indirect image;
@@ -154,7 +154,7 @@ lights convey the same state changes. Prioritize that experienced composition
 over numerical closeness to individual lightmap samples. Record intentional
 departures from the bake and any per-map adjustments so the estimate remains
 inspectable. Compare moving and switched lights in a synthetic scene before
-enabling an experimental in-game Enhanced mode.
+enabling an experimental in-game Luminous mode.
 
 ## Initial implementation order
 
@@ -182,7 +182,7 @@ enabling an experimental in-game Enhanced mode.
    override schema, including narrow static composition patches for cases where
    the inferred rig misses an important original scene.
 6. Add shadow-caster culling and a portable point-light shadow behavior test
-   using the estimated sources; only then consider exposing Enhanced in the game
+   using the estimated sources; only then consider exposing Luminous in the game
    menu.
 
 ## Necropolis first pass
@@ -208,7 +208,7 @@ small 255 fraction in style 0 suggests broad clipping is not the dominant source
 of ambiguity in this map, though overlapping same-style lights remain inseparable
 from these records alone.
 
-The standalone Enhanced viewer evaluates each entity's own compiler formula
+The standalone Luminous viewer evaluates each entity's own compiler formula
 (`delay`, `wait`, `light`), which is the reconstruction prior, not fitted output.
 This local E1M3 was compiled with ericw-tools: worldspawn enables `_bounce` and
 `_dirt`, and 49 rerelease spotlights use `light 2500` with `delay 3` (no falloff)

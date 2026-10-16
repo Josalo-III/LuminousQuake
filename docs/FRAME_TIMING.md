@@ -63,7 +63,7 @@ playback use the original interpolation path unchanged.
 
 | Cvar | Default | Meaning |
 | --- | --- | --- |
-| `vid_vsync` | `1` | VSync presentation (`SDL_GPU_PRESENTMODE_VSYNC` for Classic/Enhanced, `SDL_SetRenderVSync` for Software). `0` is immediate presentation, for benchmarking or lower latency. Applies with `vid_restart`. |
+| `vid_vsync` | `1` | VSync presentation (`SDL_GPU_PRESENTMODE_VSYNC` for Classic/Luminous, `SDL_SetRenderVSync` for Software). `0` is immediate presentation, for benchmarking or lower latency. Applies with `vid_restart`. |
 | `host_maxfps` | `0` | Optional render cap, clamped to 10–1000. `0` means none: VSync paces frames, with an internal 1000 fps ceiling. Saved in the profile. |
 
 Existing profiles that saved `vid_vsync "0"` keep it; change it in Video
@@ -85,7 +85,7 @@ These should run soon; until they do, treat the change as provisional.
 
 1. **Display-rate rendering with VSync.** In a normal game, confirm the client
    presents at the display refresh (60/120/144/240 Hz) with `lq_profile 1` and
-   `lq_profile_report`, in Software, Classic and Enhanced.
+   `lq_profile_report`, in Software, Classic and Luminous.
 2. **Movement and physics against the previous build.** On shareware E1M1, script
    walk-forward and jump traces (`edict 1` once per tick, separated by `wait`).
    Compare them with the pre-change binary run at `host_framerate 0.0138889`:

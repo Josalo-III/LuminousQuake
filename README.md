@@ -9,10 +9,10 @@ improved materials, and faithful asset improvements. See the
 The Classic GPU feature implementation milestone is reached as of October 14,
 2026, including mipmaps, anisotropic filtering and saved video options. Broader
 campaign/platform validation and rerelease fog remain open. The Phase 4A engine
-worker pool now handles measured row conversion work and Enhanced bounce
-gathering; Enhanced rendering is experimental.
+worker pool now handles measured row conversion work and Luminous bounce
+gathering; Luminous rendering is experimental.
 
-Enhanced (`lq_renderer 2`) is now an **experimental** playable choice. It lights
+Luminous (`lq_renderer 2`) is now an **experimental** playable choice. It lights
 the world only from runtime lights:
 - original LIGHT/ericw-tools falloff formulas, spotlights and live styles;
 - cached cube shadow maps with emitter-sized soft penumbrae;
@@ -22,13 +22,13 @@ the world only from runtime lights:
 - an irradiance probe grid that lights monsters and the view weapon from those
   lights plus bounce, and carries weapon light onto nearby surfaces each frame.
 
-Enhanced particles vary in shape and scale; blood, smoke and bubbles receive scene
+Luminous particles vary in shape and scale; blood, smoke and bubbles receive scene
 lighting, while sparks and fire remain self-lit. Classic GPU is the lighting
 comparison reference. Darkness comes from falloff and occlusion, never from the
 baked lightmap.
-Monsters, items and moving doors cast Enhanced shadows from their live positions.
-The standalone viewer (`luminousquake-gpu --enhanced`) has tuning flags. See
-[Enhanced renderer notes](docs/ENHANCED_RENDERER.md) for commands, evidence and
+Monsters, items and moving doors cast Luminous shadows from their live positions.
+The standalone viewer (`luminousquake-gpu --luminous`) has tuning flags. See
+[Luminous renderer notes](docs/LUMINOUS_RENDERER.md) for commands, evidence and
 next steps.
 
 See [profiling method](docs/PROFILING.md) for the Instruments-led measurement
@@ -60,7 +60,7 @@ From the repository root:
 
 Use `+lq_renderer 0` for Software. Options saves the choice for the next launch;
 the console command `vid_restart` also applies a change in the current game.
-**Enhanced** (`+lq_renderer 2`) is experimental; see above. Legacy debug
+**Luminous** (`+lq_renderer 2`) is experimental; see above. Legacy debug
 views use a software frame; failed GPU initialization/map uploads fall back to
 Software with a console explanation. See the current
 [Classic GPU checkpoint](docs/CLASSIC_GPU_CHECKPOINT.md).
@@ -193,15 +193,15 @@ to on and is saved as `freelook`; held `+mlook` bindings remain available when
 it is off.
 Options includes a saved **Renderer** preference: **Software** (original CPU
 renderer), **Classic GPU** (GLQuake-style appearance with baked lightmaps), and
-**Enhanced** (Tenebrae-inspired lighting, shadows and materials). Left/right
+**Luminous** (Tenebrae-inspired lighting, shadows and materials). Left/right
 cycle in either direction; Enter advances. `lq_renderer` stores 0, 1 or 2.
-Video Options' **Tube camera** (`r_fluorescent`, Enhanced only) picks how
+Video Options' **Tube camera** (`r_fluorescent`, Luminous only) picks how
 fluorescent tubes record: **eye** (0, steady), **film 24p** (1, the default:
 slow breathing), **NTSC 1/60** (2, in sync, steady), **NTSC 1/250** (3, deep
 slow breathing) or **PAL 25p** (4, a 5 Hz flutter). Failing tubes drop out and
 restrike under every camera.
 Classic GPU is now available as the feature implementation checkpoint described above;
-Enhanced is experimental (runtime lights, soft shadows, bounce and weapon light). Restart the game or use `vid_restart` to apply the
+Luminous is experimental (runtime lights, soft shadows, bounce and weapon light). Restart the game or use `vid_restart` to apply the
 saved choice. The experimental GPU viewer remains a separate `luminousquake-gpu`
 executable. Classic GPU describes appearance and can use Metal/Vulkan.
 Options → Video Options selects resolution, horizontal FOV (10–170 degrees),
@@ -213,10 +213,10 @@ filtering, trilinear mipmaps and 4× anisotropy; higher anisotropy costs more sh
 work. Sky, masked sprites and UI retain their existing crisp sampling.
 `gpu_mipmaps` stores 0/1/2 and `gpu_anisotropy` stores 1/2/4/8/16 (1 means off).
 GPU water (opaque/80%/60%/40%) makes water, slime and lava translucent in Classic GPU
-and Enhanced, saved as GLQuake's `r_wateralpha` (1 is opaque). Original maps were not
+and Luminous, saved as GLQuake's `r_wateralpha` (1 is opaque). Original maps were not
 compiled to see through liquids, so each frame also draws the leaves visible from the
 liquid (or, underwater, the air) leaves in view; no re-vised maps are needed.
-In Enhanced, a translucent liquid is lit like any surface instead of drawn full-bright,
+In Luminous, a translucent liquid is lit like any surface instead of drawn full-bright,
 catching light in proportion to its opacity; the rest passes through, so faces under it
 receive (1 − opacity) of light from lights on the other side of the surface.
 Unsupported GPU settings report a fallback. Apply activates the staged settings and saves them in
