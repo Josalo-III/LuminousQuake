@@ -106,6 +106,121 @@ static void Basis(entity_t *e, vec3_t forward, vec3_t right, vec3_t up)
     vec3_t angles; VectorCopy(e->angles, angles); angles[PITCH] = -angles[PITCH];
     AngleVectors(angles, forward, right, up);
 }
+/* Enhanced: a torch or flame's light follows its animation. A pose's emission is
+ * its surface area times the luminance of the skin it shows. The light's
+ * strength follows each pose's emission relative to the cycle's mean, and its
+ * position follows the shift of the emission centre. Quake starts every static
+ * flame's cycle together, so Enhanced gives each flame, model and light alike,
+ * its own phase derived from its position. */
+#define FLAME_POSES 32
+typedef struct {
+    const model_t *model;
+    int pose, count;
+    float gain[FLAME_POSES], offset[FLAME_POSES][3]; /* offset in model axes */
+} flame_curve;
+static flame_curve flame_curves[8];
+static int flame_curve_count;
+static const model_t *flame_world;
+static int IsFlame(const model_t *model)
+{ return model && (!strcmp(model->name, "progs/flame.mdl") || !strcmp(model->name, "progs/flame2.mdl")); }
+static double FlameTime(const entity_t *e)
+{
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < 3; ++i) { h ^= (uint32_t)(int32_t)floorf(e->origin[i] + 0.5f); h *= 16777619u; }
+    return cl.time + (h >> 8) / (double)(1u << 24) * 8.0;
+}
+/* Pose-group index and the poses of e's current frame. */
+static int FlamePoses(entity_t *e, aliashdr_t *header, trivertx_t *poses[FLAME_POSES], int *count)
+{
+    mdl_t *model = (mdl_t *)((byte *)header+header->model);
+    int pose = e->frame >= 0 && e->frame < model->numframes ? e->frame : 0;
+    if (header->frames[pose].type != ALIAS_GROUP) {
+        *count = 1; poses[0] = (trivertx_t *)((byte *)header+header->frames[pose].frame);
+        return 0;
+    }
+    maliasgroup_t *g = (maliasgroup_t *)((byte *)header+header->frames[pose].frame);
+    *count = g->numframes < FLAME_POSES ? g->numframes : FLAME_POSES;
+    for (int i = 0; i < *count; ++i) poses[i] = (trivertx_t *)((byte *)header+g->frames[i].frame);
+    return GroupFrame((float *)((byte *)header+g->intervals), g->numframes, FlameTime(e)) % *count;
+}
+static const flame_curve *FlameCurve(entity_t *e, aliashdr_t *header, trivertx_t *poses[FLAME_POSES], int count)
+{
+    mdl_t *model = (mdl_t *)((byte *)header+header->model);
+    int pose = e->frame >= 0 && e->frame < model->numframes ? e->frame : 0;
+    if (flame_world != cl.worldmodel) { flame_curve_count = 0; flame_world = cl.worldmodel; }
+    for (int i = 0; i < flame_curve_count; ++i)
+        if (flame_curves[i].model == e->model && flame_curves[i].pose == pose) return &flame_curves[i];
+    if (flame_curve_count == 8 || !model->numskins) return NULL;
+    maliasskindesc_t *skin = (maliasskindesc_t *)((byte *)header+header->skindesc);
+    if (skin->type == ALIAS_SKIN_GROUP)
+        skin = ((maliasskingroup_t *)((byte *)header+skin->skin))->skindescs;
+    const byte *pixels = (byte *)header+skin->skin;
+    stvert_t *uv = (stvert_t *)((byte *)header+header->stverts);
+    mtriangle_t *triangles = (mtriangle_t *)((byte *)header+header->triangles);
+    float emission[FLAME_POSES], centre[FLAME_POSES][3], mean = 0, mean_centre[3] = {0};
+    for (int f = 0; f < count; ++f) {
+        double total = 0, moment[3] = {0};
+        for (int i = 0; i < model->numtris; ++i) {
+            float p[3][3], s[3], t[3];
+            for (int j = 0; j < 3; ++j) {
+                int v = triangles[i].vertindex[j];
+                for (int k = 0; k < 3; ++k) p[j][k] = poses[f][v].v[k]*model->scale[k]+model->scale_origin[k];
+                s[j] = uv[v].s / 65536.0f + (!triangles[i].facesfront && uv[v].onseam ? model->skinwidth*0.5f : 0);
+                t[j] = uv[v].t / 65536.0f;
+            }
+            vec3_t a, b, n; VectorSubtract(p[1], p[0], a); VectorSubtract(p[2], p[0], b);
+            CrossProduct(a, b, n);
+            double area = 0.5*Length(n), luminance = 0, local[3] = {0};
+            /* Fifteen barycentric samples of the skin across the triangle. */
+            for (int u = 0; u <= 4; ++u) for (int w = 0; w <= 4-u; ++w) {
+                float wa = u/4.0f, wb = w/4.0f, wc = 1-wa-wb;
+                int x = (int)(wa*s[0]+wb*s[1]+wc*s[2]), y = (int)(wa*t[0]+wb*t[1]+wc*t[2]);
+                x = x < 0 ? 0 : x >= model->skinwidth ? model->skinwidth-1 : x;
+                y = y < 0 ? 0 : y >= model->skinheight ? model->skinheight-1 : y;
+                const byte *c = host_basepal+3*pixels[y*model->skinwidth+x];
+                double l = (0.2126*c[0]+0.7152*c[1]+0.0722*c[2])/255.0;
+                luminance += l;
+                for (int k = 0; k < 3; ++k) local[k] += l*(wa*p[0][k]+wb*p[1][k]+wc*p[2][k]);
+            }
+            total += area*luminance/15;
+            for (int k = 0; k < 3; ++k) moment[k] += area*local[k]/15;
+        }
+        emission[f] = (float)total; mean += emission[f]/count;
+        for (int k = 0; k < 3; ++k) {
+            centre[f][k] = total > 0 ? (float)(moment[k]/total) : 0;
+            mean_centre[k] += centre[f][k]/count;
+        }
+    }
+    if (mean <= 0) return NULL;
+    flame_curve *curve = &flame_curves[flame_curve_count++];
+    curve->model = e->model; curve->pose = pose; curve->count = count;
+    for (int f = 0; f < count; ++f) {
+        curve->gain[f] = emission[f]/mean;
+        for (int k = 0; k < 3; ++k) curve->offset[f][k] = centre[f][k]-mean_centre[k];
+        Con_DPrintf("Flame light %s frame %d pose %d: strength %.2f, centre shift %.2f %.2f %.2f\n",
+            e->model->name, pose, f, curve->gain[f], curve->offset[f][0], curve->offset[f][1], curve->offset[f][2]);
+    }
+    return curve;
+}
+int LQ_FlameLight(const float origin[3], float *gain, float offset[3])
+{
+    for (int i = 0; i < cl.num_statics; ++i) {
+        entity_t *e = &cl_static_entities[i];
+        if (!IsFlame(e->model) || fabsf(e->origin[0]-origin[0]) > 1 ||
+            fabsf(e->origin[1]-origin[1]) > 1 || fabsf(e->origin[2]-origin[2]) > 1) continue;
+        aliashdr_t *header = Mod_Extradata(e->model);
+        trivertx_t *poses[FLAME_POSES]; int count;
+        int f = FlamePoses(e, header, poses, &count);
+        const flame_curve *curve = FlameCurve(e, header, poses, count);
+        if (!curve) return 0;
+        vec3_t forward, right, up; Basis(e, forward, right, up);
+        const float *o = curve->offset[f];
+        for (int k = 0; k < 3; ++k) offset[k] = forward[k]*o[0]-right[k]*o[1]+up[k]*o[2];
+        *gain = curve->gain[f];
+        return 1;
+    }
+    return 0;
+}
 static void Transform(const float local[3], entity_t *e, const float forward[3],
                       const float right[3], const float up[3], float output[3])
 {
@@ -129,7 +244,8 @@ static void Alias(entity_t *e, int weapon)
     int offset = header->frames[pose].frame;
     if (header->frames[pose].type == ALIAS_GROUP) {
         maliasgroup_t *g = (maliasgroup_t *)((byte *)header+offset);
-        offset = g->frames[GroupFrame((float *)((byte *)header+g->intervals), g->numframes, cl.time+e->syncbase)].frame;
+        double time = enhanced_frame && IsFlame(e->model) ? FlameTime(e) : cl.time+e->syncbase;
+        offset = g->frames[GroupFrame((float *)((byte *)header+g->intervals), g->numframes, time)].frame;
     }
     trivertx_t *points = (trivertx_t *)((byte *)header+offset);
     stvert_t *uv = (stvert_t *)((byte *)header+header->stverts);

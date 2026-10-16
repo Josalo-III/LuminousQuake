@@ -251,6 +251,16 @@ static void EnhancedLights(void)
     };
     LQ_BuildRuntimeLightsVisible(&map_scene, view.lightstyles, view.origin, world_draws, runtime_lights,
         LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS);
+    /* Torch and flame lights follow their flame's animation. The position moves
+     * only when the pose changes, so the shadow cube is redrawn at that rate. */
+    for (uint32_t i = 0; i < LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS; ++i) {
+        lq_runtime_light *light = &runtime_lights[i];
+        float gain, offset[3];
+        if (light->position_radius[3] <= 0 || light->source_index >= map_scene.light_source_count ||
+            !LQ_FlameLight(map_scene.light_sources[light->source_index].origin, &gain, offset)) continue;
+        light->color_strength[3] *= gain;
+        for (int k = 0; k < 3; ++k) light->position_radius[k] += offset[k];
+    }
     lq_runtime_light selected[LQ_MAX_DYNAMIC_LIGHTS], candidate;
     float scores[LQ_MAX_DYNAMIC_LIGHTS]; uint32_t dynamic = 0;
     for (int i = 0; i < MAX_DLIGHTS; ++i) {

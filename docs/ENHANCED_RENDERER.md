@@ -85,6 +85,22 @@ comes from each light's falloff and from occlusion.
   dominating it. Linear spotlights, such as id's targeted fixtures, keep their
   compiler strength. The viewer's `--accent-gain G` overrides the gain for
   comparison; 0.3 still dominates the wall, and 0.08 nearly disappears.
+- **Flame lights.** A map light with a static flame model at its origin
+  (`flame.mdl` on wall torches, `flame2.mdl` on flame balls) follows that
+  flame's animation (`LQ_FlameLight`). Each pose's emission is the model's
+  surface area weighted by the luminance of the skin it shows, sampled when
+  the model is first seen. The light's strength follows each pose's emission
+  relative to the cycle's mean. On the shareware models, a wall torch runs
+  0.88–1.14× over its 0.6 s cycle and the large flame 0.82–1.13× over 1.1 s.
+  The light's position follows the shift of the emission centre, about a unit
+  up in the bright poses and down in the dim ones. The bracket a few units
+  below the flame therefore casts a shadow that moves on distant walls. Quake
+  starts every static flame's cycle together, which would pulse a whole room
+  in step, so Enhanced gives each flame, model and light alike, its own phase
+  derived from its position. The light moves only when the pose changes (ten
+  times a second), so its shadow cube is redrawn at that rate rather than
+  every frame. Static bounce and probes keep the mean strength. Classic and
+  Software keep the original lockstep animation.
 - **Selection.** Up to 128 sources are chosen per frame from those whose PVS
   reach (leaves their own leaf can see, within range) meets the camera's PVS,
   nearest (range-weighted) first. In game, map lights get 120 slots and gameplay
