@@ -345,7 +345,10 @@ void main() {
     if (diffuse_effect) {
         // Unlit blood, smoke and bubbles go dark even if their palette entries
         // belong to Quake's fullbright range. Emission follows effect provenance.
-        color = texture(colormap, vec2((index + 0.5) / 256.0, 0.5 / 64.0));
+        // Row 32 is the palette at Quake's normal brightness (128), the level
+        // effect_light is relative to; row 0 is double that and would show
+        // lit effects twice as bright as the walls around them.
+        color = texture(colormap, vec2((index + 0.5) / 256.0, 32.5 / 64.0));
         color.rgb *= effect_light;
     } else if (lights.parameters.y != 0u && index < 224.0) color.rgb *= direct_tint;
 }

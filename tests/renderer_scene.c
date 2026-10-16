@@ -29,14 +29,16 @@ static int EffectTest(void)
             center[0] += corners[i][0]; center[1] += corners[i][1];
         }
         CHECK(fabsf(center[0]) < 0.00001f && fabsf(center[1]) < 0.00001f);
+        CHECK(area * 0.5f <= 0.5f + 0.00001f); /* never larger than Classic's triangle */
         smallest = fminf(smallest, area); largest = fmaxf(largest, area);
         areas[count] += area * 0.5f; ++counts[count];
     }
     CHECK(largest > smallest*3); /* Visible size variation, stable frame to frame. */
+    CHECK(largest * 0.5f > 0.4f); /* the largest come close to Classic's size */
     for (uint32_t sides = 3; sides <= LQ_PARTICLE_MAX_SIDES; ++sides) {
         CHECK(counts[sides] > 768 && counts[sides] < 1280); /* Every outline occurs frequently. */
-        CHECK(areas[sides]/counts[sides] > 0.35f && areas[sides]/counts[sides] < 0.65f);
-    } /* Mean area stays close to Classic's 0.5 for every side count. */
+        CHECK(areas[sides]/counts[sides] > 0.15f && areas[sides]/counts[sides] < 0.35f);
+    } /* Mean area is about half of Classic's 0.5 for every side count. */
     lq_runtime_light samples[LQ_BEAM_LIGHTS];
     float start[3] = {0,0,0}, end[3] = {600,0,0};
     uint32_t count = LQ_BeamRuntimeLights(start, end, 100, samples);
@@ -57,7 +59,7 @@ static int EffectTest(void)
     CHECK(LQ_BeamRuntimeLights(start, end, 100, samples) == 1);
     CHECK(samples[0].position_radius[0] == 0);
     end[0] = NAN; CHECK(!LQ_BeamRuntimeLights(start, end, 100, samples));
-    puts("PASS stable convex 3-6 sided particle flakes, varied scale and continuous beam-light coverage");
+    puts("PASS stable convex 3-6 sided particle flakes, varied scale up to Classic's size and continuous beam-light coverage");
     return 0;
 }
 /* A closed 256-unit white room lit from its center: one wall per BSP node,

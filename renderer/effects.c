@@ -12,9 +12,10 @@ uint32_t LQ_ParticleCorners(uint32_t seed, float corners[LQ_PARTICLE_MAX_SIDES][
     uint32_t count = 3 + (Hash(seed ^ 0x51ed270bu) & 3);
     float sector = 6.2831853f / count;
     float angle = Random(&seed) * 6.2831853f;
-    /* Normalize polygon area across side counts, keeping mean coverage near
-     * Classic's half-square triangle while allowing visibly varied sizes. */
-    float scale = (0.25f + Random(&seed) * 0.58f) * sqrtf(4.0f / (count * sinf(sector)));
+    /* Normalize polygon area across side counts. Classic's half-square
+     * triangle is the largest size: particles span 50-100% of its width, so a
+     * quarter to all of its area, never more. */
+    float scale = (0.25f + Random(&seed) * 0.25f) * sqrtf(4.0f / (count * sinf(sector)));
     float aspect = 0.6f + Random(&seed) * 0.8f, center[2] = {0};
     /* Separated angular sectors preserve convexity while varying outline. */
     for (uint32_t i = 0; i < count; ++i) {

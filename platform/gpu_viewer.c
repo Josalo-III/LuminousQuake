@@ -241,6 +241,10 @@ static int LuminousLightTest(lq_view *view, char *error, size_t size)
         fixture.colormap.pixels[(row*256 + 224)*4 + 2] = 255;
         fixture.colormap.pixels[(row*256 + 224)*4 + 3] = 255;
     }
+    /* Row 32 holds the palette color at normal brightness, where lit effects
+     * start: half-lit blue, as row 31 is for surfaces at 128. */
+    fixture.colormap.pixels[(32*256 + 202)*4 + 2] = 127;
+    fixture.colormap.pixels[(32*256 + 202)*4 + 3] = 255;
     if (!LQ_GPUUpload(gpu,&fixture,error,size)) goto done;
     fixture.draws[0].light_bits[0] = fixture.draws[1].light_bits[0] = 1;
     view->world_draws = fixture.draws; view->world_draw_count = fixture.draw_count;
@@ -276,12 +280,14 @@ static int LuminousLightTest(lq_view *view, char *error, size_t size)
         view->luminous_lighting = 0;
         lit = lit && LQ_GPURender(gpu,view,640,480,error,size) && CenterColor(0,255,error,size);
         /* Non-emitting particles receive light from either side and go dark
-         * with no light. A self-lit particle stays bright in the same scene. */
+         * with no light. At 128 brightness they show their palette color, like
+         * a wall in the same light, not double it. A self-lit particle stays
+         * bright in the same scene. */
         view->luminous_lighting = 1;
         draw.flags |= LQ_SURFACE_DIFFUSE_EFFECT;
         view->runtime_lights[0].position_radius[0] = 128;
         lit = lit && LQ_GPUFrame(gpu,&frame,error,size) && LQ_GPURender(gpu,view,640,480,error,size) &&
-            CenterColor(0,255,error,size);
+            CenterColor(0,127,error,size);
         blue = 224; skin.resource_id = 48;
         view->runtime_lights[0].color_strength[3] = 0.125f;
         lit = lit && LQ_GPUFrame(gpu,&frame,error,size) && LQ_GPURender(gpu,view,640,480,error,size) &&

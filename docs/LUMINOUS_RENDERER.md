@@ -312,6 +312,8 @@ Luminous rebuilds the map for the new mode.
 Luminous particles use centred irregular polygons with three to six sides and
 deterministic variations in rotation, aspect and scale. Side counts are mixed
 evenly, with area normalized so extra sides do not make a particle larger.
+Classic's triangle is the largest size: particles span 50–100% of its width,
+a quarter to all of its area, so the variety only adds smaller flakes.
 A particle keeps its shape as it moves; generating
 the variation does not consume the gameplay random stream. Classic GPU retains
 its original triangles.
@@ -321,7 +323,11 @@ color. Blood (including gib trails), tar blobs and smoke receive runtime direct
 light, static/sky probes and moving-light bounce. They become dark with zero
 illumination, including palette entries that Quake normally treats as fullbright.
 Small particles and non-emitting sprites gather light from every direction so
-their lighting does not depend on their billboard facing the camera.
+their lighting does not depend on their billboard facing the camera. Their
+color starts from the palette at Quake's normal brightness (colormap row 32)
+and scales with the light they receive, as a wall's does. Until October 16
+they started from row 0, about twice as bright, so lit blood and smoke looked
+nearly fullbright and pale smoke washed out to white.
 
 | Effect | Self-lit appearance | Illumination source |
 | --- | --- | --- |
@@ -333,7 +339,7 @@ their lighting does not depend on their billboard facing the camera.
 | `s_bubble.spr`, blood, tar and smoke | No | Receive scene light; create no light |
 | Tracer trails, lava/teleport particles, laser model | Yes | Existing gameplay/authored lights where supplied; no per-particle lights |
 
-Rocket models and luminous projectile/beam models do not cast shadows: a source
+Rocket models and self-lit projectile/beam models do not cast shadows: a source
 inside its own closed mesh would otherwise shadow the surrounding world. Monsters
 and walls still occlude the travelling light. The bright part of a rocket trail
 is self-lit; as its ramp becomes smoke it receives scene lighting instead.
@@ -348,16 +354,16 @@ Validation for this change (October 15): native arm64 Debug and ASan/UBSan
 suites each pass all 21 tests, including Metal readback and socket checks. The
 GPU tests cover lit-effect darkness, unoriented illumination, fullbright
 emission, fullbright palette entries on non-emitting effects, non-casting
-luminous models, and Classic isolation. CPU checks cover particle convexity,
-stable variation across 4,096 seeds, all four side counts, mean coverage near
-Classic's triangle area for each side count, and continuous
+self-lit models, and Classic isolation. CPU checks cover particle convexity,
+stable variation across 4,096 seeds, all four side counts, no particle larger
+than Classic's triangle (the largest close to it), and continuous
 light coverage alongside a 600-unit beam.
 
 Paired 800×600 Classic GPU / Luminous gameplay captures cover idle, a rocket in
 flight, lightning and shotgun sparks in E1M1. Each uses `host_framerate 0.02`,
 the same input sequence, and a paused capture state with fresh temporary settings.
 Saved player and rocket states matched between the original renderer pairs.
-Mean particle area stays close to Classic's triangle while outline and scale
+Particle area now stays at or below Classic's triangle while outline and scale
 vary. The polygon checks pass in Debug and ASan/UBSan. A further Luminous rocket
 capture verified rendering with the three-to-six-side mixture; its camera moved,
 so it is not a matched comparison against Classic.

@@ -4,7 +4,8 @@
 #include "scene.h"
 #define LQ_BEAM_LIGHTS 6
 #define LQ_PARTICLE_MAX_SIDES 6
-/* Returns 3-6 stable, centred convex corners; no gameplay random consumption. */
+/* Returns 3-6 stable, centred convex corners, at most Classic's triangle in
+ * area (0.5 for unit size); no gameplay random consumption. */
 uint32_t LQ_ParticleCorners(uint32_t seed, float corners[LQ_PARTICLE_MAX_SIDES][2]);
 /* Samples cover the live beam, including short/zero-length impacts. */
 uint32_t LQ_BeamRuntimeLights(const float start[3], const float end[3], uint32_t key,
