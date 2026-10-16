@@ -130,6 +130,8 @@ if(LQ_BUILD_CLIENT)
             DEPENDS tools/mac_icon.swift VERBATIM)
         set_source_files_properties("${LQ_ICON}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
         target_sources(luminousquake-app PRIVATE "${LQ_ICON}")
+        # Relink on a new icon so the post-build step signs the changed bundle.
+        set_property(TARGET luminousquake-app APPEND PROPERTY LINK_DEPENDS "${LQ_ICON}")
         add_custom_command(TARGET luminousquake-app POST_BUILD
             COMMAND ${CMAKE_COMMAND} "-DBUNDLE=$<TARGET_BUNDLE_DIR:luminousquake-app>"
                 "-DEXECUTABLE=$<TARGET_FILE:luminousquake-app>" "-DSDL_LIBRARY=$<TARGET_FILE:SDL3::SDL3>"

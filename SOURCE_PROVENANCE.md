@@ -137,3 +137,8 @@ implementation source was copied for this migration.
   Local tools: glslang 16.6.0, SPIRV-Cross 1.4.357.0, and spirv-val for validation.
   These tools are build dependencies only; their implementations are not vendored.
 - No game data, generated retail-derived maps, or screenshots are tracked.
+- The Mac app icon (`tools/mac_icon.swift`) is a blue halo around a dark
+  silhouette. The silhouette is the 2D outline of `progs/quaddama.mdl`
+  projected from one angle, stored as plain triangle coordinates. The icon
+  includes no skin, palette or other model data. The outline follows id
+  Software's Quake emblem.
