@@ -8,6 +8,7 @@
 #include "quake_scene.h"
 #include "gpu_sdl.h"
 #include "jobs.h"
+#include "fluorescent.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -788,6 +789,8 @@ int LQ_GPUViewer(int argc, char **argv)
     if (!window) { snprintf(error, sizeof(error), "window: %s", SDL_GetError()); goto done; }
     gpu = LQ_GPUCreate(window, 1, error, sizeof(error));
     if (!gpu) goto done;
+    /* As in game: failing fluorescent tubes take private styles before bounce. */
+    if (enhanced) LQ_SceneAssignFluorescentStyles(&scene);
     if (enhanced && compare) {
         LQ_JobsRegister();
         result = CompareBounce(&scene, (uint32_t)rays, gpu, error, sizeof(error)) ? 0 : 1;
