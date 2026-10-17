@@ -133,6 +133,10 @@ if(LQ_BUILD_CLIENT)
         target_sources(luminousquake-app PRIVATE "${LQ_ICON}")
         # Relink on a new icon so the post-build step signs the changed bundle.
         set_property(TARGET luminousquake-app APPEND PROPERTY LINK_DEPENDS "${LQ_ICON}")
+        # Packaging changes must refresh existing apps even when no C source changed.
+        set_property(TARGET luminousquake-app APPEND PROPERTY LINK_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/package_mac.cmake"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_mac_bundle.cmake")
         add_custom_command(TARGET luminousquake-app POST_BUILD
             COMMAND ${CMAKE_COMMAND} "-DBUNDLE=$<TARGET_BUNDLE_DIR:luminousquake-app>"
                 "-DEXECUTABLE=$<TARGET_FILE:luminousquake-app>" "-DSDL_LIBRARY=$<TARGET_FILE:SDL3::SDL3>"
@@ -220,6 +224,10 @@ if(BUILD_TESTING)
         endif()
     endforeach()
     if(LQ_BUILD_CLIENT)
+        if(APPLE)
+            add_test(NAME mac-bundle-relocation COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/mac_bundle.py $<TARGET_BUNDLE_DIR:luminousquake-app>)
+        endif()
         add_test(NAME sdl-platform COMMAND luminousquake --platform-test -userdir "${CMAKE_CURRENT_BINARY_DIR}/platform-test-user")
         set_tests_properties(sdl-platform PROPERTIES
             ENVIRONMENT "SDL_VIDEO_DRIVER=dummy;SDL_AUDIO_DRIVER=dummy" TIMEOUT 15)

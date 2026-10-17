@@ -64,9 +64,7 @@ for binary in "$app/Contents/MacOS/LuminousQuake" "$app/Contents/Frameworks/libS
         lipo "$binary" -verify_arch $arch || { echo "$binary lacks $arch" >&2; exit 1; }
     done
 done
-if otool -L "$app/Contents/MacOS/LuminousQuake" | grep -q -e /opt/homebrew -e /usr/local; then
-    echo "The executable still links a library outside the bundle" >&2; exit 1
-fi
+cmake "-DBUNDLE=$app" -P "$root/tools/verify_mac_bundle.cmake"
 
 # Sign from the inside out: the bundled library, then the app.
 codesign --force --timestamp --options runtime --sign "$identity" "$app/Contents/Frameworks/libSDL3.0.dylib"

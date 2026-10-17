@@ -146,6 +146,12 @@ data is only read, never changed; settings and saves go to
 `~/Library/Application Support/LuminousQuake`. The app in `build/` is signed
 ad hoc for the Mac that built it.
 
+The executable loads SDL directly from `Contents/Frameworks`. Packaging rejects
+dependencies outside the app and macOS system libraries, including Homebrew paths.
+The `mac-bundle-relocation` CTest check moves the app to a temporary folder and
+verifies the loaded SDL path; removing its embedded SDL must make that copy fail
+to launch instead of falling back to a developer-machine library.
+
 ### Mac release for other Macs
 
 `tools/release_mac.sh` builds the version to share. It is universal (Apple
