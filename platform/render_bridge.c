@@ -38,6 +38,28 @@ void LQ_RenderSpark(const float origin[3], int color)
     spark_lights[slot].active = 1;
 }
 static uint8_t *dynamic_probes; /* per-frame gameplay-light bounce, GPU layout */
+/* Failing tubes sputter with the crackle of the buzz Quake plays for them. */
+#define TUBE_SOUND "ambience/buzz1.wav"
+static lq_tube_track tube_track;
+static double tube_offset; /* track position minus realtime */
+static uint32_t tinted_camera;
+static uint32_t TubeCamera(void) { return (uint32_t)Cvar_VariableValue("r_fluorescent"); }
+/* Follow the buzz while it is mixed; while it is not, run on from where it was.
+ * The device takes the mix in chunks, so small errors are eased out and only a
+ * jump (the loop restarting, or resuming after silence) is followed at once. */
+static const lq_tube_track *TubeTrack(void)
+{
+    double position; qboolean audible;
+    if (!tube_track.count) return NULL;
+    if (LQ_StaticSoundClock(TUBE_SOUND, &position, &audible) && audible) {
+        double length = tube_track.length, error = fmod(position - realtime - tube_offset, length);
+        if (error > length / 2) error -= length;
+        if (error < -length / 2) error += length;
+        tube_offset += fabs(error) > 0.05 ? error : error * 0.2;
+    }
+    tube_track.position = realtime + tube_offset;
+    return &tube_track;
+}
 /* Translucent liquids (r_wateralpha) must show what lies across the surface.
  * Without water vis a compiled PVS stops at the leaves touching it, so the
  * frame adds the PVS of every visible leaf on the other side of the surface. */
@@ -118,13 +140,21 @@ void LQ_RenderBegin(void)
         count = needed;
     }
     memset(preserve, 0, count);
+    /* A tube's colour is in its bounce, so a camera recording another colour reloads the map's lighting. */
+    if (loaded && luminous && LQ_FluorescentCast(TubeCamera()) != LQ_FluorescentCast(tinted_camera)) LQ_RenderMapChanged();
     if (!loaded && cls.state == ca_connected && cl.worldmodel && !con_forcedup) {
         luminous = Cvar_VariableValue("lq_renderer") == 2;
         if (!LQ_QuakeSceneFromWorld(&map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }
         if (luminous) {
             /* Before bounce, so each failing tube's bounce follows it. */
             uint32_t tubes = LQ_SceneAssignFluorescentStyles(&map_scene);
-            if (tubes) Con_DPrintf("Luminous fluorescents: %u failing tubes on private styles.\n", tubes);
+            tinted_camera = TubeCamera(); LQ_SceneTintFluorescents(&map_scene, tinted_camera);
+            const void *samples; int width, length, rate;
+            tube_track.count = 0; tube_offset = 0;
+            if (tubes && LQ_SoundSamples(TUBE_SOUND, &samples, &width, &length, &rate))
+                LQ_TubeTrackFromSound(&tube_track, samples, width, (uint32_t)length, (uint32_t)rate);
+            if (tubes) Con_DPrintf("Luminous fluorescents: %u failing tubes on private styles, %s.\n", tubes,
+                tube_track.count ? "sputtering with " TUBE_SOUND : "on their own timelines");
             double started = Sys_FloatTime();
             lq_bounce_tracer tracer = LQ_GPUBounceTracer(gpu);
             if (LQ_SceneComputeBounceTraced(&map_scene, 64, LQ_JobsRunRange, &tracer, error, sizeof(error)))
@@ -271,14 +301,17 @@ static void LuminousLights(void)
         light->color_strength[3] *= gain;
         for (int k = 0; k < 3; ++k) light->position_radius[k] += offset[k];
     }
-    /* Fluorescent tubes flicker with the mains as the chosen camera records it. */
-    uint32_t camera = (uint32_t)Cvar_VariableValue("r_fluorescent");
+    /* Fluorescent tubes flicker with the mains as the chosen camera records it,
+     * and a failing tube's strike flash throws its light twice as far. */
+    uint32_t camera = TubeCamera();
+    const lq_tube_track *track = TubeTrack();
     for (uint32_t i = 0; i < LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS; ++i) {
         lq_runtime_light *light = &runtime_lights[i];
         float rgb[3];
         if (light->position_radius[3] <= 0 ||
-            !LQ_FluorescentGain(&map_scene, light->source_index, cl.time, camera, rgb)) continue;
+            !LQ_FluorescentGain(&map_scene, track, light->source_index, cl.time, camera, rgb)) continue;
         for (int k = 0; k < 3; ++k) light->color_strength[k] *= rgb[k];
+        LQ_FluorescentReach(&map_scene, track, light);
     }
     lq_runtime_light selected[LQ_MAX_DYNAMIC_LIGHTS], candidate;
     float scores[LQ_MAX_DYNAMIC_LIGHTS]; uint32_t dynamic = 0;
@@ -336,7 +369,7 @@ static void CaptureView(void)
     view.horizontal_fov = atanf(r_refdef.horizontalFieldOfView * 0.5f) * 360.0f / (float)M_PI;
     view.time = (float)cl.time;
     for (int i = 0; i < 256; ++i) view.lightstyles[i] = d_lightstylevalue[i] / 256.0f;
-    if (luminous && direct_frame) LQ_FluorescentStyles(&map_scene, cl.time, view.lightstyles);
+    if (luminous && direct_frame) LQ_FluorescentStyles(&map_scene, TubeTrack(), cl.time, view.lightstyles);
     view.viewport[0] = r_refdef.vrect.x; view.viewport[1] = r_refdef.vrect.y;
     view.viewport[2] = r_refdef.vrect.width; view.viewport[3] = r_refdef.vrect.height;
     if (direct_frame) { view.world_draws = world_draws; view.world_draw_count = map_scene.draw_count; }

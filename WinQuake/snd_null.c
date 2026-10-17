@@ -95,3 +95,12 @@ void S_LocalSound (char *s)
 {
 }
 
+qboolean LQ_SoundSamples(const char *name, const void **data, int *width, int *count, int *rate)
+{
+	return false;
+}
+
+qboolean LQ_StaticSoundClock(const char *name, double *position, qboolean *audible)
+{
+	return false;
+}

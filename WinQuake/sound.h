@@ -179,4 +179,13 @@ void S_AmbientOn (void);
 #ifdef LQ_SDL
 void SNDDMA_BeginPainting(void);
 int SNDDMA_GetSoundtime(void);
+int LQ_AudioSoundtime(void);
 #endif
+/* LuminousQuake: lights that follow a looping static sound. A loaded sound's
+ * mono samples, and where the first static channel playing it is heard now,
+ * in seconds into the sound; *audible is false while it is not being mixed. */
+qboolean LQ_SoundSamples(const char *name, const void **data, int *width, int *count, int *rate);
+qboolean LQ_StaticSoundClock(const char *name, double *position, qboolean *audible);
+/* LuminousQuake: sound travel through open air (snd_path.c). */
+void LQ_SoundPathsUpdate(vec3_t listener);
+int LQ_SoundPathDistance(vec3_t source, vec_t straight, vec_t *distance);

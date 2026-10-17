@@ -99,6 +99,13 @@ int SNDDMA_GetSoundtime(void)
     }
     return (int)elapsed;
 }
+/* The soundtime now, between S_Updates: frames the device has taken. */
+int LQ_AudioSoundtime(void)
+{
+    int frames;
+    SNDDMA_BeginPainting(); frames = (int)(frames_read - epoch); SNDDMA_Submit();
+    return frames;
+}
 void LQ_AudioFocus(qboolean focus)
 {
     audio_focus = focus;

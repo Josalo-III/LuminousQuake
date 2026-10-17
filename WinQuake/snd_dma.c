@@ -28,6 +28,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 void S_Play(void);
 void S_PlayVol(void);
 void S_SoundList(void);
+static void S_SoundPaths_f(void);
 void S_Update_();
 void S_StopAllSounds(qboolean clear);
 void S_StopAllSoundsC(void);
@@ -180,6 +181,7 @@ void S_Init (void)
 	Cmd_AddCommand("stopsound", S_StopAllSoundsC);
 	Cmd_AddCommand("soundlist", S_SoundList);
 	Cmd_AddCommand("soundinfo", S_SoundInfo_f);
+	Cmd_AddCommand("soundpaths", S_SoundPaths_f);
 
 	Cvar_RegisterVariable(&nosound);
 	Cvar_RegisterVariable(&volume);
@@ -397,13 +399,34 @@ channel_t *SND_PickChannel(int entnum, int entchannel)
 SND_Spatialize
 =================
 */
+/* LuminousQuake: past SND_TAIL_START units a sound fades no faster than a
+   line from SND_TAIL_GAIN there to silence at SND_TAIL_END, so steep static
+   sounds stay faintly audible a room away. Sounds that carry further keep id's
+   falloff. Distance is how far the sound travels through open air
+   (snd_path.c), so it bends round corners and fades on the way; a sound with
+   no open path, behind solid walls or closed doors, is silent. */
+#define SND_TAIL_START		300.0
+#define SND_TAIL_END		800.0
+#define SND_TAIL_GAIN		0.15
+
+static vec_t SND_DistanceGain(vec_t distance, vec_t dist_mult)
+{
+	vec_t gain = 1.0 - distance * dist_mult;
+	vec_t tail = SND_TAIL_GAIN * (SND_TAIL_END - distance) / (SND_TAIL_END - SND_TAIL_START);
+
+	if (dist_mult > 0 && tail > gain)
+		gain = tail;
+	return gain;
+}
+
+static qboolean snd_shut;	// the last spatialized sound had no open path
+
 void SND_Spatialize(channel_t *ch)
 {
     vec_t dot;
-    vec_t ldist, rdist, dist;
+    vec_t dist, gain;
     vec_t lscale, rscale, scale;
     vec3_t source_vec;
-	sfx_t *snd;
 
 // anything coming from the view entity will allways be full volume
 	if (ch->entnum == cl.viewentity)
@@ -415,10 +438,24 @@ void SND_Spatialize(channel_t *ch)
 
 // calculate stereo seperation and distance attenuation
 
-	snd = ch->sfx;
 	VectorSubtract(ch->origin, listener_origin, source_vec);
 	
-	dist = VectorNormalize(source_vec) * ch->dist_mult;
+	dist = VectorNormalize(source_vec);
+	gain = SND_DistanceGain(dist, ch->dist_mult);
+	snd_shut = false;
+	if (gain > 0 && ch->dist_mult > 0)
+	{
+		vec_t travelled;
+		int path = LQ_SoundPathDistance(ch->origin, dist, &travelled);
+
+		if (path < 0)
+		{
+			gain = 0;
+			snd_shut = true;
+		}
+		else if (path > 0 && travelled > dist)
+			gain = SND_DistanceGain(travelled, ch->dist_mult);
+	}
 	
 	dot = DotProduct(listener_right, source_vec);
 
@@ -434,12 +471,12 @@ void SND_Spatialize(channel_t *ch)
 	}
 
 // add in distance effect
-	scale = (1.0 - dist) * rscale;
+	scale = gain * rscale;
 	ch->rightvol = (int) (ch->master_vol * scale);
 	if (ch->rightvol < 0)
 		ch->rightvol = 0;
 
-	scale = (1.0 - dist) * lscale;
+	scale = gain * lscale;
 	ch->leftvol = (int) (ch->master_vol * scale);
 	if (ch->leftvol < 0)
 		ch->leftvol = 0;
@@ -483,8 +520,8 @@ void S_StartSound(int entnum, int entchannel, sfx_t *sfx, vec3_t origin, float f
 	target_chan->entchannel = entchannel;
 	SND_Spatialize(target_chan);
 
-	if (!target_chan->leftvol && !target_chan->rightvol)
-		return;		// not audible at all
+	if (!target_chan->leftvol && !target_chan->rightvol && !snd_shut)
+		return;		// not audible at all; a shut-off sound plays on silently
 
 // new channel
 	sc = S_LoadSound (sfx);
@@ -662,6 +699,69 @@ void S_StaticSound (sfx_t *sfx, vec3_t origin, float vol, float attenuation)
 }
 
 
+static sfx_t *LQ_KnownSound(const char *name)
+{
+	int		i;
+
+	for (i=0 ; known_sfx && i < num_sfx ; i++)
+		if (!Q_strcmp(known_sfx[i].name, name))
+			return &known_sfx[i];
+	return NULL;
+}
+
+qboolean LQ_SoundSamples(const char *name, const void **data, int *width, int *count, int *rate)
+{
+	sfx_t		*sfx;
+	sfxcache_t	*sc;
+
+	if (!sound_started || !shm || !(sfx = LQ_KnownSound(name)) || !(sc = S_LoadSound(sfx)) || sc->length <= 0)
+		return false;
+	*data = sc->data; *width = sc->width; *count = sc->length; *rate = sc->speed;
+	return true;
+}
+
+/* Every audible static channel of one sound mixes into the first audible one
+   (see S_Update), so that one's position is what is heard. It was mixed up to paintedtime;
+   the device has played up to the live soundtime. */
+qboolean LQ_StaticSoundClock(const char *name, double *position, qboolean *audible)
+{
+	sfx_t		*sfx;
+	sfxcache_t	*sc;
+	channel_t	*ch;
+	int		i, span;
+	double	playing;
+
+	if (!sound_started || !shm || !(sfx = LQ_KnownSound(name)))
+		return false;
+	ch = NULL;
+	for (i = MAX_DYNAMIC_CHANNELS + NUM_AMBIENTS ; i < total_channels ; i++)
+		if (channels[i].sfx == sfx)
+		{
+			if (!ch)
+				ch = &channels[i];
+			if (channels[i].leftvol || channels[i].rightvol)
+			{
+				ch = &channels[i];
+				break;
+			}
+		}
+	if (!ch || !(sc = Cache_Check(&sfx->cache)) || sc->length <= 0)
+		return false;
+#ifdef LQ_SDL
+	playing = ch->pos - (double)(paintedtime - LQ_AudioSoundtime());
+#else
+	playing = ch->pos - (double)(paintedtime - soundtime);
+#endif
+	span = sc->length - (sc->loopstart > 0 ? sc->loopstart : 0);
+	if (span <= 0)
+		return false;
+	while (playing < sc->length - span)
+		playing += span;
+	*position = playing / sc->speed;
+	*audible = ch->leftvol || ch->rightvol;
+	return true;
+}
+
 //=============================================================================
 
 /*
@@ -740,6 +840,7 @@ void S_Update(vec3_t origin, vec3_t forward, vec3_t right, vec3_t up)
 	VectorCopy(forward, listener_forward);
 	VectorCopy(right, listener_right);
 	VectorCopy(up, listener_up);
+	LQ_SoundPathsUpdate(listener_origin);
 	
 // update general area ambient sound sources
 	S_UpdateAmbientSounds ();
@@ -1029,3 +1130,27 @@ void S_EndPrecaching (void)
 {
 }
 
+
+/* LuminousQuake: each sound within range, how far it is in a straight line
+   and through open air, and how loud that makes it. */
+static void S_SoundPaths_f(void)
+{
+	int			i, path;
+	channel_t	*ch;
+	vec3_t		delta;
+	vec_t		straight, travelled;
+
+	for (i=NUM_AMBIENTS, ch=channels+NUM_AMBIENTS ; i<total_channels ; i++, ch++)
+	{
+		if (!ch->sfx || ch->dist_mult <= 0)
+			continue;
+		VectorSubtract (ch->origin, listener_origin, delta);
+		straight = Length (delta);
+		if (SND_DistanceGain (straight, ch->dist_mult) <= 0)
+			continue;
+		path = LQ_SoundPathDistance (ch->origin, straight, &travelled);
+		Con_Printf ("%-24s %5.0f straight, %s %3i/%3i\n", ch->sfx->name, straight,
+			path < 0 ? "  shut off" : path > 0 ? va("%5.0f path", travelled) : "  no paths",
+			ch->leftvol, ch->rightvol);
+	}
+}

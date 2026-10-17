@@ -51,10 +51,7 @@ void ResampleSfx (sfx_t *sfx, int inrate, int inwidth, byte *data)
 		sc->loopstart = sc->loopstart / stepscale;
 
 	sc->speed = shm->speed;
-	if (loadas8bit.value)
-		sc->width = 1;
-	else
-		sc->width = inwidth;
+	sc->width = 2;	// LuminousQuake: everything mixes at 16 bits; loadas8bit is ignored
 	sc->stereo = 0;
 
 // resample / decimate to the current source rate
@@ -134,7 +131,7 @@ sfxcache_t *S_LoadSound (sfx_t *s)
 	stepscale = (float)info.rate / shm->speed;	
 	len = info.samples / stepscale;
 
-	len = len * info.width * info.channels;
+	len = len * 2 * info.channels;	// resampled to 16 bits
 
 	sc = Cache_Alloc ( &s->cache, len + sizeof(sfxcache_t), s->name);
 	if (!sc)

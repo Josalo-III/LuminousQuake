@@ -8,6 +8,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #c); return 1; } } while (0)
 static int EffectTest(void)
 {
@@ -464,19 +467,19 @@ static int FluorescentTest(void)
     CHECK(sources[1].style == LQ_FLUORESCENT_STYLE_BASE && sources[2].style == 33);
     CHECK(sources[3].style == LQ_FLUORESCENT_STYLE_BASE && sources[4].style == 0);
     float tube[3], beam[3];
-    CHECK(LQ_FluorescentGain(&scene, 1, 2.5, LQ_CAMERA_FILM, tube) && LQ_FluorescentGain(&scene, 3, 2.5, LQ_CAMERA_FILM, beam));
+    CHECK(LQ_FluorescentGain(&scene, NULL, 1, 2.5, LQ_CAMERA_FILM, tube) && LQ_FluorescentGain(&scene, NULL, 3, 2.5, LQ_CAMERA_FILM, beam));
     CHECK(!memcmp(tube, beam, sizeof(tube)));
     float rgb[3], low[3] = {9,9,9}, high[3] = {0}, step = 0;
-    CHECK(LQ_FluorescentGain(&scene, 0, 3.7, LQ_CAMERA_EYE, rgb) && rgb[0] == 1 && rgb[1] == 1 && rgb[2] == 1);
+    CHECK(LQ_FluorescentGain(&scene, NULL, 0, 3.7, LQ_CAMERA_EYE, rgb) && rgb[0] == 1 && rgb[1] == 1 && rgb[2] == 1);
     /* NTSC's 1/60 shutter spans whole 60 and 120 Hz cycles: in sync, steady. */
     for (double t = 0; t < 20; t += 0.0137) {
-        CHECK(LQ_FluorescentGain(&scene, 0, t, LQ_CAMERA_NTSC, rgb));
+        CHECK(LQ_FluorescentGain(&scene, NULL, 0, t, LQ_CAMERA_NTSC, rgb));
         for (int k = 0; k < 3; ++k) CHECK(fabsf(rgb[k] - 1) < 0.002f);
     }
     /* Film breathes slowly: a few percent, blue deepest, smooth frame to frame. */
     float last = 0;
     for (double t = 0; t < 30; t += 0.01) {
-        CHECK(LQ_FluorescentGain(&scene, 0, t, LQ_CAMERA_FILM, rgb));
+        CHECK(LQ_FluorescentGain(&scene, NULL, 0, t, LQ_CAMERA_FILM, rgb));
         for (int k = 0; k < 3; ++k) { low[k] = fminf(low[k], rgb[k]); high[k] = fmaxf(high[k], rgb[k]); }
         if (t > 0) step = fmaxf(step, fabsf(rgb[1] - last));
         last = rgb[1];
@@ -487,15 +490,15 @@ static int FluorescentTest(void)
     /* A fast shutter keeps far more of the 120 Hz term. */
     float fast_low = 9, fast_high = 0;
     for (double t = 0; t < 30; t += 0.01) {
-        LQ_FluorescentGain(&scene, 0, t, LQ_CAMERA_NTSC_FAST, rgb);
+        LQ_FluorescentGain(&scene, NULL, 0, t, LQ_CAMERA_NTSC_FAST, rgb);
         fast_low = fminf(fast_low, rgb[1]); fast_high = fmaxf(fast_high, rgb[1]);
     }
     CHECK(fast_high - fast_low > 3 * (high[1] - low[1]));
     /* PAL's 5 Hz flutter changes far faster than film's breathing. */
     float pal_step = 0;
     for (double t = 0; t < 5; t += 0.01) {
-        LQ_FluorescentGain(&scene, 0, t, LQ_CAMERA_PAL, rgb); float before = rgb[1];
-        LQ_FluorescentGain(&scene, 0, t + 0.05, LQ_CAMERA_PAL, rgb); pal_step = fmaxf(pal_step, fabsf(rgb[1] - before));
+        LQ_FluorescentGain(&scene, NULL, 0, t, LQ_CAMERA_PAL, rgb); float before = rgb[1];
+        LQ_FluorescentGain(&scene, NULL, 0, t + 0.05, LQ_CAMERA_PAL, rgb); pal_step = fmaxf(pal_step, fabsf(rgb[1] - before));
     }
     CHECK(pal_step > 0.03f);
     /* A failing tube is mostly lit, drops out a few percent of the time, glows
@@ -503,16 +506,85 @@ static int FluorescentTest(void)
     uint32_t dark = 0, glow = 0, over = 0, samples = 0;
     for (double t = 0; t < 600; t += 0.005, ++samples) {
         float styles[256] = {0}, again[256] = {0};
-        LQ_FluorescentStyles(&scene, t, styles); LQ_FluorescentStyles(&scene, t, again);
+        LQ_FluorescentStyles(&scene, NULL, t, styles); LQ_FluorescentStyles(&scene, NULL, t, again);
         float v = styles[LQ_FLUORESCENT_STYLE_BASE];
         CHECK(v == again[LQ_FLUORESCENT_STYLE_BASE] && v >= 0 && v < 1.6f && styles[33] == 0);
         dark += v == 0; glow += v > 0 && v < 0.1f; over += v > 1.2f;
-        if (v > 0 && v < 0.1f) { CHECK(LQ_FluorescentGain(&scene, 1, t, LQ_CAMERA_EYE, rgb) && rgb[0] > rgb[2] * 4); }
+        if (v > 0 && v < 0.1f) { CHECK(LQ_FluorescentGain(&scene, NULL, 1, t, LQ_CAMERA_EYE, rgb) && rgb[0] > rgb[2] * 4); }
     }
     CHECK(dark > samples / 100 && dark < samples / 10);
     CHECK(glow > samples / 200 && over > samples / 500);
-    CHECK(!LQ_FluorescentGain(&scene, 4, 0, LQ_CAMERA_FILM, rgb) && !LQ_FluorescentGain(&scene, 5, 0, LQ_CAMERA_FILM, rgb));
-    puts("PASS fluorescent tubes: private failing-tube styles, camera-synced mains flicker and phosphor colour, failure timeline");
+    CHECK(!LQ_FluorescentGain(&scene, NULL, 4, 0, LQ_CAMERA_FILM, rgb) && !LQ_FluorescentGain(&scene, NULL, 5, 0, LQ_CAMERA_FILM, rgb));
+    /* The mercury lines have no persistence, so a fast shutter sees green spike
+     * with blue: more of green's ripple than its phosphor alone would keep. */
+    float spike_low[3] = {9,9,9}, spike_high[3] = {0};
+    for (double t = 0; t < 30; t += 0.01) {
+        LQ_FluorescentGain(&scene, NULL, 0, t, LQ_CAMERA_NTSC_FAST, rgb);
+        for (int k = 0; k < 3; ++k) { spike_low[k] = fminf(spike_low[k], rgb[k]); spike_high[k] = fmaxf(spike_high[k], rgb[k]); }
+    }
+    CHECK(spike_high[1] - spike_low[1] > 0.62f * (spike_high[2] - spike_low[2]));
+    CHECK(spike_high[0] - spike_low[0] < spike_high[1] - spike_low[1]);
+    /* Mercury's green as each camera records it, in the tube's fixture too and
+     * in its bounce; luminance and other lights unchanged. */
+    float green_over_red[3];
+    for (uint32_t camera = 0; camera < 3; ++camera) {
+        lq_light_source tinted[5]; memcpy(tinted, sources, sizeof(tinted));
+        lq_scene tinting = scene; tinting.light_sources = tinted;
+        uint32_t chosen = camera == 0 ? LQ_CAMERA_EYE : camera == 1 ? LQ_CAMERA_PAL : LQ_CAMERA_FILM;
+        LQ_SceneTintFluorescents(&tinting, chosen);
+        const float *c = tinted[0].color;
+        CHECK(c[1] == 1 && c[0] < c[2] && c[2] < 1);
+        float before = sources[0].output_scale, after = tinted[0].output_scale;
+        CHECK(fabsf((0.2126f*c[0] + 0.7152f*c[1] + 0.0722f*c[2]) * after - before) < 1e-4f);
+        CHECK(!memcmp(tinted[1].color, c, sizeof(tinted[1].color)) && !memcmp(tinted[3].color, c, sizeof(tinted[3].color)));
+        CHECK(tinted[4].color[0] == 1 && tinted[4].color[1] == 1 && tinted[4].output_scale == sources[4].output_scale);
+        green_over_red[camera] = c[1] / c[0];
+    }
+    CHECK(green_over_red[0] < green_over_red[1] && green_over_red[1] < green_over_red[2] && green_over_red[2] > 1.3f);
+    CHECK(LQ_FluorescentCast(LQ_CAMERA_NTSC) == LQ_FluorescentCast(LQ_CAMERA_PAL) &&
+          LQ_FluorescentCast(LQ_CAMERA_FILM) != LQ_FluorescentCast(LQ_CAMERA_PAL));
+    /* With its sound, the failing tube sputters with the crackle: steady over
+     * the hum, out through each short burst, overshooting bluish as it holds,
+     * flashing bluish through the one big burst, and the same each time round. */
+    static signed char buzz[2 * 11025];
+    for (uint32_t i = 0; i < sizeof(buzz); ++i) {
+        double t = i / 11025.0, hum = 6 * sin(2 * M_PI * 120 * t);
+        int crackle = (t >= 0.3 && t < 0.35) || (t >= 0.6 && t < 0.65) || (t >= 1.0 && t < 1.2);
+        buzz[i] = (signed char)(crackle ? (i * 2654435761u >> 24) - 128 : hum);
+    }
+    static lq_tube_track track;
+    CHECK(LQ_TubeTrackFromSound(&track, buzz, 1, sizeof(buzz), 11025) == 400);
+    CHECK(!LQ_TubeTrackFromSound(&track, buzz, 3, sizeof(buzz), 11025) && !track.count);
+    LQ_TubeTrackFromSound(&track, buzz, 1, sizeof(buzz), 11025);
+    float steady[256] = {0}, out[256] = {0}, after[256] = {0}, flash[256] = {0}, again[256] = {0}, beam_rgb[3];
+    float normal = 264.0f / 256;
+    track.position = 1.6; LQ_FluorescentStyles(&scene, &track, 0, steady);
+    track.position = 0.33; LQ_FluorescentStyles(&scene, &track, 0, out);
+    track.position = 0.373; LQ_FluorescentStyles(&scene, &track, 0, after);
+    CHECK(LQ_FluorescentGain(&scene, &track, 1, 0, LQ_CAMERA_EYE, rgb) && rgb[2] > rgb[0]);
+    CHECK(LQ_FluorescentGain(&scene, &track, 3, 0, LQ_CAMERA_EYE, beam_rgb) && !memcmp(rgb, beam_rgb, sizeof(rgb)));
+    track.position = 2.373; LQ_FluorescentStyles(&scene, &track, 0, again);
+    CHECK(fabsf(steady[LQ_FLUORESCENT_STYLE_BASE] - normal) < 1e-5f && out[LQ_FLUORESCENT_STYLE_BASE] < 0.1f);
+    CHECK(after[LQ_FLUORESCENT_STYLE_BASE] > 1.1f * normal && after[LQ_FLUORESCENT_STYLE_BASE] < 1.6f);
+    CHECK(fabsf(again[LQ_FLUORESCENT_STYLE_BASE] - after[LQ_FLUORESCENT_STYLE_BASE]) < 1e-4f);
+    track.position = 0.63; LQ_FluorescentStyles(&scene, &track, 0, out);
+    CHECK(out[LQ_FLUORESCENT_STYLE_BASE] < 0.1f);
+    track.position = 1.1; LQ_FluorescentStyles(&scene, &track, 0, flash);
+    CHECK(flash[LQ_FLUORESCENT_STYLE_BASE] > 1.5f * normal && flash[LQ_FLUORESCENT_STYLE_BASE] <= 2 * normal + 1e-5f);
+    CHECK(LQ_FluorescentGain(&scene, &track, 1, 0, LQ_CAMERA_EYE, rgb) && rgb[2] > 1.4f * rgb[0]);
+    /* Through the flash the tube and its fixture throw their light twice as far. */
+    for (uint32_t index = 1; index <= 3; index += 2) {
+        lq_runtime_light light; memset(&light, 0, sizeof(light));
+        light.source_index = index; light.falloff[0] = sources[index].intensity;
+        float range = light.position_radius[3] = LQ_LightSourceRange(&sources[index]);
+        CHECK(range > 0 && LQ_FluorescentReach(&scene, &track, &light));
+        CHECK(fabsf(light.position_radius[3] - 2 * range) < 1e-3f * range && light.falloff[0] > sources[index].intensity);
+    }
+    lq_runtime_light plain; memset(&plain, 0, sizeof(plain)); plain.source_index = 0;
+    CHECK(!LQ_FluorescentReach(&scene, &track, &plain));
+    track.position = 1.6;
+    plain.source_index = 1; CHECK(!LQ_FluorescentReach(&scene, &track, &plain));
+    puts("PASS fluorescent tubes: private failing-tube styles, camera-synced mains flicker and phosphor colour, mercury lines and cast, failure timeline, sound-synced sputter and strike flash");
     return 0;
 }
 int main(void)

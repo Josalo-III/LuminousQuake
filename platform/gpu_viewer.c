@@ -813,8 +813,8 @@ int LQ_GPUViewer(int argc, char **argv)
     gpu = LQ_GPUCreate(window, 1, error, sizeof(error));
     if (!gpu) goto done;
     if (Has(argc, argv, "--smooth") && !LQ_GPUOptions(gpu, 1, 0, 1, error, sizeof(error))) goto done;
-    /* As in game: failing fluorescent tubes take private styles before bounce. */
-    if (luminous) LQ_SceneAssignFluorescentStyles(&scene);
+    /* As in game: failing fluorescent tubes take private styles, and tubes film's colour, before bounce. */
+    if (luminous) { LQ_SceneAssignFluorescentStyles(&scene); LQ_SceneTintFluorescents(&scene, LQ_CAMERA_FILM); }
     if (luminous && compare) {
         LQ_JobsRegister();
         result = CompareBounce(&scene, (uint32_t)rays, gpu, error, sizeof(error)) ? 0 : 1;
