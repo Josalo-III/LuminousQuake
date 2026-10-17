@@ -473,6 +473,7 @@ if (bits&(1<<i))
 
 	if ( bits & U_NOLERP )
 		ent->forcelink = true;
+	ent->movestep = (bits & U_NOLERP) != 0;
 
 	if ( forcelink )
 	{	// didn't have an update last message

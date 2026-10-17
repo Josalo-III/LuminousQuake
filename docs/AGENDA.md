@@ -41,10 +41,28 @@ QuakeSpasm, ironwail and DarkPlaces all treat this as the baseline.
 
 ### 2. Frame blending for models
 
-Already in Phase 4 of the plan ("animation interpolation"), and still not in
-`renderer/`. Blend between MDL poses and smooth moving brushes and entity
-origins, so monsters don't step at 72 Hz and above. Classic and Luminous both
-use it; Software keeps the original stepping unless we decide otherwise.
+**Done October 17, 2026** for Classic GPU and Luminous (`platform/gpu_entities.c`),
+after FitzQuake:
+- `r_lerpmodels`: MDL poses blend over each 0.1 s think, or a grouped
+  animation's own interval. Fire on FitzQuake's no-blend list (flames,
+  braziers, long torches) reshapes rather than moves between poses (74–83% of
+  its vertex motion is not an overall stretch), so its mesh keeps the authored
+  poses at 10 Hz; interpolated flame shapes were tried and pulled. In Luminous
+  the torch light's strength steps at 20 Hz: a third of the way to the next
+  pose's value through the first half of the loop, two thirds through the
+  second. Its position, and so its shadow, stays at 10 Hz. Smoother flames need
+  designed intermediate poses. The saw and fist view models stay stepped.
+- `r_lerpmove`: entities the server marks `U_NOLERP` (`MOVETYPE_STEP`
+  monsters) ease toward the server's latest origin and angles over 0.1 s, one
+  step behind; a jump over 100 units snaps as a teleport. This also removes
+  NetQuake's step-back between messages during demo playback.
+- In demo1, the pose blend took in-between values on about 75% of a monster's
+  frames, and its drawn position moved about 0.3 units a frame where the
+  server's jumped 2.5 and stepped back.
+
+Video Options' **Smooth animation** turns both on or off. Still open:
+Software keeps the original stepping; moving brushes (doors, lifts) already
+interpolate between messages and are unchanged.
 
 ### 3. Luminous colour pipeline: sRGB, 32-bit and HDR
 

@@ -238,6 +238,17 @@ liquid (or, underwater, the air) leaves in view; no re-vised maps are needed.
 In Luminous, a translucent liquid is lit like any surface instead of drawn full-bright,
 catching light in proportion to its opacity; the rest passes through, so faces under it
 receive (1 − opacity) of light from lights on the other side of the surface.
+Video Options' **Smooth animation** (on by default) sets both of FitzQuake's
+settings: Classic GPU and Luminous blend model poses (`r_lerpmodels`) and ease
+monsters' steps (`r_lerpmove`); each can also be set alone in the console. QuakeC
+animates and moves monsters in 0.1 s thinks; a model now blends from its last pose
+to the next over that step, and a monster glides between its step positions,
+drawn up to one step behind. Fire (flames, braziers, long torches) changes
+shape between poses rather than moving, so its mesh keeps the authored poses at
+10 Hz. In Luminous its light's strength steps at 20 Hz: each pose's value, then
+an in-between value a third of the way to the next pose's through the first half
+of the loop and two thirds through the second (1, 1.33, 2, 2.33, 3, 3.33, 4, 4.67,
+5, 5.67, 6, 6.67). The saw and fist view models stay stepped. Gameplay is unchanged, and Software keeps the original stepping.
 Unsupported GPU settings report a fallback. Apply activates the staged settings and saves them in
 the LuminousQuake profile. Resolution presets include 16:9 and 16:10 widescreen.
 The view uses square pixels so widescreen geometry keeps its proportions.

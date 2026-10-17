@@ -21,6 +21,24 @@ static struct { const void *model; uint32_t offset; int translated; byte colors[
 static uint32_t owned_start, particle_material;
 static int luminous_frame, solid_particles;
 static uint8_t particle_pixels[256];
+/* Frame blending and step easing, after FitzQuake (r_lerpmodels, r_lerpmove).
+ * QuakeC animates and moves monsters in 0.1 s thinks. A model blends from its
+ * previous pose to the current one over the pose's interval, and an entity the
+ * server marks U_NOLERP (MOVETYPE_STEP) eases from where it was shown to its
+ * new origin and angles over 0.1 s, drawing it up to one step behind. Fire
+ * keeps its authored poses; only its light steps between them (see FireLevel). */
+#define LERP_STEP 0.1
+#define LERP_TELEPORT 100.0f /* a larger step is a teleport and snaps */
+#define LERP_STALE 0.5 /* an entity unseen this long starts afresh */
+typedef struct {
+    const model_t *model;
+    int pose, previous_pose; /* offsets of resolved poses in the model's data */
+    double pose_start, move_start, seen;
+    float pose_interval;
+    vec3_t origin_from, origin_to, angles_from, angles_to;
+    qboolean moving;
+} lerp_state;
+static lerp_state lerp_states[MAX_EDICTS + MAX_STATIC_ENTITIES + 1];
 static void Reserve(uint32_t count)
 {
     uint32_t need = frame.vertex_count+count;
@@ -71,7 +89,7 @@ void LQ_EntitiesReset(void)
     free(vertices); free(indices); free(draws);
     vertices = NULL; indices = NULL; draws = NULL;
     vertex_capacity = draw_capacity = owned_start = 0;
-    memset(&frame, 0, sizeof(frame)); memset(keys, 0, sizeof(keys));
+    memset(&frame, 0, sizeof(frame)); memset(keys, 0, sizeof(keys)); memset(lerp_states, 0, sizeof(lerp_states));
 }
 void LQ_EntitiesBegin(const lq_scene *world)
 {
@@ -93,14 +111,32 @@ const lq_frame *LQ_EntitiesFrame(void)
     frame.vertices = vertices; frame.indices = indices; frame.draws = draws; frame.materials = materials;
     frame.index_count = frame.vertex_count; return &frame;
 }
-static int GroupFrame(const float *intervals, int count, double time)
+/* The member of a timed group shown at `time`, and how far through its
+ * interval that is (0 to 1). */
+static int GroupPhase(const float *intervals, int count, double time, float *fraction)
 {
     if (count < 1 || !isfinite(intervals[count-1]) || intervals[count-1] <= 0)
         Sys_Error("Invalid GPU animation interval");
     float target = fmod(fmax(time, 0), intervals[count-1]);
     int i;
     for (i = 0; i < count-1 && target >= intervals[i]; ++i) {}
+    float start = i ? intervals[i-1] : 0, length = intervals[i] - start;
+    *fraction = length > 0 ? fminf(fmaxf((target - start) / length, 0), 1) : 0;
     return i;
+}
+static int GroupFrame(const float *intervals, int count, double time)
+{ float fraction; return GroupPhase(intervals, count, time, &fraction); }
+/* Fire (flames, braziers, torches) changes shape between poses rather than
+ * moving, so its mesh is drawn at the authored poses only. With r_lerpmodels
+ * its light's strength steps at 20 Hz: each pose's value for the first half of
+ * the pose, then an in-between value for the second. The in-between is biased
+ * toward the loop's ends: a third of the way to the next pose's value through
+ * the first half of the loop, two thirds through the second. A six-pose loop
+ * runs 1, 1.33, 2, 2.33, 3, 3.33, 4, 4.67, 5, 5.67, 6, 6.67. */
+static float FireLevel(int member, int count, float fraction)
+{
+    if (Cvar_VariableValue("r_lerpmodels") == 0 || fraction < 0.5f || count < 2) return 0;
+    return member < count * 0.5f ? 1.0f / 3 : 2.0f / 3;
 }
 static void Basis(entity_t *e, vec3_t forward, vec3_t right, vec3_t up)
 {
@@ -130,11 +166,13 @@ static double FlameTime(const entity_t *e)
     for (int i = 0; i < 3; ++i) { h ^= (uint32_t)(int32_t)floorf(e->origin[i] + 0.5f); h *= 16777619u; }
     return cl.time + (h >> 8) / (double)(1u << 24) * 8.0;
 }
-/* Pose-group index and the poses of e's current frame. */
-static int FlamePoses(entity_t *e, aliashdr_t *header, trivertx_t *poses[FLAME_POSES], int *count)
+/* Pose-group index and the poses of e's current frame, and how far through
+ * that pose's interval the flame is. */
+static int FlamePoses(entity_t *e, aliashdr_t *header, trivertx_t *poses[FLAME_POSES], int *count, float *fraction)
 {
     mdl_t *model = (mdl_t *)((byte *)header+header->model);
     int pose = e->frame >= 0 && e->frame < model->numframes ? e->frame : 0;
+    *fraction = 0;
     if (header->frames[pose].type != ALIAS_GROUP) {
         *count = 1; poses[0] = (trivertx_t *)((byte *)header+header->frames[pose].frame);
         return 0;
@@ -142,7 +180,7 @@ static int FlamePoses(entity_t *e, aliashdr_t *header, trivertx_t *poses[FLAME_P
     maliasgroup_t *g = (maliasgroup_t *)((byte *)header+header->frames[pose].frame);
     *count = g->numframes < FLAME_POSES ? g->numframes : FLAME_POSES;
     for (int i = 0; i < *count; ++i) poses[i] = (trivertx_t *)((byte *)header+g->frames[i].frame);
-    return GroupFrame((float *)((byte *)header+g->intervals), g->numframes, FlameTime(e)) % *count;
+    return GroupPhase((float *)((byte *)header+g->intervals), g->numframes, FlameTime(e), fraction) % *count;
 }
 static const flame_curve *FlameCurve(entity_t *e, aliashdr_t *header, trivertx_t *poses[FLAME_POSES], int count)
 {
@@ -210,17 +248,68 @@ int LQ_FlameLight(const float origin[3], float *gain, float offset[3])
         if (!IsFlame(e->model) || fabsf(e->origin[0]-origin[0]) > 1 ||
             fabsf(e->origin[1]-origin[1]) > 1 || fabsf(e->origin[2]-origin[2]) > 1) continue;
         aliashdr_t *header = Mod_Extradata(e->model);
-        trivertx_t *poses[FLAME_POSES]; int count;
-        int f = FlamePoses(e, header, poses, &count);
+        trivertx_t *poses[FLAME_POSES]; int count; float fraction;
+        int f = FlamePoses(e, header, poses, &count, &fraction);
         const flame_curve *curve = FlameCurve(e, header, poses, count);
         if (!curve) return 0;
         vec3_t forward, right, up; Basis(e, forward, right, up);
         const float *o = curve->offset[f];
         for (int k = 0; k < 3; ++k) offset[k] = forward[k]*o[0]-right[k]*o[1]+up[k]*o[2];
-        *gain = curve->gain[f];
+        /* Strength steps with the flame's shape; the position stays at the
+         * authored pose, so the shadow is redrawn only at 10 Hz. */
+        float level = FireLevel(f, count, fraction);
+        *gain = curve->gain[f] + (curve->gain[(f + 1) % count] - curve->gain[f]) * level;
         return 1;
     }
     return 0;
+}
+static lerp_state *LerpState(const entity_t *e)
+{
+    if (e >= cl_entities && e < cl_entities + MAX_EDICTS) return &lerp_states[e - cl_entities];
+    if (e >= cl_static_entities && e < cl_static_entities + MAX_STATIC_ENTITIES)
+        return &lerp_states[MAX_EDICTS + (e - cl_static_entities)];
+    if (e == &cl.viewent) return &lerp_states[MAX_EDICTS + MAX_STATIC_ENTITIES];
+    return NULL; /* temporary entities (beams) are rebuilt every frame */
+}
+/* FitzQuake's r_nolerp_list: fire and two view models whose loops are
+ * drawn stepped. */
+enum { LERP_BLEND, LERP_STEPPED, LERP_FIRE };
+static int LerpKind(const model_t *model)
+{
+    static const char *const fire[] = {"progs/flame.mdl", "progs/flame2.mdl", "progs/braztall.mdl",
+        "progs/brazshrt.mdl", "progs/longtrch.mdl", "progs/flame_pyre.mdl", "progs/h2stuff/newfire.mdl"};
+    for (size_t i = 0; i < sizeof(fire) / sizeof(fire[0]); ++i) if (!strcmp(model->name, fire[i])) return LERP_FIRE;
+    if (!strcmp(model->name, "progs/v_saw.mdl") || !strcmp(model->name, "progs/v_xfist.mdl")) return LERP_STEPPED;
+    return LERP_BLEND;
+}
+static float AngleLerp(float from, float to, float f)
+{
+    float delta = fmodf(to - from, 360.0f);
+    if (delta > 180) delta -= 360;
+    if (delta < -180) delta += 360;
+    return from + delta * f;
+}
+/* Where a step-moving entity is shown now. Its target is the server's latest
+ * placement: after a U_NOLERP update the original client snaps there and, on
+ * frames before the next message, interpolates from the message before, which
+ * steps it back. A new target starts a step from the previous one (not from
+ * where it is shown), as FitzQuake does, so a leap updated every frame runs
+ * at most a frame behind instead of trailing. */
+static void EasedPlacement(lerp_state *state, entity_t *e, vec3_t origin, vec3_t angles)
+{
+    float *target = e->msg_origins[0], *facing = e->msg_angles[0];
+    if (!VectorCompare(target, state->origin_to) || !VectorCompare(facing, state->angles_to)) {
+        vec3_t step; VectorSubtract(target, state->origin_to, step);
+        if (Length(step) > LERP_TELEPORT) { VectorCopy(target, state->origin_from); VectorCopy(facing, state->angles_from); }
+        else { VectorCopy(state->origin_to, state->origin_from); VectorCopy(state->angles_to, state->angles_from); }
+        VectorCopy(target, state->origin_to); VectorCopy(facing, state->angles_to);
+        state->move_start = cl.time; state->moving = true;
+    }
+    float f = state->moving ? (float)fmin(fmax((cl.time - state->move_start) / LERP_STEP, 0), 1) : 1;
+    for (int k = 0; k < 3; ++k) {
+        origin[k] = state->origin_from[k] + (state->origin_to[k] - state->origin_from[k]) * f;
+        angles[k] = AngleLerp(state->angles_from[k], state->angles_to[k], f);
+    }
 }
 static void Transform(const float local[3], entity_t *e, const float forward[3],
                       const float right[3], const float up[3], float output[3])
@@ -243,21 +332,51 @@ static void Alias(entity_t *e, int weapon)
                                 model->skinwidth, model->skinheight, translation);
     int pose = e->frame >= 0 && e->frame < model->numframes ? e->frame : 0;
     int offset = header->frames[pose].frame;
+    float interval = LERP_STEP;
     if (header->frames[pose].type == ALIAS_GROUP) {
         maliasgroup_t *g = (maliasgroup_t *)((byte *)header+offset);
+        const float *intervals = (float *)((byte *)header+g->intervals);
         double time = luminous_frame && IsFlame(e->model) ? FlameTime(e) : cl.time+e->syncbase;
-        offset = g->frames[GroupFrame((float *)((byte *)header+g->intervals), g->numframes, time)].frame;
+        int member = GroupFrame(intervals, g->numframes, time);
+        offset = g->frames[member].frame;
+        interval = member ? intervals[member] - intervals[member-1] : intervals[0];
+    }
+    /* Blend toward this pose, and ease a step-mover toward its new place. */
+    lerp_state *state = LerpState(e);
+    if (state && (state->model != e->model || cl.time - state->seen > LERP_STALE || cl.time < state->seen)) {
+        memset(state, 0, sizeof(*state));
+        state->model = e->model; state->pose = state->previous_pose = offset; state->pose_start = cl.time;
+        VectorCopy(e->origin, state->origin_to); VectorCopy(e->angles, state->angles_to);
+    }
+    if (state) state->seen = cl.time;
+    float blend = 1;
+    int previous = offset;
+    int kind = LerpKind(e->model);
+    if (state && Cvar_VariableValue("r_lerpmodels") != 0 && kind == LERP_BLEND) {
+        if (offset != state->pose) {
+            state->previous_pose = state->pose; state->pose = offset;
+            state->pose_start = cl.time; state->pose_interval = fmaxf(interval, 0.01f);
+        }
+        previous = state->previous_pose;
+        if (previous != offset) blend = (float)fmin(fmax((cl.time - state->pose_start) / state->pose_interval, 0), 1);
+    }
+    entity_t shown = *e;
+    if (state && e->movestep && Cvar_VariableValue("r_lerpmove") != 0) EasedPlacement(state, e, shown.origin, shown.angles);
+    else if (state) {
+        VectorCopy(e->origin, state->origin_to); VectorCopy(e->angles, state->angles_to);
+        state->moving = false;
     }
     trivertx_t *points = (trivertx_t *)((byte *)header+offset);
+    trivertx_t *from = (trivertx_t *)((byte *)header+previous);
     stvert_t *uv = (stvert_t *)((byte *)header+header->stverts);
     mtriangle_t *triangles = (mtriangle_t *)((byte *)header+header->triangles);
-    vec3_t forward, right, up; Basis(e, forward, right, up);
-    float ambient = R_LightPoint(e->origin), shade = ambient;
+    vec3_t forward, right, up; Basis(&shown, forward, right, up);
+    float ambient = R_LightPoint(shown.origin), shade = ambient;
     if (weapon && ambient < 24) ambient = shade = 24;
     for (int i = 0; i < MAX_DLIGHTS; ++i) {
         dlight_t *light = &cl_dlights[i];
         if (light->die < cl.time || !light->radius) continue;
-        vec3_t distance; VectorSubtract(e->origin, light->origin, distance);
+        vec3_t distance; VectorSubtract(shown.origin, light->origin, distance);
         ambient += fmaxf(light->radius-Length(distance), 0);
     }
     ambient = fminf(ambient, 128); shade = fminf(shade, 192-ambient);
@@ -277,12 +396,17 @@ static void Alias(entity_t *e, int weapon)
         (emissive || (e->model->flags & EF_ROCKET) ? LQ_SURFACE_NOSHADOW : 0));
     for (int i = 0; i < model->numtris; ++i) for (int j = 0; j < 3; ++j) {
         int p = triangles[i].vertindex[j];
-        if (p < 0 || p >= model->numverts || points[p].lightnormalindex >= 162) Sys_Error("Invalid GPU alias vertex");
+        if (p < 0 || p >= model->numverts || points[p].lightnormalindex >= 162 || from[p].lightnormalindex >= 162)
+            Sys_Error("Invalid GPU alias vertex");
         lq_vertex *v = &vertices[frame.vertex_count++]; memset(v, 0, sizeof(*v));
-        vec3_t local, normal;
-        for (int k = 0; k < 3; ++k) local[k] = points[p].v[k]*model->scale[k]+model->scale_origin[k];
-        Transform(local, e, forward, right, up, v->position);
-        const float *n = r_avertexnormals[points[p].lightnormalindex];
+        vec3_t local, normal, n;
+        const float *n0 = r_avertexnormals[from[p].lightnormalindex], *n1 = r_avertexnormals[points[p].lightnormalindex];
+        for (int k = 0; k < 3; ++k) {
+            local[k] = (from[p].v[k] + (points[p].v[k] - from[p].v[k]) * blend) * model->scale[k] + model->scale_origin[k];
+            n[k] = n0[k] + (n1[k] - n0[k]) * blend;
+        }
+        if (VectorNormalize(n) < 0.001f) VectorCopy(n1, n);
+        Transform(local, &shown, forward, right, up, v->position);
         for (int k = 0; k < 3; ++k) normal[k] = n[0]*forward[k]-n[1]*right[k]+n[2]*up[k];
         VectorCopy(normal,v->normal);
         float brightness = ambient+shade*fmaxf(normal[0], 0);

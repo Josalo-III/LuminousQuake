@@ -38,6 +38,10 @@ static cvar_t r_fluorescent = {"r_fluorescent", "1", true};
 /* Luminous particles: 0 flat flakes facing the view, 1 tumbling solids and
  * shaded droplets for blood, poison, lava and tar. */
 static cvar_t lq_particles = {"lq_particles", "0", true};
+/* FitzQuake's names: GPU renderers blend model poses, and ease monsters'
+ * 10 Hz steps, over each 0.1 s step. Software keeps the original stepping. */
+static cvar_t r_lerpmodels = {"r_lerpmodels", "1", true};
+static cvar_t r_lerpmove = {"r_lerpmove", "1", true};
 void M_Print(int x, int y, char *text);
 void M_DrawCharacter(int x, int y, int character);
 void M_Menu_Options_f(void);
@@ -248,6 +252,7 @@ void VID_Init(unsigned char *palette)
         Cvar_RegisterVariable(&gpu_mipmaps); Cvar_RegisterVariable(&gpu_anisotropy);
         Cvar_RegisterVariable(&r_wateralpha); Cvar_RegisterVariable(&r_fluorescent);
         Cvar_RegisterVariable(&lq_particles);
+        Cvar_RegisterVariable(&r_lerpmodels); Cvar_RegisterVariable(&r_lerpmove);
         Cmd_AddCommand("vid_restart", Restart);
         Cmd_AddCommand("vid_togglefullscreen", ToggleFullscreen);
         vid_menudrawfn = VideoMenuDraw;
@@ -378,6 +383,7 @@ static const int resolutions[][2] = {
 };
 static int video_cursor, video_choice, video_fullscreen, video_vsync;
 static int video_filter, video_msaa, video_mipmaps, video_anisotropy, video_water, video_tubes, video_particles;
+static int video_lerp;
 static const char *tube_cameras[] = {"eye", "film 24p", "NTSC 1/60", "NTSC 1/250", "PAL 25p"};
 static const float water_levels[] = {1, 0.8f, 0.6f, 0.4f};
 static const int anisotropy_levels[] = {1,2,4,8,16};
@@ -399,6 +405,7 @@ static void VideoMenuInit(void)
     for (int i = 0; i < 4; ++i) if (fabsf(r_wateralpha.value - water_levels[i]) < 0.01f) video_water = i;
     video_tubes = r_fluorescent.value >= 0 && r_fluorescent.value < 5 ? (int)r_fluorescent.value : 1;
     video_particles = lq_particles.value != 0;
+    video_lerp = r_lerpmodels.value != 0 || r_lerpmove.value != 0;
     video_msaa = gpu_msaa.value == 4 ? 2 : gpu_msaa.value == 2 ? 1 : 0;
     video_fov = Cvar_VariableValue("fov");
     if (!isfinite(video_fov) || video_fov < 10 || video_fov > 170) video_fov = 90;
@@ -407,21 +414,22 @@ static void VideoMenuInit(void)
 static void VideoMenuDraw(void)
 {
     VideoMenuInit();
-    M_Print(88, 16, "VIDEO OPTIONS");
-    M_Print(32, 32, "Resolution");
-    M_Print(168, 32, va("%d x %d", resolutions[video_choice][0], resolutions[video_choice][1]));
-    M_Print(32, 44, "Horizontal FOV"); M_Print(168, 44, va("%.0f deg", video_fov));
-    M_Print(32, 56, "Fullscreen"); M_Print(168, 56, video_fullscreen ? "on" : "off");
-    M_Print(32, 68, "VSync"); M_Print(168, 68, video_vsync ? "on" : "off");
-    M_Print(32, 80, "GPU filtering"); M_Print(168, 80, video_filter ? "smooth" : "crisp");
-    M_Print(32, 92, "GPU anti-alias"); M_Print(168, 92, video_msaa == 2 ? "4x MSAA" : video_msaa == 1 ? "2x MSAA" : "off");
-    M_Print(32, 104, "GPU mipmaps"); M_Print(168, 104, video_mipmaps == 2 ? "trilinear" : video_mipmaps == 1 ? "nearest level" : "off");
-    M_Print(32, 116, "GPU anisotropy"); M_Print(168, 116, video_anisotropy ? va("%dx", anisotropy_levels[video_anisotropy]) : "off");
-    M_Print(32, 128, "GPU water"); M_Print(168, 128, video_water ? va("%d%% opaque", (int)(water_levels[video_water] * 100 + 0.5f)) : "opaque");
-    M_Print(32, 140, "Tube camera"); M_Print(168, 140, tube_cameras[video_tubes]);
-    M_Print(32, 152, "3D particles"); M_Print(168, 152, video_particles ? "on" : "off");
+    M_Print(88, 4, "VIDEO OPTIONS");
+    M_Print(32, 20, "Resolution");
+    M_Print(168, 20, va("%d x %d", resolutions[video_choice][0], resolutions[video_choice][1]));
+    M_Print(32, 32, "Horizontal FOV"); M_Print(168, 32, va("%.0f deg", video_fov));
+    M_Print(32, 44, "Fullscreen"); M_Print(168, 44, video_fullscreen ? "on" : "off");
+    M_Print(32, 56, "VSync"); M_Print(168, 56, video_vsync ? "on" : "off");
+    M_Print(32, 68, "GPU filtering"); M_Print(168, 68, video_filter ? "smooth" : "crisp");
+    M_Print(32, 80, "GPU anti-alias"); M_Print(168, 80, video_msaa == 2 ? "4x MSAA" : video_msaa == 1 ? "2x MSAA" : "off");
+    M_Print(32, 92, "GPU mipmaps"); M_Print(168, 92, video_mipmaps == 2 ? "trilinear" : video_mipmaps == 1 ? "nearest level" : "off");
+    M_Print(32, 104, "GPU anisotropy"); M_Print(168, 104, video_anisotropy ? va("%dx", anisotropy_levels[video_anisotropy]) : "off");
+    M_Print(32, 116, "GPU water"); M_Print(168, 116, video_water ? va("%d%% opaque", (int)(water_levels[video_water] * 100 + 0.5f)) : "opaque");
+    M_Print(32, 128, "Tube camera"); M_Print(168, 128, tube_cameras[video_tubes]);
+    M_Print(32, 140, "3D particles"); M_Print(168, 140, video_particles ? "on" : "off");
+    M_Print(32, 152, "Smooth animation"); M_Print(168, 152, video_lerp ? "on" : "off");
     M_Print(32, 164, "Apply changes");
-    M_DrawCharacter(16, 32 + video_cursor * 12, 12 + ((int)(realtime * 4) & 1));
+    M_DrawCharacter(16, 20 + video_cursor * 12, 12 + ((int)(realtime * 4) & 1));
     M_Print(32, 178, va("Current: %u x %u", vid.width* (LQ_UIActive() ? LQ_UIScale() : 1), vid.height* (LQ_UIActive() ? LQ_UIScale() : 1)));
     if (video_applied)
         M_Print(32, 190, "Settings applied.");
@@ -433,6 +441,8 @@ static void VideoMenuDraw(void)
         M_Print(32, 190, "Luminous: how fluorescents film.");
     else if (video_cursor == 10)
         M_Print(32, 190, "Luminous: solid chunks, drops.");
+    else if (video_cursor == 11)
+        M_Print(32, 190, "GPU: blend poses, ease steps.");
     else M_Print(32, 190, "Left/right changes; Apply saves.");
 }
 static void VideoMenuKey(int key)
@@ -440,8 +450,8 @@ static void VideoMenuKey(int key)
     VideoMenuInit();
     video_applied = false;
     if (key == K_ESCAPE) { video_menu_active = false; M_Menu_Options_f(); return; }
-    if (key == K_UPARROW) { video_cursor = (video_cursor + 11) % 12; return; }
-    if (key == K_DOWNARROW) { video_cursor = (video_cursor + 1) % 12; return; }
+    if (key == K_UPARROW) { video_cursor = (video_cursor + 12) % 13; return; }
+    if (key == K_DOWNARROW) { video_cursor = (video_cursor + 1) % 13; return; }
     if (key != K_LEFTARROW && key != K_RIGHTARROW && key != K_ENTER) return;
     if (video_cursor == 0) {
         int count = sizeof(resolutions) / sizeof(resolutions[0]);
@@ -459,6 +469,7 @@ static void VideoMenuKey(int key)
     else if (video_cursor == 8) video_water = (video_water + (key == K_LEFTARROW ? 3 : 1)) % 4;
     else if (video_cursor == 9) video_tubes = (video_tubes + (key == K_LEFTARROW ? 4 : 1)) % 5;
     else if (video_cursor == 10) video_particles = !video_particles;
+    else if (video_cursor == 11) video_lerp = !video_lerp;
     else if (key == K_ENTER) {
         Cvar_SetValue("vid_width", resolutions[video_choice][0]);
         Cvar_SetValue("vid_height", resolutions[video_choice][1]);
@@ -469,6 +480,7 @@ static void VideoMenuKey(int key)
         Cvar_SetValue("gpu_anisotropy", anisotropy_levels[video_anisotropy]);
         Cvar_SetValue("r_fluorescent", video_tubes);
         Cvar_SetValue("lq_particles", video_particles);
+        Cvar_SetValue("r_lerpmodels", video_lerp); Cvar_SetValue("r_lerpmove", video_lerp);
         Cbuf_AddText("vid_restart\n");
         video_menu_active = false; video_applied = true;
     }

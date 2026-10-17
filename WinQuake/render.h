@@ -67,6 +67,8 @@ typedef struct entity_s
 	struct mnode_s			*topnode;		// for bmodels, first world node
 											//  that splits bmodel, or NULL if
 											//  not split
+	qboolean				movestep;		// LuminousQuake: the server sent U_NOLERP
+											//  (MOVETYPE_STEP); GPU renderers ease its steps
 } entity_t;
 
 // !!! if this is changed, it must be changed in asm_draw.h too !!!

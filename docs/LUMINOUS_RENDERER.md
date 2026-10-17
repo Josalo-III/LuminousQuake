@@ -101,9 +101,13 @@ comes from each light's falloff and from occlusion.
   below the flame therefore casts a shadow that moves on distant walls. Quake
   starts every static flame's cycle together, which would pulse a whole room
   in step, so Luminous gives each flame, model and light alike, its own phase
-  derived from its position. The light moves only when the pose changes (ten
-  times a second), so its shadow cube is redrawn at that rate rather than
-  every frame. Static bounce and probes keep the mean strength. Classic and
+  derived from its position. The flame mesh keeps its authored poses. With
+  Smooth animation (`r_lerpmodels`), the light's strength steps at 20 Hz:
+  each pose's value, then one a third of the way to the next pose's value
+  through the first half of the loop, two thirds through the second. The light
+  moves only when the authored pose changes (ten times a second), so its
+  shadow cube is redrawn at that rate rather than every frame. Static bounce
+  and probes keep the mean strength. Classic and
   Software keep the original lockstep animation.
 - **Fluorescent tubes** (`renderer/fluorescent.c`). `light_fluoro` and
   `light_fluorospark` (the base levels: e1m1 has 6 and 2, e4m1 17 and 4)
