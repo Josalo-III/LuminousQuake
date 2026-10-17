@@ -1,5 +1,8 @@
 # LuminousQuake implementation plan
 
+Priorities and their order are kept in the [agenda](docs/AGENDA.md), updated
+October 17, 2026. Each working session ends with a Not-yet-done list drawn from it.
+
 Status: Classic GPU feature implementation checkpoint reached, October 14, 2026.
 Phases 1–2 are implemented. Classic GPU now submits world, models, moving
 brushes, sprites and particles to the GPU, alongside the Software comparison
@@ -383,6 +386,6 @@ Decisions to resolve during implementation:
 - Final user-data layout, import behavior and Finder installation-selection UX.
 - Mac release signing/notarization and Windows/Linux distribution packaging.
 - Available Windows/Linux runtime testing and hosted CI setup.
-- Whether later goals include protocol extensions, larger maps, new gameplay, or additional game-format support.
+- Protocol and format scope, decided October 17, 2026: FitzQuake protocol 666, BSP2 and raised limits are in; Quake 2/3 and Half-Life formats are out; online play must reach at least the QuakeWorld standard. See the [agenda](docs/AGENDA.md).
 
 These decisions should follow small demonstrations and measured comparisons, rather than a wholesale engine merger.

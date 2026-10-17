@@ -31,6 +31,8 @@ The standalone viewer (`luminousquake-gpu --luminous`) has tuning flags. See
 [Luminous renderer notes](docs/LUMINOUS_RENDERER.md) for commands, evidence and
 next steps.
 
+Priorities, in order, are in the [agenda](docs/AGENDA.md).
+
 See [profiling method](docs/PROFILING.md) for the Instruments-led measurement
 method. CPU timing is opt-in: set `lq_profile 1`, then use `lq_profile_report` in the
 console. A timed command-line run can append `--profile-report`, for example

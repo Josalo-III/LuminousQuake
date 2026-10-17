@@ -9,3 +9,6 @@ __pycache__/
 /quake-shareware/
 /quake-retail/
 /QUAKE-SW.zip
+
+# Third-party engines kept for reading only.
+/reference/
