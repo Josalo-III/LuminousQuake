@@ -799,7 +799,7 @@ int LQ_SceneDynamicProbes(const lq_scene *s, const lq_runtime_light *lights, uin
 static void Serial(size_t count, size_t grain, lq_range_fn function, void *context)
 { (void)grain; function(context, 0, count); }
 /* Sky radiance in brightness units: the mean color the sky draws with (front
- * layer over back, colormap row 0 as the shader samples it), weighted by sky
+ * layer over back, colormap row 32: the palette colours Luminous draws), weighted by sky
  * face area. Brightness 128 shows a texture at its palette color, so a white
  * surface under an open sky of this radiance matches the sky's own color. */
 static void SkyLight(lq_scene *s)
@@ -826,7 +826,7 @@ static void SkyLight(lq_scene *s)
         for (uint32_t y = 0; y < image->height; ++y) for (uint32_t x = 0; x < half; ++x) {
             uint8_t index = image->pixels[(size_t)y * image->width + x];
             if (!index) index = image->pixels[(size_t)y * image->width + half + x];
-            for (int k = 0; k < 3; ++k) color[k] += s->colormap.pixels[index * 4 + k];
+            for (int k = 0; k < 3; ++k) color[k] += s->colormap.pixels[(32 * 256 + index) * 4 + k];
         }
         for (int k = 0; k < 3; ++k) sum[k] += color[k] / ((double)half * image->height * 255.0) * area;
         weight += area;

@@ -823,6 +823,7 @@ int LQ_GPUViewer(int argc, char **argv)
     if (!window) { snprintf(error, sizeof(error), "window: %s", SDL_GetError()); goto done; }
     gpu = LQ_GPUCreate(window, 1, error, sizeof(error));
     if (!gpu) goto done;
+    if (Has(argc, argv, "--smooth") && !LQ_GPUOptions(gpu, 1, 0, 1, error, sizeof(error))) goto done;
     /* As in game: failing fluorescent tubes take private styles before bounce. */
     if (luminous) LQ_SceneAssignFluorescentStyles(&scene);
     if (luminous && compare) {

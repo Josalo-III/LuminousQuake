@@ -19,6 +19,7 @@ Classic pixel, but changes must preserve the readability of its lighting.
 | GPU buffers, resource ownership and map/restart lifecycle | Retain and extend |
 | Visibility, animated textures/models, moving brushes, particles | Retain; camera visibility is not light/shadow visibility |
 | Sky, water, palettes, fullbrights and transparency | Retain existing behavior until a particular effect is deliberately superseded |
+| Sky and opaque liquids | Drawn with the palette's own colours (colormap row 32) in Classic and Luminous, as software Quake draws them. Both GPU renderers first used row 0, which is about twice as bright and clips: id1's palette collapses to 132 colours there, and an E1M1 sky crop showed 4. The Luminous sky is always filtered bilinearly, whatever the texture filter: each layer within its own half of the texture, with the front layer's index-0 mask as fractional coverage so cloud edges feather, blended in linear light. Sky light is computed from the same colours; `LQ_SKY_LIGHT_GAIN` 2 keeps the outdoor light level tuned against the row-0 sky |
 | Translucent liquids (`r_wateralpha` < 1) | Lit by runtime lights and static probes; light crossing the surface scales by 1 − opacity (direct and static bounce) |
 | Filtering, mipmaps, anisotropy, MSAA, resolution/FOV and VSync | Shared settings; retain relevant implementations |
 | HUD, menus, console, UI scaling, input and saved settings | Shared |
@@ -304,7 +305,8 @@ visible fill. The defaults (1, 1) are physically based.
 
 Since October 17, 2026, Luminous shades in linear light at full precision
 (`renderer/shaders/world.frag`). Classic GPU keeps its palette-exact colormap
-path, and sky, opaque liquids and Classic's model shading are unchanged.
+path and Classic's model shading. Sky and opaque liquids are unlit; see the
+table at the top.
 
 - **Light adds up in Quake's brightness units**, as LIGHT summed it: direct
   light, bounce, sky, sun and probes, where 128 shows a texture at its palette

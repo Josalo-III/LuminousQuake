@@ -94,6 +94,7 @@ WASD flies; E/Q or Space/Control moves vertically; Shift moves faster. Mouse/tra
 movement looks around on both axes. F1 releases/recaptures the pointer, F11 changes
 fullscreen, and Escape exits. This viewer has no collision or gameplay simulation.
 For repeatable captures add `--fixed-camera --run-seconds 4 --screenshot /tmp/quake-gpu.bmp`.
+`--smooth` turns on smooth texture filtering (the in-game "GPU filtering" setting).
 `--scene-info` converts/validates a map without opening a window.
 
 `./build-gpu/luminousquake-gpu --gpu-test` validates GPU geometry, depth, palette

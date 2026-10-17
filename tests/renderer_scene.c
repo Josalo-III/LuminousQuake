@@ -320,7 +320,7 @@ static int BounceRoomTest(void)
     center = room.bounce.pixels + ((size_t)(1 + GRID/2) * room.bounce.width + 1 + GRID/2) * 4;
     CHECK(room.draws[0].bounce_styles[0] == 255 && center[0] == 0 && room.sky_light[0] == 0);
     /* Sky ceiling: the +Z wall becomes sky over a sky leaf, drawn with a mid
-     * grey (128/255 at row 0), so an open sky gives brightness ~64. The floor
+     * grey (128/255 in the palette row), so an open sky gives brightness ~128. The floor
      * centre sees the 256-unit ceiling 255 units up: form factor ~0.24. The
      * centre probe's +Z face sees it from 128 units: ~0.55; -Z sees none. */
     uint8_t *contents = realloc(room.leaf_contents, 3);
@@ -330,7 +330,8 @@ static int BounceRoomTest(void)
     room.bsp_nodes[5].children[1] = -3;
     room.draws[5].flags = LQ_SURFACE_SKY; room.face_samples[5].width = 0;
     sky->width = 2; sky->pixels[0] = sky->pixels[1] = 0;
-    room.colormap.pixels[0] = room.colormap.pixels[1] = room.colormap.pixels[2] = 128;
+    uint8_t *grey = room.colormap.pixels + 32 * 256 * 4; /* palette row */
+    grey[0] = grey[1] = grey[2] = 128;
     CHECK(LQ_SceneComputeBounce(&room, 256, NULL, error, sizeof(error)));
     CHECK(fabsf(room.sky_light[0] - 128.0f * 128 / 255 * LQ_SKY_LIGHT_GAIN) < 0.01f);
     const uint8_t *floor = room.bounce.pixels + ((size_t)(1 + GRID/2) * room.bounce.width + 1 + 4*(GRID + 2) + GRID/2) * 4;

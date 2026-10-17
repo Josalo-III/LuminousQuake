@@ -54,8 +54,10 @@ enum { LQ_LIGHT_LINEAR, LQ_LIGHT_INVERSE, LQ_LIGHT_INVERSE2, LQ_LIGHT_INFINITE,
  * carry moving and switched lights without lifting authored darkness. */
 #define LQ_BOUNCE_SCALE_UNBAKED 0.25f
 /* Luminous sky light: brightness under an open sky per unit of the sky's mean
- * displayed color times 128 (where a white surface matches the sky). */
-#define LQ_SKY_LIGHT_GAIN 1.0f
+ * displayed color times 128 (where a white surface matches the sky). The sky
+ * was first drawn from colormap row 0, about twice the palette colour; 2
+ * keeps the outdoor light level tuned then now that it draws the palette's own. */
+#define LQ_SKY_LIGHT_GAIN 2.0f
 float LQ_SpotFactor(const float to_light[3], float distance, const float axis[3],
     float outer, float inner, float source_radius);
 typedef struct {

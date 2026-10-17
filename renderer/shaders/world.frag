@@ -59,6 +59,7 @@ layout(location=0) out vec4 color;
 // the CRT gamma Quake's palette was drawn for. It matches sRGB except below
 // about 4%, where sRGB's linear toe would crush the shadows Classic shows.
 bool linear_lit = false;
+vec4 sky_color = vec4(0.0); // smooth-filtered sky; alpha 0 when unused
 vec3 lit_radiance = vec3(1.0);
 const float DISPLAY_GAMMA = 2.2;
 vec3 displayDecode(vec3 c) { return pow(max(c, vec3(0.0)), vec3(DISPLAY_GAMMA)); }
@@ -110,6 +111,38 @@ vec4 filteredColor(vec2 coord, vec2 dx, vec2 dy, float grade) {
         result += mipColor(coord+offset,lod,grade,maxLevel);
     }
     return result/float(taps);
+}
+// Luminous sky, whatever the texture filter: each 128x128 layer is filtered
+// bilinearly on its own, wrapping inside its half of the texture, and the
+// front layer's index-0 mask becomes fractional coverage so cloud edges
+// feather instead of cutting out. Colours are the palette's own (colormap row
+// 32), blended in linear light. Classic keeps the original nearest-texel sky.
+vec4 skyEntry(float entry) {
+    vec4 c = texture(colormap, vec2((entry + 0.5) / 256.0, 32.5 / 64.0));
+    c.rgb = displayDecode(c.rgb);
+    return c;
+}
+vec4 skyLayer(vec2 layer_uv, int left, bool masked) {
+    int half_width = textureSize(indices, 0).x / 2, height = textureSize(indices, 0).y;
+    vec2 pixel = layer_uv * vec2(half_width, height) - 0.5;
+    ivec2 base = ivec2(floor(pixel)); vec2 weight = fract(pixel);
+    vec4 sum = vec4(0.0); // rgb premultiplied by coverage
+    for (int i = 0; i < 4; ++i) {
+        ivec2 p = base + ivec2(i & 1, i >> 1);
+        p.x = (p.x % half_width + half_width) % half_width + left;
+        p.y = (p.y % height + height) % height;
+        float entry = floor(texelFetch(indices, p, 0).r * 255.0 + 0.5);
+        float w = (i & 1) != 0 ? weight.x : 1.0 - weight.x;
+        w *= (i >> 1) != 0 ? weight.y : 1.0 - weight.y;
+        if (masked && entry < 0.5) continue;
+        sum += vec4(skyEntry(entry).rgb, 1.0) * w;
+    }
+    return sum;
+}
+vec4 smoothSky(vec2 back_uv, vec2 front_uv) {
+    int half_width = textureSize(indices, 0).x / 2;
+    vec4 back = skyLayer(back_uv, half_width, false), front = skyLayer(front_uv, 0, true);
+    return vec4(displayEncode(back.rgb * (1.0 - front.a) + front.rgb), 1.0);
 }
 // LIGHT/ericw-tools "delay" formulas; see LQ_LightFalloff.
 float lightValue(vec4 f, float distance) {
@@ -240,7 +273,9 @@ void main() {
     bool lit_effect = diffuse_effect || (lights.parameters.y != 0u && (flags & 512) != 0);
     vec3 effect_light = vec3(0.0);
     vec2 sample_uv = uv;
-    float index_value, grade = 0;
+    // Unlit surfaces (sky, opaque liquids) take colormap row 32, the palette's
+    // own colours, as software Quake draws them; row 0 is twice that, clipped.
+    float index_value, grade = 32.0;
     vec3 direct_tint = vec3(1.0);
     if ((flags & 1) != 0) {
         vec3 direction = world_position - surface.camera_origin.xyz;
@@ -251,6 +286,7 @@ void main() {
         float back = texture(indices, vec2(back_uv.x * 0.5 + 0.5, back_uv.y)).r;
         float front = texture(indices, vec2(front_uv.x * 0.5, front_uv.y)).r;
         index_value = front > 0.001 ? front : back;
+        if (lights.parameters.y != 0u) sky_color = smoothSky(back_uv, front_uv);
     } else {
         bool liquid = (flags & 2) != 0;
         if (liquid)
@@ -258,7 +294,7 @@ void main() {
         index_value = texture(indices, sample_uv).r;
         // A translucent liquid catches light in proportion to its opacity (the
         // blend weight) and passes the rest to surfaces across it. Opaque
-        // liquids keep Quake's unlit, full-bright look.
+        // liquids keep Quake's unlit look.
         float opacity = lights.liquid.x;
         bool submerged = (flags & 64) != 0;
         if (!liquid || (opacity > 0.0 && lights.parameters.y != 0u)) {
@@ -382,4 +418,5 @@ void main() {
         if ((flags & 9) != 0) color = litEntry(index);
         color.rgb = displayEncode(color.rgb);
     } else if (lights.parameters.y != 0u && index < 224.0) color.rgb *= direct_tint;
+    if (sky_color.a > 0.0) color = sky_color;
 }
