@@ -336,6 +336,7 @@ void CL_ClearState (void);
 
 
 int  CL_ReadFromServer (void);
+void CL_ReadServerMessages (void);
 void CL_WriteToServer (usercmd_t *cmd);
 void CL_BaseMove (usercmd_t *cmd);
 

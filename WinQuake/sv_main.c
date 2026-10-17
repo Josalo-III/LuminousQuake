@@ -991,6 +991,13 @@ void SV_SendReconnect (void)
 	msg.cursize = 0;
 	msg.maxsize = sizeof(data);
 
+	/* Catch-up ticks can leave old-level snapshots in the local queue. Read
+	 * them while their models and scoreboard are still valid, before
+	 * SV_SpawnServer clears that state. Do not advance client/render time. */
+	if (cls.state == ca_connected && cls.netcon && cls.netcon->driver == 0 &&
+		!cls.demoplayback)
+		CL_ReadServerMessages ();
+
 	MSG_WriteChar (&msg, svc_stufftext);
 	MSG_WriteString (&msg, "reconnect\n");
 	NET_SendToAll (&msg, 5);

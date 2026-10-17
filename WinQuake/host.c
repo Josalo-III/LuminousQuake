@@ -736,31 +736,47 @@ void _Host_Frame (float time)
 	host_frametime = frametime;	// starting a map changes it
 
 // turn the view every frame; movement is sent once per tick
+	/* Rendering can run without a simulation tick. Poll device deltas here so
+	 * mouse look stays responsive, retaining movement until a tick consumes it.
+	 * Tick commands below can change input again during a catch-up frame. */
 	CL_AccumulateInput ();
 	LQ_ProfileEnd (LQ_PROFILE_INPUT_COMMANDS);
 
 	LQ_ProfileBegin (LQ_PROFILE_NETWORK);
 	NET_Poll();
-
-// if running the server locally, make intentions now
-	if (sv.active && ticks)
-		CL_SendCmd ();
 	LQ_ProfileEnd (LQ_PROFILE_NETWORK);
-	
-//-------------------
-//
-// server operations
-//
-//-------------------
 
 // check for commands typed to the host
 	Host_GetConsoleCommands ();
-	
+
+// Simulation ticks own move messages, server physics and "wait" releases.
+// Several ticks may precede the client/render pass below; this is not a full
+// original WinQuake frame per iteration. In particular, level transitions must
+// consume queued snapshots before freeing the state those snapshots reference.
 	LQ_ProfileBegin (LQ_PROFILE_SIMULATION);
-	for (i=0 ; i<ticks && sv.active ; i++)
+	for (i=0 ; i<ticks ; i++)
 	{
-		host_frametime = HOST_TICK;
-		Host_ServerFrame ();
+		if (i > 0)
+		{	// commands the previous tick's "wait" released
+			Cbuf_Execute ();
+#ifdef LQ_PORTABLE
+			LQ_RenderAfterCommands ();
+#endif
+		}
+
+	// if running the server locally, make intentions now
+		if (sv.active)
+		{
+			CL_SendCmd ();
+			host_frametime = HOST_TICK;
+			Host_ServerFrame ();
+		}
+	// if running the server remotely, send intentions now
+		else
+			CL_SendCmd ();
+
+	// a "wait" in the command buffer lasts until the next tick
+		Cbuf_Waited ();
 	}
 	host_frametime = frametime;
 	LQ_ProfileEnd (LQ_PROFILE_SIMULATION);
@@ -771,16 +787,7 @@ void _Host_Frame (float time)
 //
 //-------------------
 
-// if running the server remotely, send intentions now after
-// the incoming messages have been read
 	LQ_ProfileBegin (LQ_PROFILE_CLIENT);
-	if (!sv.active && ticks)
-		CL_SendCmd ();
-
-// a "wait" in the command buffer lasts until the next tick
-	if (ticks)
-		Cbuf_Waited ();
-
 	host_time += host_frametime;
 
 // fetch results from server

@@ -222,6 +222,8 @@ cvar_t	cl_pitchspeed = {"cl_pitchspeed","150"};
 cvar_t	cl_anglespeedkey = {"cl_anglespeedkey","1.5"};
 
 usercmd_t	cl_pendingmove;		// mouse movement since the last move message
+/* This survives rendered frames with no simulation tick. It is independent
+ * of cl.cmd, which describes only the last move sent to the server. */
 
 
 /*

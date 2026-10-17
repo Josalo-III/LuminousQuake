@@ -1,7 +1,7 @@
 # Frame timing and VSync
 
-Status as of October 15, 2026: implemented and built. Automated checks pass,
-but the gameplay and display checks under **Pending verification** have not yet
+Status as of October 17, 2026: implemented and built. Automated checks and the
+scripted movement comparison pass; the checks under **Pending verification** have not yet
 run.
 
 ## Why it changed
@@ -28,9 +28,21 @@ simulation has to keep its 72 Hz cadence.
 `Host_CountTicks` adds each frame's time to an accumulator and returns how many
 whole 1/72 s ticks are due. A frame can run zero, one or several ticks: zero is
 common above 72 fps, and several happen when a slow frame needs to catch up.
+Each due tick runs in full, as one 72 Hz WinQuake frame did: the commands a
+previous tick's `wait` released, one move message, one server frame, then the
+release of `wait`. A catch-up frame therefore keeps scripts and movement on the
+same ticks as an unhurried one.
 Frame times are still clamped to 0.1 s, so after a long hitch the simulation
 loses time as it always has rather than spiralling. `host_framerate` still
 fixes each frame's time; the ticks then follow that fixed rate.
+
+Before a local server changes levels or restarts, `SV_SendReconnect` drains
+pending local snapshots while the old models and scoreboard still exist. A
+catch-up frame may otherwise clear those resources before the client consumes
+an earlier tick's entity updates, producing `i >= cl.maxclients`. This drain
+does not advance client time or relink entities; normal frame interpolation
+retains its existing cadence. `tests/level_transition_smoke.py` forces catch-up
+ticks through repeated transitions and a restart using an isolated game profile.
 
 ### Input
 
@@ -76,8 +88,17 @@ message per frame, as before.
 ## Verified
 
 - `ctest --test-dir build`: 21/21 pass.
+- Retail save/load, demo recording/playback, and repeated level changes/restart pass.
 - Headless `timedemo demo1` and `demo2` on shareware 1.01 run 969 and 985
   frames, the same as the previous build.
+- Movement and jump traces on shareware E1M1, October 16, 2026: 315 ticks of
+  `edict 1` (settle, walk forward down the stairs, running jump, standing
+  jump), one per `wait`, compared with commit 79c78d9 run at
+  `host_framerate 0.0138889`. The free-running build matches every tick
+  exactly; both jumps peak at the same height (+29.3 and +43.7 units) on the
+  same tick. The first run found that a catch-up frame ran several server
+  ticks behind a single move and a single `wait`, so a script drifted ahead
+  of the old build; each tick now runs in full (see above).
 
 ## Pending verification
 
@@ -86,13 +107,8 @@ These should run soon; until they do, treat the change as provisional.
 1. **Display-rate rendering with VSync.** In a normal game, confirm the client
    presents at the display refresh (60/120/144/240 Hz) with `lq_profile 1` and
    `lq_profile_report`, in Software, Classic and Luminous.
-2. **Movement and physics against the previous build.** On shareware E1M1, script
-   walk-forward and jump traces (`edict 1` once per tick, separated by `wait`).
-   Compare them with the pre-change binary run at `host_framerate 0.0138889`:
-   trajectories and jump peak should match. Also check plats and doors by hand.
-   Build the comparison binary from commit 79c78d9, and run the script from a
-   temporary basedir that links `pak0.pak` (the command line is too short to
-   hold the script).
+2. **Plats and doors by hand.** The scripted movement comparison passed (see
+   *Verified*); riding plats and opening doors still needs a hand check.
 3. **Recorded demo round trip.** Record a demo with the new build, then confirm it
    plays back the same and at the right speed.
 4. **Feel.** Check mouse look, keyboard turning, `+mlook` strafing and

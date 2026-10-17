@@ -410,6 +410,9 @@ float	CL_LerpPoint (void)
 	if (sv.active)
 	{	// the local server ticks at 72 Hz while frames are drawn in between,
 		// so show the world part of the way from its previous tick to its last
+		/* Interpolation owns presentation time, not server time. Reading
+		 * messages during a transition must not advance this clock or relink
+		 * entities; both happen once in the normal client/frame pass. */
 		frac = Host_TickFraction ();
 		cl.time = cl.mtime[1] + frac*f;
 		return frac;
@@ -645,17 +648,18 @@ void CL_RelinkEntities (void)
 
 /*
 ===============
-CL_ReadFromServer
+CL_ReadServerMessages
 
-Read all incoming data from the server
+Read incoming messages without advancing time or relinking entities. This can
+also run before a local level transition frees the old client state.
 ===============
 */
-int CL_ReadFromServer (void)
+void CL_ReadServerMessages (void)
 {
 	int		ret;
-
-	cl.oldtime = cl.time;
-	cl.time += host_frametime;
+	/* A message may reference old-level models and scoreboard allocations.
+	 * Keep this receive-only entry point separate from CL_ReadFromServer so
+	 * the local server can drain its queue before replacing those resources. */
 	
 	do
 	{
@@ -671,6 +675,13 @@ int CL_ReadFromServer (void)
 	
 	if (cl_shownet.value)
 		Con_Printf ("\n");
+}
+
+int CL_ReadFromServer (void)
+{
+	cl.oldtime = cl.time;
+	cl.time += host_frametime;
+	CL_ReadServerMessages ();
 
 	CL_RelinkEntities ();
 	CL_UpdateTEnts ();
