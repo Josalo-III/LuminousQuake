@@ -193,33 +193,86 @@ static uint32_t SlotTier(uint32_t slot)
     return sizes[array] >= 512 ? 0 : sizes[array] >= 256 ? 1 : 2;
 }
 static void DrawBounds(const lq_scene *scene, const lq_draw *draw, float out[6]);
-/* Whether a source can light a visible draw, by the interaction test below. */
-static int ReachesVisible(const lq_scene *scene, uint32_t index, float range, const lq_draw *visible)
+/* Whether a source can light a draw, by the interaction test below. */
+static int LightsDraw(const lq_scene *scene, uint32_t d, const float origin[3], float range)
 {
-    const lq_light_source *source = &scene->light_sources[index];
+    const lq_draw *draw = &scene->draws[d];
+    float computed[6];
+    const float *bounds = scene->draw_bounds ? scene->draw_bounds[d] : computed;
+    if (!scene->draw_bounds) DrawBounds(scene, draw, computed);
+    const lq_vertex *first = &scene->vertices[scene->indices[draw->first_index]];
+    float distance2 = 0, facing = 0;
+    for (int axis = 0; axis < 3; ++axis) {
+        float p = origin[axis];
+        float outside = p < bounds[axis] ? bounds[axis] - p : p > bounds[axis+3] ? p - bounds[axis+3] : 0;
+        distance2 += outside * outside; facing += (p - first->position[axis]) * first->normal[axis];
+    }
+    return facing > 0 && distance2 < range * range;
+}
+/* For each source with range[i] > 0, whether it can light a visible draw:
+ * reach[i] is 2 when one is on screen (`shown`, if given), 1 when it lights
+ * only draws elsewhere in the PVS, 0 when it lights none. With precomputed
+ * reach bits, each visible draw visits only the sources that can reach it. */
+static void VisibleReach(const lq_scene *scene, const lq_draw *visible, const uint8_t *shown,
+    const float *range, uint8_t *reach)
+{
+    memset(reach, 0, scene->light_source_count);
     for (uint32_t d = 0; d < scene->draw_count; ++d) {
         const lq_draw *draw = &scene->draws[d];
         if (!visible[d].index_count || draw->flags & LQ_SURFACE_SKY || draw->index_count < 3) continue;
-        if (scene->light_visibility &&
-            !(scene->light_visibility[d * scene->light_visibility_words + index / 32] & (1u << (index % 32)))) continue;
+        uint8_t level = !shown || shown[d] ? 2 : 1;
+        if (!scene->light_visibility) {
+            for (uint32_t i = 0; i < scene->light_source_count; ++i)
+                if (range[i] > 0 && reach[i] < level && LightsDraw(scene, d, scene->light_sources[i].origin, range[i]))
+                    reach[i] = level;
+            continue;
+        }
+        const uint32_t *bits = scene->light_visibility + (size_t)d * scene->light_visibility_words;
+        for (uint32_t w = 0; w < scene->light_visibility_words; ++w)
+            for (uint32_t b = bits[w]; b; b &= b - 1) {
+                uint32_t i = w * 32 + (uint32_t)__builtin_ctz(b);
+                if (i < scene->light_source_count && range[i] > 0 && reach[i] < level &&
+                    LightsDraw(scene, d, scene->light_sources[i].origin, range[i])) reach[i] = level;
+            }
+    }
+}
+int LQ_BoundsInClip(const float m[16], const float bounds[6])
+{
+    int outside[5] = {0};
+    for (int corner = 0; corner < 8; ++corner) {
+        float p[3] = {bounds[corner & 1 ? 3 : 0], bounds[corner & 2 ? 4 : 1], bounds[corner & 4 ? 5 : 2]};
+        float x = m[0]*p[0] + m[4]*p[1] + m[8]*p[2] + m[12], y = m[1]*p[0] + m[5]*p[1] + m[9]*p[2] + m[13];
+        float w = m[3]*p[0] + m[7]*p[1] + m[11]*p[2] + m[15];
+        outside[0] += x < -w; outside[1] += x > w; outside[2] += y < -w; outside[3] += y > w; outside[4] += w <= 0;
+    }
+    for (int i = 0; i < 5; ++i) if (outside[i] == 8) return 0;
+    return 1;
+}
+void LQ_LightSelectionClip(const lq_view *v, float aspect, float out[16])
+{
+    lq_view wider = *v;
+    wider.horizontal_fov = fminf(v->horizontal_fov + LQ_SELECTION_FOV_MARGIN, 170);
+    LQ_ViewMatrix(&wider, aspect > 0 && isfinite(aspect) ? aspect : 4.0f / 3, out);
+}
+/* Draws in the PVS (`visible`) whose bounds meet `clip`; NULL without a clip. */
+static uint8_t *ShownDraws(const lq_scene *scene, const lq_draw *visible, const float clip[16])
+{
+    if (!clip || !visible) return NULL;
+    uint8_t *shown = malloc(scene->draw_count ? scene->draw_count : 1);
+    if (!shown) return NULL;
+    for (uint32_t d = 0; d < scene->draw_count; ++d) {
         float computed[6];
         const float *bounds = scene->draw_bounds ? scene->draw_bounds[d] : computed;
-        if (!scene->draw_bounds) DrawBounds(scene, draw, computed);
-        const lq_vertex *first = &scene->vertices[scene->indices[draw->first_index]];
-        float distance2 = 0, facing = 0;
-        for (int axis = 0; axis < 3; ++axis) {
-            float p = source->origin[axis];
-            float outside = p < bounds[axis] ? bounds[axis] - p : p > bounds[axis+3] ? p - bounds[axis+3] : 0;
-            distance2 += outside * outside; facing += (p - first->position[axis]) * first->normal[axis];
-        }
-        if (facing > 0 && distance2 < range * range) return 1;
+        if (!scene->draw_bounds && visible[d].index_count) DrawBounds(scene, &scene->draws[d], computed);
+        shown[d] = visible[d].index_count && LQ_BoundsInClip(clip, bounds);
     }
-    return 0;
+    return shown;
 }
-typedef struct { float score; uint32_t entity, source; } light_candidate;
+typedef struct { float score; uint32_t offscreen, entity, source; } light_candidate;
 static int CandidateOrder(const void *a, const void *b)
 {
     const light_candidate *x = a, *y = b;
+    if (x->offscreen != y->offscreen) return x->offscreen < y->offscreen ? -1 : 1;
     if (x->score != y->score) return x->score < y->score ? -1 : 1;
     return x->entity < y->entity ? -1 : x->entity > y->entity;
 }
@@ -228,6 +281,9 @@ uint32_t LQ_BuildRuntimeLightsLimited(const lq_scene *scene, const float styles[
 { return LQ_BuildRuntimeLightsVisible(scene, styles, camera, NULL, output, slots); }
 uint32_t LQ_BuildRuntimeLightsVisible(const lq_scene *scene, const float styles[256],
     const float camera[3], const lq_draw *visible, lq_runtime_light output[LQ_MAX_RUNTIME_LIGHTS], uint32_t slots)
+{ return LQ_BuildRuntimeLightsInView(scene, styles, camera, visible, NULL, output, slots); }
+uint32_t LQ_BuildRuntimeLightsInView(const lq_scene *scene, const float styles[256], const float camera[3],
+    const lq_draw *visible, const float clip[16], lq_runtime_light output[LQ_MAX_RUNTIME_LIGHTS], uint32_t slots)
 {
     lq_runtime_light previous[LQ_MAX_RUNTIME_LIGHTS];
     uint32_t count = 0, used = 0;
@@ -256,16 +312,29 @@ uint32_t LQ_BuildRuntimeLightsVisible(const lq_scene *scene, const float styles[
             if (!overlap) continue;
         }
         float dx = source->origin[0]-camera[0], dy = source->origin[1]-camera[1], dz = source->origin[2]-camera[2];
-        list[count++] = (light_candidate){sqrtf(dx*dx+dy*dy+dz*dz)-fminf(range,1024), source->entity_index, i};
+        list[count++] = (light_candidate){sqrtf(dx*dx+dy*dy+dz*dz)-fminf(range,1024), 0, source->entity_index, i};
     }
-    /* Over budget: first drop sources that light nothing in view. */
-    if (count > slots && visible) {
-        uint32_t kept = 0;
+    /* Over budget: drop sources that light no PVS draw, and rank those that
+     * light a draw on screen ahead of those that light only draws off it.
+     * Nearness alone let lights behind the camera displace distant lights on
+     * what the player is looking at. */
+    float *range = count > slots && visible ? calloc(scene->light_source_count, sizeof(*range)) : NULL;
+    uint8_t *reach = range ? malloc(scene->light_source_count) : NULL;
+    if (reach) {
+        uint8_t *shown = ShownDraws(scene, visible, clip);
         for (uint32_t j = 0; j < count; ++j)
-            if (ReachesVisible(scene, list[j].source, LQ_LightSourceRange(&scene->light_sources[list[j].source]), visible))
-                list[kept++] = list[j];
+            range[list[j].source] = LQ_LightSourceRange(&scene->light_sources[list[j].source]);
+        VisibleReach(scene, visible, shown, range, reach);
+        uint32_t kept = 0;
+        for (uint32_t j = 0; j < count; ++j) {
+            if (!reach[list[j].source]) continue;
+            list[j].offscreen = shown && reach[list[j].source] < 2;
+            list[kept++] = list[j];
+        }
         count = kept;
+        free(shown);
     }
+    free(range); free(reach);
     qsort(list, count, sizeof(*list), CandidateOrder);
     if (count > slots) count = slots;
     /* Rank r belongs in the tier of the r-th sharpest slot. A source keeps its
@@ -430,6 +499,10 @@ uint32_t LQ_SurfaceLightPoints(const float (*polygon)[3], uint32_t count, float 
 uint32_t LQ_LightBudget(const lq_scene *scene, const float styles[256], const float camera[3],
     const uint8_t *visible, uint32_t slots, lq_light_drop *dropped, uint32_t capacity,
     uint32_t *dropped_count)
+{ return LQ_LightBudgetInView(scene, styles, camera, visible, NULL, NULL, slots, dropped, capacity, dropped_count); }
+uint32_t LQ_LightBudgetInView(const lq_scene *scene, const float styles[256], const float camera[3],
+    const uint8_t *visible, const float select_clip[16], const float count_clip[16], uint32_t slots,
+    lq_light_drop *dropped, uint32_t capacity, uint32_t *dropped_count)
 {
     uint32_t reaching = 0, drops = 0;
     if (dropped_count) *dropped_count = 0;
@@ -443,7 +516,7 @@ uint32_t LQ_LightBudget(const lq_scene *scene, const float styles[256], const fl
         shown[d] = scene->draws[d];
         if (!visible[d]) shown[d].index_count = 0;
     }
-    uint32_t used = LQ_BuildRuntimeLightsVisible(scene, styles, camera, shown, selection, slots);
+    uint32_t used = LQ_BuildRuntimeLightsInView(scene, styles, camera, shown, select_clip, selection, slots);
     free(shown);
     for (uint32_t i = 0; i < scene->light_source_count; ++i) {
         const lq_light_source *source = &scene->light_sources[i];
@@ -460,6 +533,7 @@ uint32_t LQ_LightBudget(const lq_scene *scene, const float styles[256], const fl
             float computed[6];
             const float *bounds = scene->draw_bounds ? scene->draw_bounds[d] : computed;
             if (!scene->draw_bounds) DrawBounds(scene, draw, computed);
+            if (count_clip && !LQ_BoundsInClip(count_clip, bounds)) continue;
             const lq_vertex *first = &scene->vertices[scene->indices[draw->first_index]];
             float distance2 = 0, facing = 0;
             for (int axis = 0; axis < 3; ++axis) {

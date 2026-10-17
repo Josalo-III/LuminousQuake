@@ -142,7 +142,16 @@ comes from each light's falloff and from occlusion.
   reach (leaves their own leaf can see, within range) meets the camera's PVS,
   nearest (range-weighted) first. In game, map lights get 120 slots and gameplay
   lights the last 8. When more sources qualify than there are slots, those that
-  light no visible face are dropped first. The limit comes from the shader's
+  light no visible face are dropped first. Then those that light a face on
+  screen rank ahead of those lighting only faces elsewhere in the PVS, and
+  nearness orders each group. The screen test widens the view by 30°
+  (`LQ_SELECTION_FOV_MARGIN`), so lights just out of view already hold slots
+  and drawn cubes as the player turns. Nearness alone let lights behind the
+  camera displace those on what the player was looking at. Backing away from
+  E1M1's first building turned its facade lights off, and translucent water
+  (`r_wateralpha` < 1) made this worse by adding the faces across the water.
+  The face scan walks each visible face's precomputed reach bits, so
+  selection costs about 0.6 ms a frame at that spot, half its earlier cost. The limit comes from the shader's
   light uniform block: 80 bytes per light, 10 KB for 128, inside the 16 KB every
   Vulkan device guarantees. Each face carries a 128-bit mask of the lights that
   reach it, and the shader visits only the set bits; actors, effects and moving

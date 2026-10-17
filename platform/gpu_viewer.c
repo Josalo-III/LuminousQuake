@@ -32,18 +32,6 @@ static const char *Argument(int argc, char **argv, const char *name)
 }
 /* Conservative clip-space test: a box is out only when all eight corners
  * lie beyond one side or behind the eye. */
-static int InFrustum(const float m[16], const float bounds[6])
-{
-    int outside[5] = {0};
-    for (int corner = 0; corner < 8; ++corner) {
-        float p[3] = {bounds[corner & 1 ? 3 : 0], bounds[corner & 2 ? 4 : 1], bounds[corner & 4 ? 5 : 2]};
-        float x = m[0]*p[0] + m[4]*p[1] + m[8]*p[2] + m[12], y = m[1]*p[0] + m[5]*p[1] + m[9]*p[2] + m[13];
-        float w = m[3]*p[0] + m[7]*p[1] + m[11]*p[2] + m[15];
-        outside[0] += x < -w; outside[1] += x > w; outside[2] += y < -w; outside[3] += y > w; outside[4] += w <= 0;
-    }
-    for (int i = 0; i < 5; ++i) if (outside[i] == 8) return 0;
-    return 1;
-}
 static int Has(int argc, char **argv, const char *name)
 { for (int i = 1; i < argc; ++i) if (!strcmp(argv[i], name)) return 1; return 0; }
 /* --compare-probes: dynamic probes around gameplay lights near the camera on
@@ -709,7 +697,8 @@ int LQ_GPUViewer(int argc, char **argv)
         Has(argc, argv, "--enhanced"); /* the renderer's former name */
     uint64_t shadow_updates = 0, frames = 0;
     int result = 1, active = 1, captured = 1, quit = 0;
-    lq_draw *interaction_draws = NULL;
+    lq_draw *interaction_draws = NULL, *pvs_draws = NULL;
+    uint8_t *pvs = NULL;
     float seconds = 0;
     lq_view view = {0}; view.horizontal_fov = 90;
     view.disable_shadows = Has(argc, argv, "--no-shadows");
@@ -882,19 +871,23 @@ int LQ_GPUViewer(int argc, char **argv)
         }
         enum { SHOWN = 16 };
         uint32_t game_drops, all_drops, game_slots = LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS;
-        /* First the whole PVS the game submits, then the faces inside a 4:3 view. */
-        float matrix[16]; LQ_ViewMatrix(&view, 4.0f / 3, matrix);
+        /* First the whole PVS the game submits, then the faces inside a 4:3 view.
+         * Both select as the game does, ranking lights on faces in view first. */
+        float matrix[16], selection[16];
+        LQ_ViewMatrix(&view, 4.0f / 3, matrix); LQ_LightSelectionClip(&view, 4.0f / 3, selection);
         if (!LQ_SceneDrawBounds(&scene)) {
             free(visible); free(game); free(all); snprintf(error, sizeof(error), "cannot bound draws"); goto done;
         }
         for (int pass = 0; pass < 2; ++pass) {
             uint32_t faces = 0;
             for (uint32_t i = 0; i < scene.draw_count; ++i) {
-                if (pass && visible[i]) visible[i] = InFrustum(matrix, scene.draw_bounds[i]);
-                faces += visible[i] != 0;
+                faces += visible[i] && (!pass || LQ_BoundsInClip(matrix, scene.draw_bounds[i]));
             }
-            uint32_t reaching = LQ_LightBudget(&scene, styles, view.origin, visible, game_slots, game, sources, &game_drops);
-            LQ_LightBudget(&scene, styles, view.origin, visible, LQ_MAX_RUNTIME_LIGHTS, all, sources, &all_drops);
+            const float *counted = pass ? matrix : NULL;
+            uint32_t reaching = LQ_LightBudgetInView(&scene, styles, view.origin, visible, selection, counted,
+                game_slots, game, sources, &game_drops);
+            LQ_LightBudgetInView(&scene, styles, view.origin, visible, selection, counted,
+                LQ_MAX_RUNTIME_LIGHTS, all, sources, &all_drops);
             printf("Light budget, %s: %u map lights can reach %u faces; %u game slots drop %u, %u viewer slots drop %u\n",
                 pass ? "in view" : "PVS", reaching, faces, game_slots, game_drops, LQ_MAX_RUNTIME_LIGHTS, all_drops);
         }
@@ -915,6 +908,8 @@ int LQ_GPUViewer(int argc, char **argv)
         interaction_draws = malloc(scene.draw_count*sizeof(*interaction_draws));
         if (interaction_draws && !LQ_SceneDrawBounds(&scene)) { free(interaction_draws); interaction_draws = NULL; }
         if (!interaction_draws) { snprintf(error,sizeof(error),"cannot allocate light interactions"); goto done; }
+        pvs = malloc(scene.draw_count); pvs_draws = malloc(scene.draw_count*sizeof(*pvs_draws));
+        if (!pvs || !pvs_draws) { snprintf(error,sizeof(error),"cannot allocate light selection"); goto done; }
         view.world_draws = interaction_draws; view.world_draw_count = scene.draw_count;
     }
     if (test || !luminous) LQ_SceneFree(&scene); /* Ordinary upload must not depend on loader storage. */
@@ -972,7 +967,19 @@ int LQ_GPUViewer(int argc, char **argv)
         if (active && !fixed_camera) Move(&view, elapsed > 0.1f ? 0.1f : elapsed);
         LQ_QuakeLightstyles(view.time, view.lightstyles);
         if (luminous) {
-            view.runtime_light_count = LQ_BuildRuntimeLights(&scene,view.lightstyles,view.origin,view.runtime_lights);
+            /* Select as the game does: its map slots, ranking lights that reach faces
+             * in view, then the rest of the camera's PVS. */
+            if (LQ_QuakeSceneVisibleDraws(&scene, view.origin, pvs))
+                for (uint32_t i = 0; i < scene.draw_count; ++i) {
+                    pvs_draws[i] = scene.draws[i];
+                    if (!pvs[i]) pvs_draws[i].index_count = 0;
+                }
+            else memcpy(pvs_draws, scene.draws, scene.draw_count*sizeof(*pvs_draws));
+            int width, height; SDL_GetWindowSizeInPixels(window, &width, &height);
+            float selection[16];
+            LQ_LightSelectionClip(&view, width > 0 && height > 0 ? (float)width / (float)height : 4.0f / 3, selection);
+            view.runtime_light_count = LQ_BuildRuntimeLightsInView(&scene, view.lightstyles, view.origin, pvs_draws,
+                selection, view.runtime_lights, LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS);
             LQ_BuildLightInteractions(&scene,view.runtime_lights,view.runtime_light_count,interaction_draws);
             view.luminous_lighting = 1;
         }
@@ -992,5 +999,5 @@ int LQ_GPUViewer(int argc, char **argv)
     result = 0;
 done:
     if (result) fprintf(stderr, "LuminousQuake GPU: %s\n", error);
-    free(interaction_draws); Shutdown(); return result;
+    free(interaction_draws); free(pvs_draws); free(pvs); Shutdown(); return result;
 }

@@ -256,7 +256,10 @@ static void LuminousLights(void)
         {1.0f, 0.7f, 0.35f},  /* explosion */
         {1.0f, 1.0f, 1.0f}    /* powerup glow */
     };
-    LQ_BuildRuntimeLightsVisible(&map_scene, view.lightstyles, view.origin, world_draws, runtime_lights,
+    /* Lights on faces in (or just beside) the view outrank nearer ones off it. */
+    float selection[16];
+    LQ_LightSelectionClip(&view, view.viewport[3] > 0 ? (float)view.viewport[2] / (float)view.viewport[3] : 0, selection);
+    LQ_BuildRuntimeLightsInView(&map_scene, view.lightstyles, view.origin, world_draws, selection, runtime_lights,
         LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS);
     /* Torch and flame lights follow their flame's animation. The position moves
      * only when the pose changes, so the shadow cube is redrawn at that rate. */

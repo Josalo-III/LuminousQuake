@@ -205,6 +205,66 @@ static int LightBudgetTest(void)
     puts("PASS light budget: reaching lights, dropped by slot limit, strongest first, facing, styles, visibility and the over-budget filter");
     return 0;
 }
+/* E1M1's exterior: a facade far ahead and a wall behind the camera with more
+ * lights close by than there are slots. Nearness alone kept the lights behind
+ * and dropped the facade's, so its lights went out as the player backed away. */
+static int InViewSelectionTest(void)
+{
+    enum { NEAR_LIGHTS = LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS, FAR_LIGHTS = 4,
+           COUNT = NEAR_LIGHTS + FAR_LIGHTS };
+    lq_scene scene = {0};
+    lq_vertex vertices[8] = {0};
+    uint32_t indices[12] = {0,1,2,0,2,3, 4,5,6,4,6,7};
+    lq_draw draws[2] = {{0,6,0,0,{255,255,255,255}}, {6,6,0,0,{255,255,255,255}}};
+    static const float corners[4][2] = {{-100,-100},{100,-100},{100,100},{-100,100}};
+    for (int i = 0; i < 4; ++i) {
+        vertices[i].position[0] = 1000; vertices[i].normal[0] = -1;   /* facade, in view */
+        vertices[i+4].position[0] = -50; vertices[i+4].normal[0] = 1; /* wall behind the camera */
+        for (int k = 0; k < 8; k += 4) {
+            vertices[i+k].position[1] = corners[i][0]; vertices[i+k].position[2] = corners[i][1];
+        }
+    }
+    scene.vertices = vertices; scene.indices = indices; scene.draws = draws;
+    scene.vertex_count = 8; scene.index_count = 12; scene.draw_count = 2;
+    lq_light_source lights[COUNT] = {0};
+    for (uint32_t i = 0; i < COUNT; ++i) {
+        LQ_LightSourceDefaults(&lights[i]);
+        int far = i >= NEAR_LIGHTS;
+        lights[i].origin[0] = far ? 990 : -40; lights[i].origin[1] = (float)(i % 40) * 4 - 80;
+        lights[i].intensity = 100; lights[i].entity_index = i;
+    }
+    scene.light_sources = lights; scene.light_source_count = COUNT;
+    float styles[256];
+    for (int i = 0; i < 256; ++i) styles[i] = 1;
+    lq_view view = {0}; view.horizontal_fov = 90;
+    float clip[16]; LQ_LightSelectionClip(&view, 4.0f / 3, clip);
+    lq_runtime_light runtime[LQ_MAX_RUNTIME_LIGHTS] = {0};
+    int far_kept = 0;
+    /* Without the view, the nearest fill every slot. */
+    LQ_BuildRuntimeLightsVisible(&scene, styles, view.origin, draws, runtime, NEAR_LIGHTS);
+    for (uint32_t s = 0; s < NEAR_LIGHTS; ++s) far_kept += runtime[s].source_index >= NEAR_LIGHTS;
+    CHECK(far_kept == 0);
+    /* With it, every light on the facade keeps a slot, the sharpest ones. */
+    memset(runtime, 0, sizeof(runtime)); far_kept = 0;
+    CHECK(LQ_BuildRuntimeLightsInView(&scene, styles, view.origin, draws, clip, runtime, NEAR_LIGHTS) == NEAR_LIGHTS);
+    for (uint32_t s = 0; s < NEAR_LIGHTS; ++s) far_kept += runtime[s].source_index >= NEAR_LIGHTS;
+    CHECK(far_kept == FAR_LIGHTS);
+    /* Facing the other way, the wall's lights lead again. */
+    view.angles[1] = 180; LQ_LightSelectionClip(&view, 4.0f / 3, clip);
+    memset(runtime, 0, sizeof(runtime)); far_kept = 0;
+    LQ_BuildRuntimeLightsInView(&scene, styles, view.origin, draws, clip, runtime, NEAR_LIGHTS);
+    for (uint32_t s = 0; s < NEAR_LIGHTS; ++s) far_kept += runtime[s].source_index >= NEAR_LIGHTS;
+    CHECK(far_kept == 0);
+    /* The budget report, selecting as the game does, drops nothing in view. */
+    lq_light_drop dropped[COUNT]; uint32_t drops = 0;
+    uint8_t pvs[2] = {1, 1};
+    view.angles[1] = 0; LQ_LightSelectionClip(&view, 4.0f / 3, clip);
+    float exact[16]; LQ_ViewMatrix(&view, 4.0f / 3, exact);
+    CHECK(LQ_LightBudgetInView(&scene, styles, view.origin, pvs, clip, exact, NEAR_LIGHTS, dropped, COUNT, &drops) == FAR_LIGHTS);
+    CHECK(drops == 0);
+    puts("PASS in-view light selection: lights on faces in view outrank nearer lights behind the camera");
+    return 0;
+}
 static int BounceRoomTest(void)
 {
     enum { HALF = 128, GRID = HALF*2/16 + 1 };
@@ -638,6 +698,7 @@ int main(void)
     LQ_SceneFree(&selection);
     puts("PASS deterministic bounded runtime-light selection, stable shadow slots and PVS reach");
     CHECK(LightBudgetTest() == 0);
+    CHECK(InViewSelectionTest() == 0);
     CHECK(SurfaceLightTest() == 0);
     CHECK(BounceRoomTest() == 0);
     CHECK(EffectTest() == 0);

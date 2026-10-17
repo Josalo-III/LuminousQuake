@@ -277,6 +277,17 @@ uint32_t LQ_BuildRuntimeLightsLimited(const lq_scene *scene, const float styles[
  * light any draw with nonzero index_count in `visible` are left out first. */
 uint32_t LQ_BuildRuntimeLightsVisible(const lq_scene *scene, const float styles[256],
     const float camera[3], const lq_draw *visible, lq_runtime_light output[LQ_MAX_RUNTIME_LIGHTS], uint32_t slots);
+/* As above, and with a `clip` matrix (NULL for none) the sources that light a
+ * visible draw on screen rank ahead of those lighting only draws off it, so a
+ * light on what the player sees is never displaced by a nearer one behind. */
+uint32_t LQ_BuildRuntimeLightsInView(const lq_scene *scene, const float styles[256], const float camera[3],
+    const lq_draw *visible, const float clip[16], lq_runtime_light output[LQ_MAX_RUNTIME_LIGHTS], uint32_t slots);
+/* Whether a box (min xyz, max xyz) can meet a clip matrix's view volume. */
+int LQ_BoundsInClip(const float clip[16], const float bounds[6]);
+/* The view volume used to rank lights: the view widened by
+ * LQ_SELECTION_FOV_MARGIN degrees, so lights just off the edge of the screen
+ * already hold slots (and drawn shadow cubes) as the player turns. */
+#define LQ_SELECTION_FOV_MARGIN 30.0f
 /* A gameplay light (rocket, muzzle flash, explosion): Quake's dlight radius as a
  * linear light of that value, unscaled, so its strength matches Classic. */
 void LQ_DynamicRuntimeLight(lq_runtime_light *light, const float origin[3], float radius,
@@ -304,9 +315,16 @@ typedef struct { uint32_t source; float peak; } lq_light_drop;
 uint32_t LQ_LightBudget(const lq_scene *scene, const float styles[256], const float camera[3],
     const uint8_t *visible, uint32_t slots, lq_light_drop *dropped, uint32_t capacity,
     uint32_t *dropped_count);
+/* As above, selecting as the game does with `select_clip` (see
+ * LQ_BuildRuntimeLightsInView), and counting only draws that also meet
+ * `count_clip` when it is given. */
+uint32_t LQ_LightBudgetInView(const lq_scene *scene, const float styles[256], const float camera[3],
+    const uint8_t *visible, const float select_clip[16], const float count_clip[16], uint32_t slots,
+    lq_light_drop *dropped, uint32_t capacity, uint32_t *dropped_count);
 /* Cache per-draw bounds for per-frame interaction building. */
 int LQ_SceneDrawBounds(lq_scene *scene);
 void LQ_SceneFree(lq_scene *scene);
 void LQ_ViewMatrix(const lq_view *view, float aspect, float matrix[16]);
+void LQ_LightSelectionClip(const lq_view *view, float aspect, float matrix[16]);
 int LQ_SceneCheck(const lq_scene *scene, char *error, size_t error_size);
 #endif
