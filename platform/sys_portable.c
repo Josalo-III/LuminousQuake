@@ -230,14 +230,14 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--platform-test")) return LQ_PlatformDemo(argc, argv, true);
 #endif
         if (!strcmp(argv[i], "--version")) {
-            printf("LuminousQuake 0.3.0 (%zu-bit native C, %s)\n",
+            printf("LuminousQuake " LQ_VERSION " (%zu-bit native C, %s)\n",
                 sizeof(void *) * CHAR_BIT,
 #ifdef LQ_DEDICATED
                 "dedicated server"
 #elif defined(LQ_GPU)
                 "SDL3 GPU world viewer"
 #elif defined(LQ_SDL)
-                "SDL3 software client"
+                "SDL3 client"
 #else
                 "headless client"
 #endif
