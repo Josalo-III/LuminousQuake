@@ -177,6 +177,11 @@ typedef struct {
 #define LQ_SHADOW_ARRAY_CUBES {16, 32, 40, 40}
 /* Shadow array and cube within it of a runtime slot. */
 void LQ_ShadowSlot(uint32_t slot, uint32_t *array, uint32_t *cube);
+/* Luminous sums light in Quake's brightness units, as LIGHT did, where 128
+ * shows a texture at its palette colour. The total becomes linear light as
+ * (brightness / 128)^LQ_LIGHT_GAMMA, so a texel lit to brightness b looks as it
+ * does in Classic, while shading, filtering and colour stay linear and 32-bit. */
+#define LQ_LIGHT_GAMMA 2.2f
 #define LQ_DYNAMIC_LIGHT_SOURCE 0x80000000u /* source_index tag for gameplay lights */
 typedef struct {
     float position_radius[4]; /* world xyz and falloff/shadow range */
@@ -204,6 +209,7 @@ typedef struct {
     uint32_t static_brush_shadows;
     uint32_t disable_bounce; /* Luminous diagnostic: direct light only */
     float exposure; /* Luminous brightness scale; zero means 1 */
+    float light_gamma; /* Luminous brightness-to-linear exponent; zero means LQ_LIGHT_GAMMA */
     float bounce_gain; /* Luminous artistic bounce multiplier; zero means 1 */
     float water_warp;
     float water_alpha; /* liquid opacity; zero or one draws liquids opaque */

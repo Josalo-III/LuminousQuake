@@ -94,6 +94,7 @@ typedef struct {
     float sun_direction[4]; /* xyz: direction sunlight travels; w: incidence angle scale */
     float sun_light[4]; /* rgb: sunlight at normal incidence and full visibility; zero without a sun */
     float shadow_sizes[4]; /* cube face size per shadow array */
+    float color_space[4]; /* x: exponent from summed brightness to linear light (Luminous) */
 } lq_light_uniforms;
 typedef struct { float face_projection[16]; } lq_shadow_uniforms;
 #define LQ_SHADOW_NEAR 2.0f
@@ -750,6 +751,7 @@ static void LightUniforms(lq_light_uniforms *uniforms, const lq_gpu *g, const lq
     static const uint32_t sizes[] = LQ_SHADOW_ARRAY_SIZES;
     for (int t = 0; t < LQ_SHADOW_ARRAYS; ++t) uniforms->shadow_sizes[t] = (float)sizes[t];
     uniforms->tuning[0] = view->exposure > 0 ? view->exposure : 1;
+    uniforms->color_space[0] = view->light_gamma > 0 ? view->light_gamma : LQ_LIGHT_GAMMA;
     uniforms->tuning[1] = g->bounce_ratio;
     uniforms->tuning[2] = view->luminous_lighting && g->bounce_ratio > 0 && !view->disable_bounce;
     uniforms->tuning[3] = view->bounce_gain > 0 ? view->bounce_gain : 1;

@@ -243,17 +243,21 @@ static int LuminousLightTest(lq_view *view, char *error, size_t size)
         fixture.colormap.pixels[(row*256 + 224)*4 + 2] = 255;
         fixture.colormap.pixels[(row*256 + 224)*4 + 3] = 255;
     }
-    /* Row 32 holds the palette color at normal brightness, where lit effects
-     * start: half-lit blue, as row 31 is for surfaces at 128. */
+    /* Row 32 holds the palette color at normal brightness (128). Luminous
+     * lights surfaces, actors and effects from it in linear light, so 128
+     * brightness shows it unchanged: half red, half blue. */
+    fixture.colormap.pixels[(32*256 + 201)*4] = 127;
     fixture.colormap.pixels[(32*256 + 202)*4 + 2] = 127;
-    fixture.colormap.pixels[(32*256 + 202)*4 + 3] = 255;
+    fixture.colormap.pixels[(32*256 + 201)*4 + 3] = fixture.colormap.pixels[(32*256 + 202)*4 + 3] = 255;
     if (!LQ_GPUUpload(gpu,&fixture,error,size)) goto done;
     fixture.draws[0].light_bits[0] = fixture.draws[1].light_bits[0] = 1;
     view->world_draws = fixture.draws; view->world_draw_count = fixture.draw_count;
     view->lightstyles[0] = 1;
     view->luminous_lighting = 1; view->runtime_light_count = 1;
     /* At 64 units from the fixture, the compiler-inspired term below yields
-     * 128 brightness: palette row 31, the expected half-lit red. */
+     * 128 brightness: the row-32 colour, the expected half red. A half-red
+     * light gives 64 brightness in red: a quarter of linear light, which the
+     * display encoding shows as half that red. */
     view->runtime_lights[0].position_radius[3] = 320;
     view->runtime_lights[0].falloff[0] = 320; view->runtime_lights[0].falloff[1] = 1;
     view->runtime_lights[0].falloff[2] = 0.5f; view->runtime_lights[0].spot[3] = -2;
@@ -261,6 +265,10 @@ static int LuminousLightTest(lq_view *view, char *error, size_t size)
         view->runtime_lights[0].color_strength[2] = 1;
     view->runtime_lights[0].color_strength[3] = 0.5f;
     if (!LQ_GPURender(gpu,view,640,480,error,size) || !CenterColor(127,0,error,size)) goto done;
+    /* Shading is continuous, not 64 colormap rows: 100 brightness shows
+     * 127 * 100/128, where a row lookup would land on a row left black here. */
+    view->runtime_lights[0].color_strength[3] = 100.0f / 256;
+    if (!LQ_GPURender(gpu,view,640,480,error,size) || !CenterColor(99,0,error,size)) goto done;
     view->runtime_lights[0].color_strength[3] = 0;
     if (!LQ_GPURender(gpu,view,640,480,error,size) || !CenterColor(0,0,error,size)) goto done;
     view->runtime_lights[0].color_strength[0] = 0.5f;
@@ -269,7 +277,7 @@ static int LuminousLightTest(lq_view *view, char *error, size_t size)
     if (!LQ_GPURender(gpu,view,640,480,error,size) || !CenterColor(64,0,error,size)) goto done;
     {
         /* An actor over the same spot: Luminous lights it from the runtime light
-         * (palette row 31, half-lit blue); Classic keeps its vertex shade. */
+         * (the row-32 colour, half blue); Classic keeps its vertex shade. */
         lq_vertex actor[3]; memcpy(actor, fixture.vertices, sizeof(actor));
         uint32_t order[] = {0,1,2}; uint8_t blue = 202;
         for (int i = 0; i < 3; ++i) actor[i].shade = 0;
@@ -306,7 +314,7 @@ static int LuminousLightTest(lq_view *view, char *error, size_t size)
     }
     view->luminous_lighting = 0; view->runtime_light_count = 0;
     if (!LQ_GPURender(gpu,view,640,480,error,size) || !CenterColor(255,0,error,size)) goto done;
-    puts("PASS Luminous point/actor lighting, diffuse effects, fullbright emission, darkness and Classic isolation");
+    puts("PASS Luminous 32-bit linear point/actor lighting, diffuse effects, fullbright emission, darkness and Classic isolation");
     good = 1;
 done:
     view->lightstyles[0] = saved_style;
@@ -713,6 +721,13 @@ int LQ_GPUViewer(int argc, char **argv)
         char *end; view.exposure = strtof(exposure, &end);
         if (!*exposure || *end || !isfinite(view.exposure) || view.exposure <= 0 || view.exposure > 16) {
             fprintf(stderr, "--exposure needs 0 < scale <= 16\n"); return 1;
+        }
+    }
+    const char *light_gamma = Argument(argc, argv, "--light-gamma");
+    if (light_gamma) {
+        char *end; view.light_gamma = strtof(light_gamma, &end);
+        if (!*light_gamma || *end || !isfinite(view.light_gamma) || view.light_gamma < 1 || view.light_gamma > 3) {
+            fprintf(stderr, "--light-gamma needs 1 <= exponent <= 3\n"); return 1;
         }
     }
     if (bounce_gain) {

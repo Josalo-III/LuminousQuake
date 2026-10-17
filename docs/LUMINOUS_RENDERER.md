@@ -287,6 +287,8 @@ the map sets `_bouncescale 0.5`, so physically based bounce there is subtle
 
 Viewer tuning flags:
 - `--exposure S` scales all Luminous light; below 1 is darker.
+- `--light-gamma G` (1–3, default 2.2) sets the exponent from summed
+  brightness to linear light; see [colour](#colour-linear-light-at-32-bits).
 - `--bounce-gain G` scales bounce artistically.
 - `--bounce-scale S` replaces the map's per-reflection bounce scale.
 - `--no-bounce` disables bounce.
@@ -297,6 +299,45 @@ Viewer tuning flags:
 
 For example, `--exposure 0.7 --bounce-gain 8` gives a darker scene with a
 visible fill. The defaults (1, 1) are physically based.
+
+## Colour: linear light at 32 bits
+
+Since October 17, 2026, Luminous shades in linear light at full precision
+(`renderer/shaders/world.frag`). Classic GPU keeps its palette-exact colormap
+path, and sky, opaque liquids and Classic's model shading are unchanged.
+
+- **Light adds up in Quake's brightness units**, as LIGHT summed it: direct
+  light, bounce, sky, sun and probes, where 128 shows a texture at its palette
+  colour. The total becomes linear light once, as `(b / 128)^2.2`
+  (`LQ_LIGHT_GAMMA`). A texel lit to brightness `b` therefore looks as it does
+  in Classic, so Luminous keeps Classic's composition of light and dark. This is
+  how DarkPlaces treats lightmaps in its sRGB mode.
+- **Surface colour is linear.** Each texel's palette colour (colormap row 32,
+  which reproduces the palette exactly: 11 entries point to another index of
+  the same colour) is decoded to linear light. It is lit before
+  filtering, so bilinear, trilinear and anisotropic filtering mix light rather
+  than encoded values. Fullbrights (224–255) emit their colour unlit.
+- **No 64-step shading.** The colormap rows no longer quantize light. On a
+  ceiling gradient in E1M1 the same crop shows 1,595 distinct colours instead
+  of 394. Coloured light is applied per channel in linear light rather than as
+  a tint over a grey shade.
+- **The display transfer is a pure 2.2 power**, the CRT gamma Quake's palette
+  was drawn for. Exact sRGB differs only below about 4%, where its linear toe
+  crushed Classic's shadows (E1M3's dark stone went visibly blacker with it).
+- **The ceiling is Classic's** until HDR output: twice the palette colour
+  (brightness 255), scaled to keep the light's hue.
+
+`--light-gamma 1` reads summed brightness as linear light directly. At four
+test cameras it is 17–35% brighter on average, with flatter contrast and
+lifted shadows. 2.2 keeps the old composition: mean brightness within 0.3 of
+the 8-bit path at all four.
+
+Limits:
+- Translucent surfaces (water, particles) still blend in display space, in an
+  8-bit target. Blending in linear light arrives with the HDR float target.
+- With VSync off and 16× anisotropic trilinear filtering, the old and new
+  shaders both ran at about 120 frames a second at E1M1's exterior. No cost
+  was visible, but that rate may be a cap, so the GPU cost is not measured.
 
 ## In-game experimental mode and weapon light
 

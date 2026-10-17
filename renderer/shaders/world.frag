@@ -43,6 +43,7 @@ layout(set=3,binding=1,std140) uniform Lights {
     vec4 sun_direction; // xyz: direction sunlight travels; w: incidence angle scale
     vec4 sun_light; // rgb: sunlight at normal incidence (bounce/probe layer 1 alpha: visibility)
     vec4 shadow_sizes; // cube face size per shadow array
+    vec4 color_space; // x: exponent from summed brightness to linear light
 } lights;
 const float SHADOW_NEAR = 2.0;
 layout(location=0) in vec2 uv;
@@ -51,10 +52,28 @@ layout(location=2) in vec3 world_position;
 layout(location=3) in float shade;
 layout(location=4) in vec3 world_normal;
 layout(location=0) out vec4 color;
+// Luminous shades in linear light at 32 bits. Each texel's palette colour
+// (colormap row 32, Quake's normal brightness) is decoded to linear and lit
+// before filtering; fullbrights emit their colour unlit. The frame is encoded
+// for the display once, at the end of main. The transfer is a pure 2.2 power,
+// the CRT gamma Quake's palette was drawn for. It matches sRGB except below
+// about 4%, where sRGB's linear toe would crush the shadows Classic shows.
+bool linear_lit = false;
+vec3 lit_radiance = vec3(1.0);
+const float DISPLAY_GAMMA = 2.2;
+vec3 displayDecode(vec3 c) { return pow(max(c, vec3(0.0)), vec3(DISPLAY_GAMMA)); }
+vec3 displayEncode(vec3 c) { return pow(clamp(c, 0.0, 1.0), vec3(1.0 / DISPLAY_GAMMA)); }
+vec4 litEntry(float entry) {
+    vec4 c = texture(colormap, vec2((entry + 0.5) / 256.0, 32.5 / 64.0));
+    c.rgb = displayDecode(c.rgb);
+    if (entry < 224.0) c.rgb *= lit_radiance;
+    return c;
+}
 vec4 paletteColor(ivec2 p, int level, float grade) {
     ivec2 size = textureSize(indices, level);
     p = (p % size + size) % size;
     float entry = floor(texelFetch(indices, p, level).r * 255.0 + 0.5);
+    if (linear_lit) return litEntry(entry);
     return texture(colormap, vec2((entry + 0.5) / 256.0, (grade + 0.5) / 64.0));
 }
 vec4 levelColor(vec2 coord, int level, float grade) {
@@ -327,6 +346,12 @@ void main() {
                 if ((flags & 16) != 0) illumination = max(illumination, vec3(24.0)); // Quake's view-weapon minimum
                 brightness = max(illumination.r,max(illumination.g,illumination.b));
                 if (brightness > 0.001) direct_tint = illumination/brightness;
+                // Brightness sums as LIGHT summed it; it becomes linear light once.
+                // Until HDR output, the ceiling stays Classic's: twice the palette
+                // colour (brightness 255), with the light's hue kept.
+                vec3 capped = brightness > 255.0 ? illumination * (255.0 / brightness) : illumination;
+                lit_radiance = pow(max(capped / 128.0, vec3(0.0)), vec3(lights.color_space.x));
+                linear_lit = !lit_effect;
             } else {
                 brightness = dot(texture(lightmap, light_uv), surface.light_weights) * 255.0;
                 for (int i = 0; i < 32; ++i)
@@ -351,6 +376,10 @@ void main() {
         // effect_light is relative to; row 0 is double that and would show
         // lit effects twice as bright as the walls around them.
         color = texture(colormap, vec2((index + 0.5) / 256.0, 32.5 / 64.0));
-        color.rgb *= effect_light;
+        color.rgb = displayEncode(displayDecode(color.rgb) *
+            pow(max(effect_light, vec3(0.0)), vec3(lights.color_space.x)));
+    } else if (linear_lit) {
+        if ((flags & 9) != 0) color = litEntry(index);
+        color.rgb = displayEncode(color.rgb);
     } else if (lights.parameters.y != 0u && index < 224.0) color.rgb *= direct_tint;
 }
