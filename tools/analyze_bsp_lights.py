@@ -50,7 +50,7 @@ def map_bytes(basedir, map_name):
     loose = basedir / 'id1' / name
     if loose.is_file():
         return loose.read_bytes()
-    for path in sorted((basedir / 'id1').glob('pak*.pak'), reverse=True):
+    for path in sorted((basedir / 'id1').glob('pak*.pak', case_sensitive=False), reverse=True):
         data = pak_file(path, name)
         if data is not None:
             return data

@@ -24,7 +24,7 @@ parser.add_argument('--anisotropy', type=int, choices=(1,2,4,8,16), default=1)
 parser.add_argument('--run-seconds', type=int, help='Override the bounded smoke duration')
 args = parser.parse_args()
 executable = args.executable.resolve()
-packs = sorted((args.basedir.resolve() / 'id1').glob('pak*.pak'))
+packs = sorted((args.basedir.resolve() / 'id1').glob('pak*.pak', case_sensitive=False))
 if not executable.is_file() or not packs:
     parser.error('Need a client executable and a basedir containing id1/pak*.pak')
 

@@ -96,4 +96,10 @@ with tempfile.TemporaryDirectory(prefix="luminousquake-test-") as tmp:
     (id1 / "pak0.pak").write_bytes(struct.pack("<4sii", b"PACK", 12 + len(payload),
                                                len(directory)) + payload + directory)
     run(root, ["--check-data", "-basedir", str(root)], contains="Required files found")
-print("PASS generated QuakeC, rejected malformed headers/ranges, loose/PAK discovery, dedicated startup")
+    # DOS-era and GOG installs name it PAK0.PAK; with no loose files, only the
+    # uppercase pack can satisfy the check, even on a case-sensitive volume.
+    upper = root / "upper"
+    (upper / "id1").mkdir(parents=True)
+    (upper / "id1/PAK0.PAK").write_bytes((id1 / "pak0.pak").read_bytes())
+    run(upper, ["--check-data", "-basedir", str(upper)], contains="Required files found")
+print("PASS generated QuakeC, rejected malformed headers/ranges, loose/PAK/uppercase PAK discovery, dedicated startup")

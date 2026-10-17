@@ -18,6 +18,10 @@ static BOOL Valid(NSString *path)
     if (!path) return NO;
     NSString *pak = [Normalize(path) stringByAppendingPathComponent:@"id1/pak0.pak"];
     FILE *file = fopen([pak fileSystemRepresentation], "rb");
+    if (!file) { /* DOS-era and GOG installs: PAK0.PAK on a case-sensitive volume */
+        pak = [Normalize(path) stringByAppendingPathComponent:@"id1/PAK0.PAK"];
+        file = fopen([pak fileSystemRepresentation], "rb");
+    }
     if (!file) return NO;
     unsigned char header[12]; size_t count = fread(header, 1, sizeof(header), file);
     fclose(file);

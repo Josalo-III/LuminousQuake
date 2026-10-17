@@ -129,7 +129,8 @@ For the local archive, from the repository root:
 ```
 
 `-basedir PATH` expects `PATH/id1/`; original installations typically use
-`pak0.pak` and `pak1.pak`. The local `quake-complete/` archive is ignored by Git
+`pak0.pak` and `pak1.pak`. DOS-era and GOG installations name them `PAK0.PAK`
+and `PAK1.PAK`, which are also found on case-sensitive filesystems. The local `quake-complete/` archive is ignored by Git
 and has unverified provenance/content. It is a smoke-test sample, not the
 original 1996 compatibility baseline. Extension warnings from its game code
 remain visible. See [Phase 2 notes](docs/PHASE_2.md).
@@ -178,7 +179,8 @@ checking the app and disk image with Gatekeeper (`spctl`).
 
 LuminousQuake targets the original game. Rerelease installations are an expected
 compatibility case, with support still incomplete: known missing engine services
-are tracked in the [rerelease comparison](docs/RERELEASE_COMPARISON.md). The plan
+are tracked in the [rerelease comparison](docs/RERELEASE_COMPARISON.md). Checks
+against v1.06 retail data are recorded in the [retail comparison](docs/RETAIL_COMPARISON.md). The plan
 is to support the necessary services and detect unsupported requirements early,
 while preserving the installed game data. Rerelease visual improvements are
 within scope, with the original campaign central; full rerelease feature parity

@@ -1738,6 +1738,12 @@ void COM_AddGameDirectory (char *dir)
 		sprintf (pakfile, "%s/pak%i.pak", dir, i);
 		pak = COM_LoadPackFile (pakfile);
 		if (!pak)
+		{	// LuminousQuake: DOS-era and GOG installs ship PAK0.PAK, which a
+			// case-sensitive filesystem won't match against pak0.pak
+			sprintf (pakfile, "%s/PAK%i.PAK", dir, i);
+			pak = COM_LoadPackFile (pakfile);
+		}
+		if (!pak)
 			break;
 		search = Hunk_Alloc (sizeof(searchpath_t));
 		search->pack = pak;
@@ -1834,7 +1840,7 @@ void COM_InitFilesystem (void)
 				break;
 			
 			search = Hunk_Alloc (sizeof(searchpath_t));
-			if ( !strcmp(COM_FileExtension(com_argv[i]), "pak") )
+			if ( !Q_strcasecmp(COM_FileExtension(com_argv[i]), "pak") )
 			{
 				search->pack = COM_LoadPackFile (com_argv[i]);
 				if (!search->pack)

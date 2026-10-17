@@ -7,4 +7,5 @@
 *.pak
 __pycache__/
 /quake-shareware/
+/quake-retail/
 /QUAKE-SW.zip
