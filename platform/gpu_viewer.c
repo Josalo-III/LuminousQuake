@@ -8,6 +8,7 @@
 #include "quake_scene.h"
 #include "gpu_sdl.h"
 #include "jobs.h"
+#include "performance.h"
 #include "fluorescent.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,6 +21,7 @@ static lq_scene scene;
 static void Shutdown(void)
 {
     LQ_JobsShutdown();
+    LQ_PerformanceStop();
     LQ_GPUDestroy(gpu); gpu = NULL; LQ_SceneFree(&scene); LQ_QuakeSceneShutdown();
     if (window) SDL_DestroyWindow(window); window = NULL; SDL_Quit();
 }
@@ -798,6 +800,8 @@ int LQ_GPUViewer(int argc, char **argv)
     int compare = Has(argc, argv, "--compare-bounce");
     SDL_SetMainReady();
     if (!SDL_Init(SDL_INIT_VIDEO)) { snprintf(error, sizeof(error), "SDL3: %s", SDL_GetError()); goto done; }
+    if (!LQ_PerformanceStart(0, NULL, NULL))
+        fprintf(stderr, "Resource monitor unavailable; retaining configured worker budget.\n");
     window = SDL_CreateWindow("LuminousQuake GPU world viewer / WASD fly / E Q vertical / F1 capture / Esc exit",
         960, 720, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
         (test || compare || Has(argc, argv, "--compare-probes") || Has(argc, argv, "--light-budget") ? SDL_WINDOW_HIDDEN : 0));

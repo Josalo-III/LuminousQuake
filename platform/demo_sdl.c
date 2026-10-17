@@ -5,8 +5,10 @@
 #include "sdl_backend.h"
 #include "render_bridge.h"
 #include "jobs.h"
+#include "performance.h"
 extern cvar_t scr_fov;
 #include <stdalign.h>
+#include <stdatomic.h>
 
 surfcache_t *D_SCAlloc(int width, int size);
 extern byte *draw_chars;
@@ -18,16 +20,69 @@ static byte font[128 * 128];
 static sfx_t demo_sound;
 static float demo_depth[8];
 
-typedef struct { unsigned *values; } job_test_context;
+typedef struct { unsigned *values; atomic_uint *visits; } job_test_context;
 static void TestJobRange(void *opaque_context, size_t begin, size_t end)
 {
     job_test_context *context = opaque_context;
-    for (size_t i = begin; i < end; ++i) context->values[i] = (unsigned)(i ^ 0x5a5a);
+    for (size_t i = begin; i < end; ++i) {
+        context->values[i] = (unsigned)(i ^ 0x5a5a);
+        if (context->visits) atomic_fetch_add(&context->visits[i], 1);
+    }
 }
 
 #define VERIFY(condition) do { if (!(condition)) { \
     fprintf(stderr, "FAIL SDL %s:%d: %s\n", __FILE__, __LINE__, #condition); return 1; \
 } } while (0)
+
+static atomic_int test_cpu_load;
+static bool TestCpuLoad(void *unused, double *busy)
+{
+    (void)unused;
+    *busy = atomic_load(&test_cpu_load) / 100.0;
+    return true;
+}
+
+static int TestResourceJobs(void)
+{
+    unsigned values[1003];
+    atomic_uint visits[1003];
+    for (size_t i = 0; i < 1003; ++i) atomic_init(&visits[i], 0);
+    job_test_context context = {values, visits};
+    atomic_store(&test_cpu_load, 20);
+    VERIFY(LQ_PerformanceStart(0, TestCpuLoad, NULL));
+    Cvar_SetValue("lq_workers", -1);
+    unsigned full = LQ_JobsWorkerCount();
+    for (unsigned phase = 0; phase < 3; ++phase) {
+        bool constrained = phase == 1;
+        atomic_store(&test_cpu_load, constrained ? 95 : 20);
+        lq_perf_state wanted = constrained ? LQ_PERF_CONSTRAINED : LQ_PERF_HEADROOM;
+        Uint64 end = SDL_GetTicks() + 3500;
+        while (LQ_PerformanceRead().state != wanted && SDL_GetTicks() < end) SDL_Delay(2);
+        VERIFY(LQ_PerformanceRead().state == wanted);
+        unsigned desired = LQ_JobsDesiredWorkerCount();
+        VERIFY(LQ_JobsWorkerBudget() == (constrained && desired > 1 ? (desired + 1) / 2 : desired));
+        /* Completion must still cover every row exactly once, with no pool
+         * recreation when the shared resource state changes the active cohort. */
+        for (unsigned repeat = 0; repeat < 20; ++repeat) {
+            memset(values, 0, sizeof(values));
+            for (size_t i = 0; i < 1003; ++i) atomic_store(&visits[i], 0);
+            LQ_JobsRunRange(1003, repeat % 2 ? 1 : 37, TestJobRange, &context);
+            VERIFY(LQ_JobsWorkerCount() == full);
+            for (size_t i = 0; i < 1003; ++i) {
+                VERIFY(values[i] == (unsigned)(i ^ 0x5a5a));
+                VERIFY(atomic_load(&visits[i]) == 1);
+            }
+        }
+        if (constrained) {
+            Cvar_SetValue("lq_workers", 4);
+            VERIFY(LQ_JobsWorkerBudget() == 4);
+            Cvar_SetValue("lq_workers", -1);
+        }
+    }
+    LQ_PerformanceStop();
+    puts("PASS shared CPU pressure, automatic worker budgets, overrides, and stable job completion");
+    return 0;
+}
 
 static void Palette(byte *palette)
 {
@@ -215,6 +270,7 @@ static int TestPlatform(qboolean no_audio)
         Cvar_SetValue("lq_workers", -1);
         puts("PASS parallel and forced-serial range jobs");
     }
+    VERIFY(TestResourceJobs() == 0);
     { float old_yaw = cl.viewangles[YAW];
       SDL_Event motion;
       memset(&motion, 0, sizeof(motion)); motion.type = SDL_EVENT_MOUSE_MOTION;
@@ -437,6 +493,7 @@ int LQ_PlatformDemo(int argc, char **argv, qboolean test)
         if (argument && argument + 1 < com_argc && !LQ_SaveFrame(com_argv[argument + 1]))
             Sys_Error("Cannot save demonstration frame: %s", SDL_GetError());
     }
+    LQ_PerformanceStop();
     S_Shutdown(); IN_Shutdown(); VID_Shutdown();
     LQ_SetDemo(false); SDL_Quit(); free(parms.membase);
     return result;

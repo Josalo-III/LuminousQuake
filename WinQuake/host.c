@@ -25,6 +25,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "render_bridge.h"
 #include "user_paths.h"
 #include "frame_timing.h"
+#include "tick_clock.h"
 #endif
 
 /*
@@ -253,6 +254,7 @@ void Host_InitLocal (void)
 	Cvar_RegisterVariable (&campaign);
 	Cvar_RegisterVariable (&lq_renderer);
 	LQ_ProfileInit ();
+	LQ_TickClockRegister ();
 
 	Host_FindMaxClients ();
 	
@@ -569,6 +571,30 @@ Returns how many 72 Hz ticks have come due during this frame
 static int Host_CountTicks (double frametime)
 {
 	int		ticks;
+#ifdef LQ_PORTABLE
+	static uint64_t last_tick;
+	static qboolean seen_clock, virtual_time;
+	lq_clock_sample sample;
+	if (LQ_TickClockRead (&sample))
+	{
+		qboolean fixed = host_framerate.value > 0 || cls.timedemo;
+		uint64_t due = seen_clock && !virtual_time && sample.tick >= last_tick ? sample.tick - last_tick : 0;
+		last_tick = sample.tick;
+		seen_clock = true;
+		virtual_time = fixed;
+		if (!fixed)
+		{
+			/* Every consumer references one epoch; render cadence and the
+			 * clock's sleep/spin policy cannot change simulation tick phase.
+			 * Preserve bounded catch-up after loading or a long frame hitch. */
+			host_tickaccum = sample.fraction * HOST_TICK;
+			return due > 8 ? 8 : (int)due;
+		}
+		/* Explicit slow motion, deterministic tests and timedemos keep their
+		 * virtual frame-time path. Rebase above so returning to wall time
+		 * cannot replay the interval spent running that virtual timeline. */
+	}
+#endif
 
 	host_tickaccum += frametime;
 	for (ticks = 0 ; host_tickaccum >= HOST_TICK ; ticks++)

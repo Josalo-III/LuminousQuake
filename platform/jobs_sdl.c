@@ -3,6 +3,7 @@
 #include "quakedef.h"
 #include "sdl_backend.h"
 #include "jobs.h"
+#include "performance.h"
 
 #define LQ_MAX_WORKERS 8
 
@@ -11,10 +12,11 @@ typedef struct {
     SDL_Condition *ready;
     SDL_Condition *finished;
     SDL_Thread *threads[LQ_MAX_WORKERS];
+    unsigned worker_ids[LQ_MAX_WORKERS];
     lq_range_job_fn function;
     void *context;
     size_t count, grain, next;
-    unsigned workers, remaining;
+    unsigned workers, active_workers, remaining;
     Uint64 generation;
     qboolean stopping;
 } lq_job_pool;
@@ -37,6 +39,7 @@ static int DesiredWorkers(void)
         if (requested < 1) requested = 1;
     } else if (selection >= LQ_MAX_WORKERS) requested = LQ_MAX_WORKERS;
     else requested = (int)selection;
+    if (requested > LQ_MAX_WORKERS) requested = LQ_MAX_WORKERS;
     return requested;
 }
 
@@ -58,7 +61,7 @@ static qboolean TakeRange(size_t *begin, size_t *end)
 static int WorkerMain(void *unused)
 {
     Uint64 seen = 0;
-    (void)unused;
+    unsigned id = *(unsigned *)unused;
     for (;;) {
         SDL_LockMutex(pool.mutex);
         while (!pool.stopping && seen == pool.generation)
@@ -68,6 +71,12 @@ static int WorkerMain(void *unused)
             return 0;
         }
         seen = pool.generation;
+        /* Keep the pool alive across pressure changes. Only the budgeted
+         * cohort participates in this job and its completion barrier. */
+        if (id >= pool.active_workers) {
+            SDL_UnlockMutex(pool.mutex);
+            continue;
+        }
         SDL_UnlockMutex(pool.mutex);
 
         size_t begin, end;
@@ -118,7 +127,8 @@ static void Configure(void)
         LQ_JobsShutdown(); configured = 0; return;
     }
     for (int i = 0; i < wanted; ++i) {
-        pool.threads[i] = SDL_CreateThread(WorkerMain, "LQ render worker", NULL);
+        pool.worker_ids[i] = (unsigned)i;
+        pool.threads[i] = SDL_CreateThread(WorkerMain, "LQ render worker", &pool.worker_ids[i]);
         if (!pool.threads[i]) {
             Con_Printf("Worker %d unavailable: %s\n", i + 1, SDL_GetError());
             break;
@@ -135,6 +145,28 @@ unsigned LQ_JobsWorkerCount(void)
 {
     Configure();
     return pool.workers;
+}
+
+unsigned LQ_JobsDesiredWorkerCount(void)
+{
+    return (unsigned)DesiredWorkers();
+}
+
+static unsigned WorkerBudget(unsigned workers)
+{
+    lq_perf_snapshot performance = LQ_PerformanceRead();
+    /* CPU contention reduces automatic parallelism without changing image
+     * quality or work results. Explicit lq_workers settings remain overrides.
+     * Unknown utilization is not evidence that fewer workers are beneficial. */
+    if (lq_workers.value < 0 && performance.running &&
+        performance.state == LQ_PERF_CONSTRAINED && workers > 1)
+        return (workers + 1) / 2;
+    return workers;
+}
+
+unsigned LQ_JobsWorkerBudget(void)
+{
+    return WorkerBudget((unsigned)DesiredWorkers());
 }
 
 void LQ_JobsRunRange(size_t count, size_t rows_per_job,
@@ -154,7 +186,8 @@ void LQ_JobsRunRange(size_t count, size_t rows_per_job,
     pool.count = count;
     pool.grain = rows_per_job;
     pool.next = 0;
-    pool.remaining = pool.workers;
+    pool.active_workers = WorkerBudget(pool.workers);
+    pool.remaining = pool.active_workers;
     ++pool.generation;
     SDL_BroadcastCondition(pool.ready);
     SDL_UnlockMutex(pool.mutex);

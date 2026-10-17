@@ -11,5 +11,7 @@ void LQ_JobsRunRange(size_t count, size_t rows_per_job,
     lq_range_job_fn function, void *context);
 void LQ_JobsShutdown(void);
 unsigned LQ_JobsWorkerCount(void);
+unsigned LQ_JobsDesiredWorkerCount(void);
+unsigned LQ_JobsWorkerBudget(void);
 
 #endif

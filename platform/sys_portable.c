@@ -14,13 +14,49 @@
 #include "quakedef.h"
 #include "diagnostics.h"
 #include "frame_timing.h"
+#include "tick_clock.h"
 #ifdef LQ_SDL
 #include "sdl_backend.h"
+#include "jobs.h"
+#include "performance.h"
 #ifdef __APPLE__
 #include "mac_launch.h"
 #endif
-static void PlatformExit(void) { S_Shutdown(); IN_Shutdown(); VID_Shutdown(); SDL_Quit(); }
+static void PlatformExit(void) { LQ_TickClockStop(); LQ_PerformanceStop(); S_Shutdown(); IN_Shutdown(); VID_Shutdown(); SDL_Quit(); }
+static cvar_t lq_clock_mode = {"lq_clock_mode", "0", true};
+static void ClockReport(void)
+{
+    lq_clock_stats s = LQ_TickClockStats();
+    lq_clock_sample sample = {0};
+    LQ_TickClockRead(&sample);
+    Con_Printf("Tick clock: %s; %s margin=%uus late=%u max_late=%uus skipped=%u fallbacks=%u "
+        "cores=%u load=%u%%%s switches=%u tick=%llu published=%llu\n",
+        !s.running ? "synchronous fallback" : s.spinning ? "continuous" :
+            s.margin_us ? "early wake" : "wait until",
+        s.realtime ? "real-time" : "standard", s.margin_us, s.late, s.max_late_us,
+        s.skipped, s.fallbacks,
+        s.cores, s.busy_percent, s.load_valid ? "" : " (unknown)", s.switches,
+        (unsigned long long)sample.tick,
+        (unsigned long long)s.published);
+}
+static void PerformanceReport(void)
+{
+    lq_perf_snapshot s = LQ_PerformanceRead();
+    Con_Printf("Performance: %s; cores=%u CPU=%u%%%s worker budget=%u/%u transitions=%u\n",
+        LQ_PerformanceStateName(s.state), s.cores, s.busy_percent,
+        s.load_valid ? "" : " (unknown)", LQ_JobsWorkerBudget(),
+        LQ_JobsDesiredWorkerCount(), s.transitions);
+}
 #endif
+
+void LQ_TickClockRegister(void)
+{
+#ifdef LQ_SDL
+    Cvar_RegisterVariable(&lq_clock_mode);
+    Cmd_AddCommand("lq_clock_report", ClockReport);
+    Cmd_AddCommand("lq_performance_report", PerformanceReport);
+#endif
+}
 
 #ifdef LQ_GPU
 #include "gpu_viewer.h"
@@ -313,9 +349,24 @@ int main(int argc, char **argv)
             (run_seconds > 0 && profile_warmup >= run_seconds))
             Sys_Error("--profile-warmup-seconds must be non-negative and shorter than --run-seconds");
     }
+#ifdef LQ_SDL
+    /* Controls were registered during Host_InitLocal, before startup config
+     * execution. Start the publisher after platform initialization is ready. */
+    if (!isDedicated) {
+        if (!LQ_PerformanceStart(0, NULL, NULL))
+            Con_Printf("Resource monitor unavailable; automatic policy remains conservative.\n");
+        if (!LQ_TickClockStart())
+            Con_Printf("Tick clock unavailable; retaining synchronous timing.\n");
+    }
+#endif
     run_start = previous = Sys_FloatTime();
     for (;;) {
         double now = Sys_FloatTime();
+#ifdef LQ_SDL
+        int mode = isfinite(lq_clock_mode.value) && lq_clock_mode.value >= 0 && lq_clock_mode.value <= 2 ? (int)lq_clock_mode.value : LQ_CLOCK_AUTO;
+        LQ_TickClockConfigure(mode, LQ_JobsDesiredWorkerCount(),
+            cls.state == ca_connected && !cl.paused && key_dest == key_game);
+#endif
         Host_Frame(now - previous);
         previous = now;
         if (!profile_reset && profile_warmup >= 0 && now - run_start >= profile_warmup) {

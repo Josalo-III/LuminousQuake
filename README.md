@@ -44,6 +44,14 @@ pool currently accelerates high-resolution UI scaling/compositing and the
 Classic GPU palette-overlay conversion; gameplay and GPU submission remain on
 their owning thread.
 
+The client's 72 Hz clock runs on its own real-time thread and is the master
+timeline for the simulation. By default it wakes 2 ms before each tick when the
+CPU has headroom and 0.5 ms before otherwise, then spins to the deadline;
+menus and paused games wake at the deadline. `lq_clock_mode 1` always wakes at
+the deadline and `2` spins continuously during gameplay (roughly one CPU core,
+without real-time scheduling). `lq_clock_report` shows its state. Details are in
+[frame timing](docs/FRAME_TIMING.md).
+
 The playable `luminousquake` executable supports **Software** and **Classic GPU**
 through Options. Classic GPU draws the world, animated models, moving brushes,
 sprites and particles on Metal/Vulkan, with original baked lighting, animated

@@ -16,6 +16,72 @@ simulation has to keep its 72 Hz cadence.
 
 ## How a host frame now runs
 
+### Real-time clock
+
+The SDL client starts an independent 72 Hz clock thread after platform
+initialization. It is the master timeline: it does nothing but wait for each
+tick's deadline and publish the tick number atomically, and `Host_CountTicks`
+takes its ticks from that publication. Consumers are never woken or blocked by
+it. Only timing data is shared; simulation and legacy game state stay on the
+main thread.
+
+On macOS the clock runs under Mach time-constraint scheduling, the class audio
+threads use, declaring a 1/72 s period, a computation of the early-wake margin
+plus 50 µs, and a constraint of the margin plus 1 ms. The kernel schedules it
+ahead of ordinary threads and wakes it on time as long as it stays within that
+budget. It sleeps until the margin before each deadline, then spins the rest of
+the way and publishes. Windows and Linux ask SDL for time-critical priority
+(MMCSS, or SCHED_RR directly or through rtkit) and otherwise run as an ordinary
+thread on the same schedule. `lq_clock_mode` is saved in the user config:
+
+| Value | Policy |
+| --- | --- |
+| `0` (default) | Automatic early wake: 2 ms before each deadline with CPU headroom, 0.5 ms otherwise, under real-time scheduling. |
+| `1` | Real-time, waking at the deadline with no early margin. |
+| `2` | Continuous spinning while gameplay is active. A thread that never sleeps would overrun a real-time budget and be demoted, so this mode uses the standard scheduling policy. |
+
+The 2 ms margin requires at least eight logical CPUs, a worker budget that
+leaves room for the main thread, clock and two spare CPUs, and the shared
+resource monitor reporting headroom. The automatic six workers on the ten-core
+M1 Max meet this requirement. CPU utilization is sampled every 250 ms by
+`platform/performance_sdl.c`; two consecutive samples at or above 85% mean
+constrained, eight at or below 65% mean headroom, and unknown utilization takes
+the 0.5 ms margin. Menus, console and pauses wake at the deadline in every
+mode. Margin and policy change only between ticks and never reset the epoch or
+tick sequence.
+
+The game uses the published tick while it is current or the next tick is
+moments away. If the clock ever falls more than a whole tick behind real time,
+the reader takes the current tick from the monotonic clock instead and counts
+a fallback, so a preempted clock cannot hold the game back indefinitely. The
+interpolation fraction is measured from the start of the tick in use.
+
+`lq_clock_report` prints the mode, whether real-time scheduling is held, the
+margin, publications 250 µs or more after their deadline (`late`), the worst
+lateness, ticks published together after a stall (`skipped`), reader fallbacks,
+sampled load, core count, mode switches and the current tick. Startup waits for
+the clock to become ready; shutdown joins it before SDL teardown. On
+initialization failure, and in the non-SDL headless/server targets, the
+original synchronous accumulator remains available.
+
+Normal wall-clock catch-up is bounded to eight ticks per rendered frame after a
+long hitch. `host_framerate` and timedemos retain their existing virtual frame-time
+accumulator. That override continually rebases the real-clock cursor, avoiding
+a backlog when returning to normal wall-clock operation.
+
+The clock test (`tests/tick_clock.c`) covers margin selection under pressure
+and recovery, published-tick authority, unavailable load sampling, low-core
+capacity, worker-budget changes, inactivity, explicit modes, real-time
+scheduling, timeline continuity, restart and shutdown.
+`tests/clock_content_smoke.py` exercises all three modes with real PAKs and the
+actual SDL client. On retail E1M1 (October 17, 2026) all three modes reported
+no late publications, skipped ticks or fallbacks, with a worst lateness of
+42 µs. Over 12 s at 60 fps the client used 3.1 s of CPU waking at the
+deadline, 4.2 s with automatic early wake and 12.1 s spinning. See
+[clock measurements](CLOCK_THREAD_EXPERIMENT.md) for wake timing under load.
+
+### Tick and frame work
+
 `Host_Frame` (WinQuake/host.c) splits each frame into two cadences:
 
 - **Every frame**: key events, console commands, view turning
@@ -87,7 +153,9 @@ message per frame, as before.
 
 ## Verified
 
-- `ctest --test-dir build`: 21/21 pass.
+- `ctest --test-dir build`: 23/23 pass, including the real-time clock thread test.
+- Clock policy changes pass real-time E1M1 checks in Software and Classic GPU.
+- Native CPU pressure triggers automatic wait-mode fallback and subsequent recovery.
 - Retail save/load, demo recording/playback, and repeated level changes/restart pass.
 - Headless `timedemo demo1` and `demo2` on shareware 1.01 run 969 and 985
   frames, the same as the previous build.

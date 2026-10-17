@@ -95,7 +95,7 @@ if(WIN32)
     target_compile_definitions(quake_core PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS _WIN32_WINNT=0x0601)
 endif()
 
-set(LQ_HEADLESS_BACKENDS WinQuake/vid_null.c WinQuake/in_null.c WinQuake/snd_null.c platform/render_bridge_null.c)
+set(LQ_HEADLESS_BACKENDS WinQuake/vid_null.c WinQuake/in_null.c WinQuake/snd_null.c platform/render_bridge_null.c platform/tick_clock_null.c)
 add_executable(luminousquake-headless platform/sys_portable.c ${LQ_HEADLESS_BACKENDS})
 add_executable(luminousquake-server platform/sys_portable.c ${LQ_HEADLESS_BACKENDS})
 target_compile_definitions(luminousquake-server PRIVATE LQ_DEDICATED=1)
@@ -108,7 +108,7 @@ if(LQ_BUILD_CLIENT)
     find_package(SDL3 3.4 CONFIG REQUIRED)
     add_executable(luminousquake platform/sys_portable.c
         platform/vid_sdl.c platform/in_sdl.c platform/snd_sdl.c platform/demo_sdl.c
-        platform/render_bridge.c platform/ui_scale.c platform/jobs_sdl.c platform/gpu_entities.c renderer/quake_scene.c renderer/gpu_sdl.c
+        platform/render_bridge.c platform/ui_scale.c platform/jobs_sdl.c platform/tick_clock_sdl.c platform/performance_sdl.c platform/gpu_entities.c renderer/quake_scene.c renderer/gpu_sdl.c
         WinQuake/snd_dma.c WinQuake/snd_mem.c WinQuake/snd_mix.c)
     target_compile_definitions(luminousquake PRIVATE LQ_SDL=1 SDL_MAIN_HANDLED)
     target_link_libraries(luminousquake PRIVATE SDL3::SDL3 lq_scene)
@@ -155,7 +155,7 @@ if(LQ_BUILD_CLIENT)
 endif()
 if(LQ_BUILD_GPU)
     find_package(SDL3 3.4 CONFIG REQUIRED)
-    add_executable(luminousquake-gpu platform/sys_portable.c platform/gpu_viewer.c platform/jobs_sdl.c
+    add_executable(luminousquake-gpu platform/sys_portable.c platform/gpu_viewer.c platform/jobs_sdl.c platform/performance_sdl.c
         renderer/quake_scene.c renderer/gpu_sdl.c ${LQ_HEADLESS_BACKENDS})
     target_compile_definitions(luminousquake-gpu PRIVATE LQ_GPU=1 SDL_MAIN_HANDLED)
     target_link_libraries(luminousquake-gpu PRIVATE lq_scene SDL3::SDL3)
@@ -224,15 +224,20 @@ if(BUILD_TESTING)
         endif()
     endforeach()
     if(LQ_BUILD_CLIENT)
+        add_executable(lq-clock-test tests/tick_clock.c platform/tick_clock_sdl.c platform/performance_sdl.c)
+        target_include_directories(lq-clock-test PRIVATE platform)
+        target_link_libraries(lq-clock-test PRIVATE SDL3::SDL3)
+        add_test(NAME adaptive-tick-clock COMMAND lq-clock-test)
+        set_tests_properties(adaptive-tick-clock PROPERTIES TIMEOUT 15)
         if(APPLE)
             add_test(NAME mac-bundle-relocation COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/mac_bundle.py $<TARGET_BUNDLE_DIR:luminousquake-app>)
         endif()
         add_test(NAME sdl-platform COMMAND luminousquake --platform-test -userdir "${CMAKE_CURRENT_BINARY_DIR}/platform-test-user")
         set_tests_properties(sdl-platform PROPERTIES
-            ENVIRONMENT "SDL_VIDEO_DRIVER=dummy;SDL_AUDIO_DRIVER=dummy" TIMEOUT 15)
+            ENVIRONMENT "SDL_VIDEO_DRIVER=dummy;SDL_AUDIO_DRIVER=dummy" TIMEOUT 15 RESOURCE_LOCK sdl-platform-artifacts)
         add_test(NAME sdl-unavailable-audio COMMAND luminousquake --platform-test --expect-no-audio -userdir "${CMAKE_CURRENT_BINARY_DIR}/platform-test-user")
         set_tests_properties(sdl-unavailable-audio PROPERTIES
-            ENVIRONMENT "SDL_VIDEO_DRIVER=dummy;SDL_AUDIO_DRIVER=nonexistent" TIMEOUT 15)
+            ENVIRONMENT "SDL_VIDEO_DRIVER=dummy;SDL_AUDIO_DRIVER=nonexistent" TIMEOUT 15 RESOURCE_LOCK sdl-platform-artifacts)
     endif()
 endif()
