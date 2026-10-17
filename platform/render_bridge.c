@@ -350,7 +350,9 @@ qboolean LQ_RenderBridgePresent(void)
 {
     char error[256]; lq_gpu *gpu = LQ_PlayableGPU();
     if (!gpu || !owner || !rgba || !count) return false;
-    qboolean opaque = !captured_scene || key_dest == key_console;
+    /* Console drawing already marks its own coverage. Making the entire
+     * overlay opaque hides the live world beneath a half-height console. */
+    qboolean opaque = !captured_scene;
     if (!captured_scene) {
         memset(&view, 0, sizeof(view)); view.horizontal_fov = 90;
         for (int i = 0; i < 256; ++i) view.lightstyles[i] = 1;
