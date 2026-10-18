@@ -104,6 +104,32 @@ Make single-player fast and smooth on the target Macs before any online work
 starts: measured with the [profiling method](PROFILING.md), against fixed
 scenes and frame-time goals.
 
+HDR and material-pack relief shadows both add GPU work, so this comes before
+them. Principles, decided October 17, 2026:
+
+- **Nothing draws the whole map.** Every pass, including shadow cubes, draws
+  only what its view and the light's reach can see. Doom 3 (dhewm3 in
+  `reference/`) is the guide: a light acts only inside its volume.
+- **A light ends where its falloff fades out**, unless it is a sun or another
+  regional light (the rerelease's no-falloff sunbeams). Inverse and
+  inverse-square lights, about 40% of Arcane Dimensions' lights, need a cutoff,
+  with ericw-tools' `_gate` honoured and a taper to zero so no ring shows.
+- **A spotlight acts only inside its cone**, for lit surfaces and for shadow
+  cube faces. E1M3's 32 sunbeams are no-falloff spotlights that currently count
+  every surface within 16,384 units and draw all six cube faces.
+- **Shadows are filtered only where they show**: none for faint lights
+  (`lq_shadow_faint`) or for lights overwhelmed by a brighter one at that point
+  (`lq_shadow_dominance`).
+- **Done October 17:** stationary casters no longer redraw shadows, moving ones
+  redraw over a cached static face, cube faces draw only in-range surfaces,
+  spotlights are culled to their cones, unbounded falloffs stop at their fade
+  level or `_gate`, and faint or overwhelmed lights skip shadow filtering.
+  E1M3: 76 → about 110 fps uncapped.
+- **Balance follows the hardware.** Measured October 17 at 1080p: the CPU does
+  about 4 ms of work a frame, the GPU about 12 ms. Work that can run on either
+  should move to whichever is idle, chosen at run time from measured load, not
+  fixed per task.
+
 ### 7. Online play, at least to the QuakeWorld standard
 
 Postponed until single-player is optimized. We can't call the engine done

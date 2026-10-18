@@ -43,7 +43,8 @@ layout(set=3,binding=1,std140) uniform Lights {
     vec4 sun_direction; // xyz: direction sunlight travels; w: incidence angle scale
     vec4 sun_light; // rgb: sunlight at normal incidence (bounce/probe layer 1 alpha: visibility)
     vec4 shadow_sizes; // cube face size per shadow array
-    vec4 color_space; // x: exponent from summed brightness to linear light
+    vec4 color_space; // x: exponent from summed brightness to linear light;
+                      // y: faint level, z: dominance ratio below which lights cast no shadow (0 off)
 } lights;
 const float SHADOW_NEAR = 2.0;
 layout(location=0) in vec2 uv;
@@ -244,6 +245,43 @@ float shadowFactor(uint slot, vec3 origin, vec3 normal, float radius) {
     }
     return sum / 16.0;
 }
+// Unshadowed light from slot i at this point, in Quake brightness units (its
+// strength included, colour not), and the direction toward it.
+float lightReach(uint i, vec3 normal, bool diffuse_effect, bool liquid, float opacity, bool submerged, out vec3 direction) {
+    vec4 origin = lights.position_range[i];
+    direction = origin.xyz-world_position;
+    float distance = length(direction);
+    if (distance >= origin.w) return 0.0;
+    direction = distance > 0.001 ? direction/distance : normal;
+    float facing = diffuse_effect ? 1.0 : dot(normal,direction);
+    if (facing <= 0.0) return 0.0; // LIGHT rejects sources behind a face
+    vec4 f = lights.falloff[i];
+    /* LIGHT's softened incidence: half the value at grazing. */
+    float direct = lightValue(f,distance) * ((1.0 - f.z) + f.z * facing);
+    // Unbounded falloffs stop at the range (their fade level); taper them to
+    // zero over its last fifth (LQ_LIGHT_TAPER) so no edge shows.
+    int formula = int(f.w + 0.5);
+    if (formula == 1 || formula == 2 || formula == 5) {
+        float taper = clamp((origin.w - distance) / (0.2 * origin.w), 0.0, 1.0);
+        direct *= taper * taper;
+    }
+    vec4 cone = lights.spot[i];
+    if (cone.w >= -1.0) { // see LQ_SpotFactor: world-space blur across the cone edge
+        float along = dot(-direction,cone.xyz), spot = 1.0, inner = lights.shape[i].x;
+        if (cone.w > 0.01) {
+            float edge = distance * sqrt(max(1.0 - along*along, 0.0)) -
+                distance * along * sqrt(max(1.0 - cone.w*cone.w, 0.0)) / cone.w;
+            float blur = 16.0 + lights.shape[i].y;
+            spot = along > 0.0 ? 1.0 - smoothstep(-blur, blur, edge) : 0.0;
+        } else if (along <= cone.w) return 0.0;
+        if (inner > cone.w) spot *= smoothstep(cone.w,inner,along);
+        if (spot <= 0.0) return 0.0;
+        direct *= spot;
+    }
+    direct *= lights.color_strength[i].w;
+    if (!liquid && opacity > 0.0 && submerged != (lights.shape[i].z > 0.5)) direct *= 1.0 - opacity;
+    return direct;
+}
 // Ambient-cube irradiance toward n from one block group of a probe texture
 // (alpha: sky visibility, unscaled). Trilinear filtering stays inside each
 // direction block: z is clamped to its probe centres before the block offset is added.
@@ -303,38 +341,46 @@ void main() {
             if (lights.parameters.y != 0u && ((flags & 4) == 0 || actor)) {
                 vec3 normal = normalize(world_normal);
                 vec3 illumination = vec3(0.0);
+                // Shadows are filtered only where they can be seen. A light
+                // below the faint level, or below the dominance ratio of the
+                // brightest light here, is left unshadowed: its shadow would be
+                // lost in the light around it. Each blends in between its
+                // threshold and twice that, so nothing switches visibly.
+                // Dominance is judged against the brightest light as it
+                // arrives, after its own shadow, so a light blocked here cannot
+                // excuse others that are blocked too.
+                float strongest = 0.0, brightest = 0.0, brightest_shadow = 1.0;
+                uint lead = 0xffffffffu;
+                vec3 toward;
+                if (lights.color_space.z > 0.0) {
+                    for (uint word = 0u; word < 4u; ++word)
+                    for (uint bits = surface.light_bits[word]; bits != 0u; bits &= bits - 1u) {
+                        uint i = word * 32u + uint(findLSB(bits));
+                        if (i >= lights.parameters.x) break;
+                        vec3 c = lights.color_strength[i].rgb;
+                        float value = lightReach(i, normal, diffuse_effect, liquid, opacity, submerged, toward) * max(c.r, max(c.g, c.b));
+                        if (value > brightest) { brightest = value; lead = i; }
+                    }
+                    if (lead != 0xffffffffu) {
+                        lightReach(lead, normal, diffuse_effect, liquid, opacity, submerged, toward);
+                        brightest_shadow = shadowFactor(lead,lights.position_range[lead].xyz,diffuse_effect ? toward : normal,lights.shape[lead].y);
+                        strongest = brightest * brightest_shadow;
+                    }
+                }
                 for (uint word = 0u; word < 4u; ++word)
                 for (uint bits = surface.light_bits[word]; bits != 0u; bits &= bits - 1u) {
                     uint i = word * 32u + uint(findLSB(bits));
                     if (i >= lights.parameters.x) break;
-                    vec4 origin = lights.position_range[i];
-                    vec3 direction = origin.xyz-world_position;
-                    float distance = length(direction);
-                    if (distance >= origin.w) continue;
-                    direction = distance > 0.001 ? direction/distance : normal;
-                    float facing = diffuse_effect ? 1.0 : dot(normal,direction);
-                    if (facing <= 0.0) continue; // LIGHT rejects sources behind a face
-                    vec4 f = lights.falloff[i];
-                    /* LIGHT's softened incidence: half the value at grazing. */
-                    float direct = lightValue(f,distance) * ((1.0 - f.z) + f.z * facing);
-                    vec4 cone = lights.spot[i];
-                    if (cone.w >= -1.0) { // see LQ_SpotFactor: world-space blur across the cone edge
-                        float along = dot(-direction,cone.xyz), spot = 1.0, inner = lights.shape[i].x;
-                        if (cone.w > 0.01) {
-                            float edge = distance * sqrt(max(1.0 - along*along, 0.0)) -
-                                distance * along * sqrt(max(1.0 - cone.w*cone.w, 0.0)) / cone.w;
-                            float blur = 16.0 + lights.shape[i].y;
-                            spot = along > 0.0 ? 1.0 - smoothstep(-blur, blur, edge) : 0.0;
-                        } else if (along <= cone.w) continue;
-                        if (inner > cone.w) spot *= smoothstep(cone.w,inner,along);
-                        if (spot <= 0.0) continue;
-                        direct *= spot;
-                    }
-                    direct *= lights.color_strength[i].w;
-                    if (!liquid && opacity > 0.0 && submerged != (lights.shape[i].z > 0.5)) direct *= 1.0 - opacity;
+                    float direct = lightReach(i, normal, diffuse_effect, liquid, opacity, submerged, toward);
                     if (direct < 0.01) continue;
-                    direct *= shadowFactor(i,origin.xyz,diffuse_effect ? direction : normal,lights.shape[i].y);
-                    illumination += lights.color_strength[i].rgb * direct;
+                    vec3 c = lights.color_strength[i].rgb;
+                    if (i == lead) { illumination += c * direct * brightest_shadow; continue; }
+                    float value = direct * max(c.r, max(c.g, c.b));
+                    float needed = max(lights.color_space.y, strongest * lights.color_space.z);
+                    float weight = needed > 0.0 ? clamp(value / needed - 1.0, 0.0, 1.0) : 1.0;
+                    if (weight > 0.0)
+                        direct *= mix(1.0, shadowFactor(i,lights.position_range[i].xyz,diffuse_effect ? toward : normal,lights.shape[i].y), weight);
+                    illumination += c * direct;
                 }
                 // Static-world bounce from those lights, driven by live styles.
                 // Bounce under a translucent liquid mostly arrived through its surface.

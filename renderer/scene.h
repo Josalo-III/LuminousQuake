@@ -31,6 +31,12 @@ enum { LQ_LIGHT_UNRESOLVED_PARAMETERS = 1 };
 enum { LQ_LIGHT_LINEAR, LQ_LIGHT_INVERSE, LQ_LIGHT_INVERSE2, LQ_LIGHT_INFINITE,
        LQ_LIGHT_LOCAL_MINLIGHT, LQ_LIGHT_INVERSE2A, LQ_LIGHT_FORMULA_COUNT };
 #define LQ_LIGHT_MAX_RANGE 16384.0f
+/* Inverse and inverse-square lights never reach zero. They stop where they
+ * fall below this brightness (or a higher _gate), and the shader tapers them
+ * to zero over the last LQ_LIGHT_TAPER of that range. Linear lights end
+ * exactly, where they fall below half a unit. */
+#define LQ_LIGHT_FADE_LEVEL 1.0f
+#define LQ_LIGHT_TAPER 0.2f
 /* Emitter radius for soft shadows when a map gives none (ericw "_deviance").
  * Quake's flames and fixtures are roughly this size; a point source would
  * cast perfectly hard, geometric shadow edges. */
@@ -69,6 +75,7 @@ typedef struct {
     float source_radius; /* emitter size: penumbra width grows with it */
     float accent_gain; /* applied output gain for accent spotlights; 1 otherwise */
     float output_base; /* compiler output scale before any accent gain */
+    float gate; /* ericw-tools _gate: brightness below which the light stops; 0 unset */
     uint32_t formula, spotlight;
     uint32_t style, spawnflags, entity_index, flags;
     char classname[64], target[64], targetname[64];
@@ -184,6 +191,8 @@ void LQ_ShadowSlot(uint32_t slot, uint32_t *array, uint32_t *cube);
  * (brightness / 128)^LQ_LIGHT_GAMMA, so a texel lit to brightness b looks as it
  * does in Classic, while shading, filtering and colour stay linear and 32-bit. */
 #define LQ_LIGHT_GAMMA 2.2f
+#define LQ_SHADOW_FAINT 4.0f /* brightness units; 128 is normal */
+#define LQ_SHADOW_DOMINANCE 0.05f
 #define LQ_DYNAMIC_LIGHT_SOURCE 0x80000000u /* source_index tag for gameplay lights */
 typedef struct {
     float position_radius[4]; /* world xyz and falloff/shadow range */
@@ -212,6 +221,10 @@ typedef struct {
     uint32_t disable_bounce; /* Luminous diagnostic: direct light only */
     float exposure; /* Luminous brightness scale; zero means 1 */
     float light_gamma; /* Luminous brightness-to-linear exponent; zero means LQ_LIGHT_GAMMA */
+    /* Lights cast no shadow below shadow_faint brightness, or below
+     * shadow_dominance of the brightest light at a point; zero means the
+     * LQ_SHADOW_ defaults, negative turns the test off. */
+    float shadow_faint, shadow_dominance;
     float bounce_gain; /* Luminous artistic bounce multiplier; zero means 1 */
     float water_warp;
     float water_alpha; /* liquid opacity; zero or one draws liquids opaque */
@@ -296,6 +309,7 @@ uint32_t LQ_BuildLightInteractions(const lq_scene *scene,
     const lq_runtime_light *lights, uint32_t light_count, lq_draw *output);
 /* As above, for draws with nonzero index_count in `visible` only (others get
  * no bits); `visible` may be NULL for all draws. */
+int LQ_SpotReachesBox(const float origin[3], const float axis[3], float outer, float blur, const float bounds[6]);
 uint32_t LQ_BuildVisibleLightInteractions(const lq_scene *scene, const lq_runtime_light *lights,
     uint32_t light_count, const lq_draw *visible, lq_draw *output);
 /* ericw-tools surface-light placement: split a convex polygon on axis planes

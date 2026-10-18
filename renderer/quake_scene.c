@@ -189,7 +189,7 @@ static int Spawn(model_t *world, lq_scene *scene)
 {
     char *text = world->entities;
     int found = 0; uint32_t capacity = 0, entity_index = 0, target_count = 0, target_capacity = 0;
-    float range_scale = 0.5f, distance_scale = 1, angle_scale = 0.5f;
+    float range_scale = 0.5f, distance_scale = 1, angle_scale = 0.5f, world_gate = 0;
     light_target *targets = NULL;
     light_extra *extras = NULL;
     char world_sunlight[128] = "", world_sun_mangle[128] = "", world_sun_color[128] = "", world_penumbra[128] = "";
@@ -202,7 +202,7 @@ static int Spawn(model_t *world, lq_scene *scene)
         char delay[128] = "", wait[128] = "", mangle[128] = "", soft[128] = "", incidence[128] = "";
         char world_range[128] = "", world_distance[128] = "", deviance[128] = "", bounce[128] = "", bounces[128] = "";
         char sun[128] = "", surface[128] = "", surface_offset[128] = "", surface_spotlight[128] = "";
-        char sunlight[128] = "", sun_mangle[128] = "", sun_color[128] = "", penumbra[128] = "";
+        char sunlight[128] = "", sun_mangle[128] = "", sun_color[128] = "", penumbra[128] = "", gate[128] = "";
         int style = 0, spawnflags = 0;
         lq_light_source light = {.entity_index=entity_index++};
         LQ_LightSourceDefaults(&light);
@@ -221,6 +221,7 @@ static int Spawn(model_t *world, lq_scene *scene)
                 snprintf(incidence, sizeof(incidence), "%s", com_token);
             else if (!strcmp(key, "_range")) snprintf(world_range, sizeof(world_range), "%s", com_token);
             else if (!strcmp(key, "_deviance")) snprintf(deviance, sizeof(deviance), "%s", com_token);
+            else if (!strcmp(key, "_gate")) snprintf(gate, sizeof(gate), "%s", com_token);
             else if (!strcmp(key, "_bouncescale")) snprintf(bounce, sizeof(bounce), "%s", com_token);
             else if (!strcmp(key, "_bounce")) snprintf(bounces, sizeof(bounces), "%s", com_token);
             else if (!strcmp(key, "_dist")) snprintf(world_distance, sizeof(world_distance), "%s", com_token);
@@ -249,6 +250,7 @@ static int Spawn(model_t *world, lq_scene *scene)
             if (world_range[0] && Number(world_range,&value) && value > 0) range_scale = value;
             if (world_distance[0] && Number(world_distance,&value) && value > 0) distance_scale = value;
             if (incidence[0] && Number(incidence,&value) && value >= 0 && value <= 1) angle_scale = value;
+            if (gate[0] && Number(gate,&value) && value >= 0) world_gate = value;
             if (bounce[0] && Number(bounce,&value) && value >= 0 && value <= 16) scene->bounce_scale = value;
             if (bounces[0] && Number(bounces,&value) && value >= 1 && value == floorf(value))
                 scene->bounce_limit = value < LQ_BOUNCE_MAX ? (uint32_t)value : LQ_BOUNCE_MAX;
@@ -294,6 +296,8 @@ static int Spawn(model_t *world, lq_scene *scene)
                 float value;
                 light.angle_scale = angle_scale; light.output_scale = light.output_base = range_scale;
                 light.attenuation = distance_scale;
+                light.gate = world_gate;
+                if (gate[0] && Number(gate,&value) && value >= 0) light.gate = value;
                 if (delay[0]) {
                     if (Number(delay,&value) && value >= 0 && value < LQ_LIGHT_FORMULA_COUNT && value == floorf(value))
                         light.formula = (uint32_t)value;

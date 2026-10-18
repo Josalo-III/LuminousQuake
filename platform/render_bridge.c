@@ -355,6 +355,9 @@ static void LuminousLights(void)
     memcpy(view.runtime_lights, runtime_lights, sizeof(runtime_lights));
     view.runtime_light_count = count;
     view.luminous_lighting = 1;
+    float faint = Cvar_VariableValue("lq_shadow_faint"), dominance = Cvar_VariableValue("lq_shadow_dominance");
+    view.shadow_faint = faint > 0 ? faint : -1;
+    view.shadow_dominance = dominance > 0 ? dominance : -1;
     LQ_BuildVisibleLightInteractions(&map_scene, runtime_lights, count, world_draws, interaction_draws);
     for (uint32_t i = 0; i < map_scene.draw_count; ++i)
         if (world_draws[i].index_count)

@@ -61,13 +61,16 @@ float LQ_LightFalloff(const lq_light_source *source, float distance)
     default: return 0;
     }
 }
-/* Distance beyond which a source adds less than half a brightness unit (an
- * eighth of one colormap row) after output scaling: the culling and shadow
- * range. Sources without falloff are bounded by the largest Quake map extent. */
+/* Distance beyond which a source adds less than its fade level after output
+ * scaling: half a brightness unit (an eighth of one colormap row) for linear
+ * lights, LQ_LIGHT_FADE_LEVEL or the map's _gate for the unbounded falloffs.
+ * This is the culling and shadow range. Sources without falloff (sunbeams and
+ * other regional lights) are bounded by the largest Quake map extent. */
 float LQ_LightSourceRange(const lq_light_source *source)
 {
     if (!DirectSource(source)) return 0;
-    float cutoff = 0.5f / source->output_scale, light = source->intensity, range;
+    float level = source->formula == LQ_LIGHT_LINEAR ? 0.5f : fmaxf(LQ_LIGHT_FADE_LEVEL, source->gate);
+    float cutoff = level / source->output_scale, light = source->intensity, range;
     if (light <= cutoff) return 0;
     switch (source->formula) {
     case LQ_LIGHT_LINEAR: range = (light - cutoff) / source->attenuation; break;
@@ -193,9 +196,29 @@ static uint32_t SlotTier(uint32_t slot)
     return sizes[array] >= 512 ? 0 : sizes[array] >= 256 ? 1 : 2;
 }
 static void DrawBounds(const lq_scene *scene, const lq_draw *draw, float out[6]);
-/* Whether a source can light a draw, by the interaction test below. */
-static int LightsDraw(const lq_scene *scene, uint32_t d, const float origin[3], float range)
+/* Whether a spotlight's beam, with the blurred edge the shader gives it, can
+ * reach a box. The shader lights points whose distance outside the cone,
+ * measured across the axis, is under the blur, and nothing behind the light.
+ * Distance to the cone surface changes no faster than position, so the box's
+ * bounding sphere gives a conservative test. outer <= 0.01 (a near-hemisphere)
+ * is always accepted. */
+int LQ_SpotReachesBox(const float origin[3], const float axis[3], float outer, float blur, const float bounds[6])
 {
+    if (outer <= 0.01f || outer > 1) return 1;
+    float v[3], half2 = 0, length2 = 0, along = 0;
+    for (int k = 0; k < 3; ++k) {
+        float centre = (bounds[k] + bounds[k+3]) * 0.5f, extent = (bounds[k+3] - bounds[k]) * 0.5f;
+        v[k] = centre - origin[k]; half2 += extent * extent; length2 += v[k] * v[k]; along += v[k] * axis[k];
+    }
+    float r = sqrtf(half2);
+    if (along < -r) return 0;
+    float radial = sqrtf(fmaxf(length2 - along * along, 0)), sine = sqrtf(fmaxf(1 - outer * outer, 0));
+    return radial * outer - along * sine - r < blur * outer;
+}
+/* Whether a source can light a draw, by the interaction test below. */
+static int LightsDraw(const lq_scene *scene, uint32_t d, const lq_light_source *source, float range)
+{
+    const float *origin = source->origin;
     const lq_draw *draw = &scene->draws[d];
     float computed[6];
     const float *bounds = scene->draw_bounds ? scene->draw_bounds[d] : computed;
@@ -207,7 +230,9 @@ static int LightsDraw(const lq_scene *scene, uint32_t d, const float origin[3], 
         float outside = p < bounds[axis] ? bounds[axis] - p : p > bounds[axis+3] ? p - bounds[axis+3] : 0;
         distance2 += outside * outside; facing += (p - first->position[axis]) * first->normal[axis];
     }
-    return facing > 0 && distance2 < range * range;
+    if (!(facing > 0 && distance2 < range * range)) return 0;
+    return !source->spotlight ||
+        LQ_SpotReachesBox(origin, source->spot_direction, source->spot_outer, LQ_SPOT_EDGE_BLUR + source->source_radius, bounds);
 }
 /* For each source with range[i] > 0, whether it can light a visible draw:
  * reach[i] is 2 when one is on screen (`shown`, if given), 1 when it lights
@@ -223,7 +248,7 @@ static void VisibleReach(const lq_scene *scene, const lq_draw *visible, const ui
         uint8_t level = !shown || shown[d] ? 2 : 1;
         if (!scene->light_visibility) {
             for (uint32_t i = 0; i < scene->light_source_count; ++i)
-                if (range[i] > 0 && reach[i] < level && LightsDraw(scene, d, scene->light_sources[i].origin, range[i]))
+                if (range[i] > 0 && reach[i] < level && LightsDraw(scene, d, &scene->light_sources[i], range[i]))
                     reach[i] = level;
             continue;
         }
@@ -232,7 +257,7 @@ static void VisibleReach(const lq_scene *scene, const lq_draw *visible, const ui
             for (uint32_t b = bits[w]; b; b &= b - 1) {
                 uint32_t i = w * 32 + (uint32_t)__builtin_ctz(b);
                 if (i < scene->light_source_count && range[i] > 0 && reach[i] < level &&
-                    LightsDraw(scene, d, scene->light_sources[i].origin, range[i])) reach[i] = level;
+                    LightsDraw(scene, d, &scene->light_sources[i], range[i])) reach[i] = level;
             }
     }
 }
@@ -441,7 +466,8 @@ uint32_t LQ_BuildVisibleLightInteractions(const lq_scene *scene, const lq_runtim
             }
             float facing = toward[0]*first->normal[0]+toward[1]*first->normal[1]+toward[2]*first->normal[2];
             float radius = position[3];
-            if (facing > 0 && distance2 < radius*radius) {
+            if (facing > 0 && distance2 < radius*radius && (lights[i].spot[3] < -1 ||
+                LQ_SpotReachesBox(position, lights[i].spot, lights[i].spot[3], LQ_SPOT_EDGE_BLUR + lights[i].source_radius, bounds))) {
                 draw->light_bits[i / 32] |= 1u << (i % 32);
                 ++relationships;
             }

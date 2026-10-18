@@ -154,6 +154,7 @@ comes from each light's falloff and from occlusion.
   camera displace those on what the player was looking at. Backing away from
   E1M1's first building turned its facade lights off, and translucent water
   (`r_wateralpha` < 1) made this worse by adding the faces across the water.
+  Confirmed fixed in play at that spot (October 17, 2026).
   The face scan walks each visible face's precomputed reach bits, so
   selection costs about 0.6 ms a frame at that spot, half its earlier cost. The limit comes from the shader's
   light uniform block: 80 bytes per light, 10 KB for 128, inside the 16 KB every
@@ -186,9 +187,34 @@ comes from each light's falloff and from occlusion.
   caster buffer holds only the world model; the viewer adds brush models at their
   compiled positions, since nothing moves there. Each frame, the bounds of every
   moving caster are tested against each slot's range and its six face frusta.
-  Only the faces they touch are redrawn (static world plus those casters), along
-  with faces they touched when last drawn, so old shadows are erased. Static
-  shadows elsewhere stay cached.
+  Only the faces they touch are redrawn, along with faces they touched when last
+  drawn, so old shadows are erased. A caster whose bounds match the previous
+  frame's is at rest: it is drawn into any face that is redrawn but does not
+  cause a redraw itself, so standing doors and lifts cost nothing. Each cube also
+  has a static-only copy, drawn when the light changes. A face redrawn for moving
+  casters is copied from it and only the casters are drawn on top, rather than the
+  whole world again (Doom 3 keeps static and entity shadows apart the same way).
+  On E1M3's start (1080p, 2× MSAA, VSync off) this took Luminous from 76 to 84
+  fps. Monsters idling within reach of about 19 lights still redraw some 1,100
+  cube faces a second, now cheaply. Static shadows elsewhere stay cached.
+- **Light volumes.** After Doom 3, a light acts only where it can reach.
+  Linear lights end exactly. Inverse and inverse-square lights stop where they
+  fall below 1 brightness unit (`LQ_LIGHT_FADE_LEVEL`) or the map's higher
+  ericw-tools `_gate`, and taper to zero over the last fifth of that range so no
+  edge shows. No-falloff lights are regional by design (the rerelease's
+  sunbeams) and keep the full map extent. A spotlight lights only surfaces its
+  blurred cone can reach (`LQ_SpotReachesBox`), and draws only the cube faces
+  the beam covers; faces outside it are cleared and read as unshadowed. Within
+  64 units of the lamp, edge spill outside those faces goes unshadowed.
+- **Shadow cutoffs.** A light below `lq_shadow_faint` brightness (default 4) at
+  a point, or below `lq_shadow_dominance` (default 5%) of the brightest light
+  there after that light's own shadow, is not shadow-filtered; each blends in
+  between its threshold and twice that. On E1M3's start this changed at most 3
+  of 255 levels.
+- **Measured** on E1M3's start (1080p, 2× MSAA, VSync off): Luminous went from
+  76 fps to 109 with the caster changes (rest detection, static copy, per-face
+  culling), and about 110 with cones, falloff and cutoffs; the last three are
+  within run-to-run variation at that spot.
 - **Penumbrae.** Lights have an emitter radius: ericw `_deviance` when present,
   otherwise 8 units. PCSS finds the mean blocker depth and filters over
   `radius × (receiver − blocker) / blocker`, so contact shadows stay sharp and

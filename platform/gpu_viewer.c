@@ -712,6 +712,14 @@ int LQ_GPUViewer(int argc, char **argv)
             fprintf(stderr, "--exposure needs 0 < scale <= 16\n"); return 1;
         }
     }
+    const char *shadow_cutoffs[2] = {Argument(argc, argv, "--shadow-faint"), Argument(argc, argv, "--shadow-dominance")};
+    for (int k = 0; k < 2; ++k) if (shadow_cutoffs[k]) {
+        char *end; float value = strtof(shadow_cutoffs[k], &end);
+        if (!*shadow_cutoffs[k] || *end || !isfinite(value) || value < 0) {
+            fprintf(stderr, "%s needs a value >= 0 (0 turns it off)\n", k ? "--shadow-dominance" : "--shadow-faint"); return 1;
+        }
+        *(k ? &view.shadow_dominance : &view.shadow_faint) = value > 0 ? value : -1;
+    }
     const char *light_gamma = Argument(argc, argv, "--light-gamma");
     if (light_gamma) {
         char *end; view.light_gamma = strtof(light_gamma, &end);

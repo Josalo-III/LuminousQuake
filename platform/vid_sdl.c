@@ -42,6 +42,11 @@ static cvar_t lq_particles = {"lq_particles", "0", true};
  * 10 Hz steps, over each 0.1 s step. Software keeps the original stepping. */
 static cvar_t r_lerpmodels = {"r_lerpmodels", "1", true};
 static cvar_t r_lerpmove = {"r_lerpmove", "1", true};
+/* Luminous: lights below lq_shadow_faint brightness, or below
+ * lq_shadow_dominance of the brightest light at a point, cast no shadow
+ * (0 turns either test off). */
+static cvar_t lq_shadow_faint = {"lq_shadow_faint", "4", true};
+static cvar_t lq_shadow_dominance = {"lq_shadow_dominance", "0.05", true};
 void M_Print(int x, int y, char *text);
 void M_DrawCharacter(int x, int y, int character);
 void M_Menu_Options_f(void);
@@ -253,6 +258,7 @@ void VID_Init(unsigned char *palette)
         Cvar_RegisterVariable(&r_wateralpha); Cvar_RegisterVariable(&r_fluorescent);
         Cvar_RegisterVariable(&lq_particles);
         Cvar_RegisterVariable(&r_lerpmodels); Cvar_RegisterVariable(&r_lerpmove);
+        Cvar_RegisterVariable(&lq_shadow_faint); Cvar_RegisterVariable(&lq_shadow_dominance);
         Cmd_AddCommand("vid_restart", Restart);
         Cmd_AddCommand("vid_togglefullscreen", ToggleFullscreen);
         vid_menudrawfn = VideoMenuDraw;

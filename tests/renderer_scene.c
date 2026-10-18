@@ -682,13 +682,20 @@ int main(void)
     CHECK(LQ_LightFalloff(&falloff,50) == 150 && LQ_LightSourceRange(&falloff) == 199);
     falloff.attenuation = 2; CHECK(LQ_LightFalloff(&falloff,50) == 100 && LQ_LightSourceRange(&falloff) == 99.5f);
     falloff.attenuation = 1; falloff.formula = LQ_LIGHT_INVERSE;
-    CHECK(LQ_LightFalloff(&falloff,256) == 100 && LQ_LightSourceRange(&falloff) == LQ_LIGHT_MAX_RANGE);
+    /* Unbounded falloffs stop at LQ_LIGHT_FADE_LEVEL after output scaling: 2 in
+     * falloff units at this light's 0.5 output scale. */
+    CHECK(LQ_LightFalloff(&falloff,256) == 100 && LQ_LightSourceRange(&falloff) == 12800);
     falloff.formula = LQ_LIGHT_INVERSE2;
-    CHECK(LQ_LightFalloff(&falloff,256) == 50 && fabsf(LQ_LightSourceRange(&falloff) - 1810.19f) < 0.01f);
-    CHECK(fabsf(LQ_LightFalloff(&falloff,LQ_LightSourceRange(&falloff)) - 1) < 0.001f);
+    CHECK(LQ_LightFalloff(&falloff,256) == 50 && fabsf(LQ_LightSourceRange(&falloff) - 1280) < 0.01f);
+    CHECK(fabsf(LQ_LightFalloff(&falloff,LQ_LightSourceRange(&falloff)) - 2) < 0.001f);
+    falloff.gate = 4; /* a higher ericw-tools _gate stops it sooner */
+    CHECK(fabsf(LQ_LightFalloff(&falloff,LQ_LightSourceRange(&falloff)) - 8) < 0.001f);
+    falloff.gate = 0.001f; /* a lower one does not extend it */
+    CHECK(fabsf(LQ_LightSourceRange(&falloff) - 1280) < 0.01f);
+    falloff.gate = 0;
     falloff.formula = LQ_LIGHT_INVERSE2A;
     CHECK(LQ_LightFalloff(&falloff,128) == 50);
-    CHECK(fabsf(LQ_LightFalloff(&falloff,LQ_LightSourceRange(&falloff)) - 1) < 0.001f);
+    CHECK(fabsf(LQ_LightFalloff(&falloff,LQ_LightSourceRange(&falloff)) - 2) < 0.001f);
     falloff.formula = LQ_LIGHT_INFINITE;
     CHECK(LQ_LightFalloff(&falloff,10000) == 200 && LQ_LightSourceRange(&falloff) == LQ_LIGHT_MAX_RANGE);
     falloff.formula = LQ_LIGHT_LOCAL_MINLIGHT;
@@ -696,6 +703,17 @@ int main(void)
     falloff.formula = LQ_LIGHT_LINEAR; falloff.intensity = 1;
     CHECK(LQ_LightSourceRange(&falloff) == 0);
     puts("PASS linear, inverse, inverse-square, offset inverse-square and unattenuated falloff ranges");
+    { /* A 20-degree downward beam reaches only boxes in or near its cone. */
+        const float origin[3] = {0, 0, 0}, down[3] = {0, 0, -1};
+        float outer = cosf(20 * (float)M_PI / 180);
+        const float below[6] = {-8, -8, -208, 8, 8, -192}, beside[6] = {292, -8, -18, 308, 8, -2};
+        const float above[6] = {-8, -8, 192, 8, 8, 208}, edge[6] = {80, -4, -204, 88, 4, -196};
+        CHECK(LQ_SpotReachesBox(origin, down, outer, 24, below) && !LQ_SpotReachesBox(origin, down, outer, 24, beside));
+        CHECK(!LQ_SpotReachesBox(origin, down, outer, 24, above));
+        CHECK(LQ_SpotReachesBox(origin, down, outer, 24, edge)); /* about 11 units outside the cone edge, inside the 24-unit blur */
+        CHECK(LQ_SpotReachesBox(origin, down, 0.0f, 24, beside)); /* near-hemisphere beams are not culled */
+        puts("PASS spotlight beams cull boxes outside the blurred cone");
+    }
     scene.indices[0] = scene.vertex_count;
     CHECK(!LQ_SceneCheck(&scene, error, sizeof(error))); scene.indices[0] = 0;
     scene.draws[0].index_count = 0xffffffff;
