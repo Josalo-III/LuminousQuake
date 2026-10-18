@@ -11,11 +11,12 @@ typedef struct { uint32_t width, height, channels; uint8_t *pixels; } lq_image;
 enum { LQ_SURFACE_SKY = 1, LQ_SURFACE_WATER = 2, LQ_SURFACE_MODEL = 4,
        LQ_SURFACE_MASKED = 8, LQ_SURFACE_WEAPON = 16,
        LQ_SURFACE_ACTOR = 32, /* model lit by Luminous lights/probes; Classic uses shade */
-       /* 64 is reserved for the GPU's submerged-world-face flag. */
+       LQ_SURFACE_SUBMERGED = 64, /* the face lies inside a liquid (the GPU sets it for world faces) */
        LQ_SURFACE_DIFFUSE_EFFECT = 128, /* small, unoriented lit particles/sprites */
        LQ_SURFACE_NOSHADOW = 256, /* self-lit projectiles must not occlude their own source */
        LQ_SURFACE_SOLID_EFFECT = 512, /* small lit 3D particles: effect colour, oriented normals */
-       LQ_SURFACE_ERODE = 1024 /* smoke: noise cuts away the fraction uv.y of the surface */ };
+       LQ_SURFACE_ERODE = 1024, /* smoke: noise cuts away the fraction uv.y of the surface */
+       LQ_SURFACE_SPRITE = 2048 /* Luminous filters it bilinearly; index 255 becomes partial coverage */ };
 typedef struct { lq_image indices; char name[17]; uint32_t resource_id; } lq_material;
 typedef struct {
     uint32_t first_index, index_count, material, flags;
@@ -57,6 +58,9 @@ enum { LQ_LIGHT_LINEAR, LQ_LIGHT_INVERSE, LQ_LIGHT_INVERSE2, LQ_LIGHT_INFINITE,
  * the cone edge. */
 #define LQ_TORCH_ACCENT_REACH 128.0f
 #define LQ_TORCH_ACCENT_CORE 0.2f
+/* A torch accent is light on the wall, not a highlight: it adds at most this
+ * much brightness (128 is Quake's normal) to any surface. */
+#define LQ_TORCH_ACCENT_LIMIT 32.0f
 /* Luminous bounce is gathered repeatedly, as ericw-tools' radiosity is: each
  * bounce reflects the previous one's light off the texture color and scales
  * it by bounce_scale, so it fades geometrically. */
@@ -200,6 +204,10 @@ void LQ_ShadowSlot(uint32_t slot, uint32_t *array, uint32_t *cube);
  * (brightness / 128)^LQ_LIGHT_GAMMA, so a texel lit to brightness b looks as it
  * does in Classic, while shading, filtering and colour stay linear and 32-bit. */
 #define LQ_LIGHT_GAMMA 2.2f
+/* Luminous fullbrights (palette 224-255) emit this many times their palette
+ * colour in linear light; tone mapping keeps SDR close to the palette and HDR
+ * shows them above white. */
+#define LQ_EMISSION_GAIN 3.0f
 #define LQ_SHADOW_FAINT 4.0f /* brightness units; 128 is normal */
 #define LQ_SHADOW_DOMINANCE 0.05f
 #define LQ_DYNAMIC_LIGHT_SOURCE 0x80000000u /* source_index tag for gameplay lights */
@@ -212,6 +220,7 @@ typedef struct {
     float source_radius; /* emitter radius for penumbrae; zero is a point */
     uint32_t source_index; /* scene light-source index; never sent to the GPU */
     uint8_t submerged; /* origin inside water, slime or lava */
+    float limit; /* most brightness this light adds to a surface; 0 none (torch accents) */
 } lq_runtime_light;
 typedef struct {
     float origin[3], angles[3], horizontal_fov;

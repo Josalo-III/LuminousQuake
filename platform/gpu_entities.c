@@ -438,7 +438,7 @@ static void Sprite(entity_t *e)
     const int corners[] = {0,1,2,0,2,3};
     const float coords[4][2] = {{s->left,s->up},{s->right,s->up},{s->right,s->down},{s->left,s->down}};
     int emissive = !strcmp(e->model->name, "progs/s_explod.spr") || !strcmp(e->model->name, "progs/s_light.spr");
-    Draw(6, material, LQ_SURFACE_MODEL|LQ_SURFACE_MASKED|
+    Draw(6, material, LQ_SURFACE_MODEL|LQ_SURFACE_MASKED|LQ_SURFACE_SPRITE|
         (emissive ? 0 : LQ_SURFACE_ACTOR|LQ_SURFACE_DIFFUSE_EFFECT));
     for (int i = 0; i < 6; ++i) {
         int corner = corners[i]; lq_vertex *v = &vertices[frame.vertex_count++]; memset(v,0,sizeof(*v));
@@ -490,11 +490,26 @@ static void Brush(entity_t *e, const lq_scene *world)
         lq_draw *d = Draw(source->index_count, LQ_AnimatedMaterial(world, model->surfaces[surface].texinfo->texture), source->flags);
         memcpy(d->styles, source->styles, 4);
         memset(d->light_bits, 0xff, sizeof(d->light_bits));
+        float centre[3] = {0, 0, 0};
         for (uint32_t j = 0; j < source->index_count; ++j) {
             const lq_vertex *input = &world->vertices[world->indices[source->first_index+j]];
             lq_vertex *v = &vertices[frame.vertex_count++]; *v = *input;
             Transform(input->position, e, forward, right, up, v->position);
             for (int k = 0; k < 3; ++k) v->normal[k] = input->normal[0]*forward[k]-input->normal[1]*right[k]+input->normal[2]*up[k];
+            for (int k = 0; k < 3; ++k) centre[k] += v->position[k] / source->index_count;
+        }
+        /* Underwater, as world faces are judged (see LQ_GPUUpload): the face's
+         * centre 2 units out along its normal, where the entity is now. With
+         * translucent liquids, light from the other side of the surface is
+         * dimmed by its opacity; without this a hatch on a pool's floor took
+         * full light and stood out from the floor around it. */
+        if (source->index_count && !(source->flags & (LQ_SURFACE_SKY|LQ_SURFACE_WATER))) {
+            const lq_vertex *last = &vertices[frame.vertex_count-1];
+            vec3_t point;
+            for (int k = 0; k < 3; ++k) point[k] = centre[k] + last->normal[k] * 2;
+            int contents = Mod_PointInLeaf(point, cl.worldmodel)->contents;
+            if (contents == CONTENTS_WATER || contents == CONTENTS_SLIME || contents == CONTENTS_LAVA)
+                d->flags |= LQ_SURFACE_SUBMERGED;
         }
     }
 }
@@ -533,13 +548,13 @@ void LQ_EntitiesParticle(const float origin[3], int color, int emissive, int kin
         int smoke = kind == LQ_PARTICLE_SMOKE || kind == LQ_PARTICLE_TRAIL_SMOKE;
         /* Torch smoke: 0.25-1 unit when emitted. Trail smoke: at most half
          * Classic's triangle (size), so never bigger than a Software particle. */
-        float radius = kind == LQ_PARTICLE_SMOKE ? scale*(0.25f + 0.75f*SmokeSize(seed))
+        float radius = kind == LQ_PARTICLE_SMOKE ? scale*(0.45f + 1.35f*SmokeSize(seed))
                      : kind == LQ_PARTICLE_TRAIL_SMOKE ? fminf(scale*(0.2f + 0.5f*SmokeSize(seed)), 0.5f) * size
                      : size*LQ_ParticleDropRadius(seed);
         if (radius <= 0.05f || erode >= 0.98f) return;
         uint32_t count = LQ_ParticleSphere(distance < 96 || radius > 3, &sphere);
         Draw(count*3, particle_material, LQ_SURFACE_MODEL|
-            (emissive ? 0 : LQ_SURFACE_ACTOR|LQ_SURFACE_SOLID_EFFECT)|(smoke && erode > 0 ? LQ_SURFACE_ERODE : 0));
+            (emissive ? 0 : LQ_SURFACE_ACTOR|LQ_SURFACE_SOLID_EFFECT)|(smoke ? LQ_SURFACE_ERODE : 0));
         for (uint32_t f = 0; f < count; ++f) for (int c = 0; c < 3; ++c) {
             lq_vertex *v = &vertices[frame.vertex_count++]; memset(v, 0, sizeof(*v));
             for (int j = 0; j < 3; ++j) { v->position[j] = origin[j] + radius*sphere[f][c][j]; v->normal[j] = sphere[f][c][j]; }

@@ -12,9 +12,21 @@
 struct lq_gpu {
     SDL_Window *window;
     SDL_GPUDevice *device;
-    SDL_GPUGraphicsPipeline *pipeline, *overlay_pipeline;
+    SDL_GPUGraphicsPipeline *pipeline;
+    /* The world renders into a floating-point frame (scene); a tone-mapping
+     * pass brings it to color, 8-bit for an SDR swapchain or half float of
+     * linear light for macOS extended dynamic range, and the UI is drawn over
+     * that. Index 1 of each pair targets the half-float color. */
+    SDL_GPUGraphicsPipeline *overlay_pipelines[2], *tonemap_pipelines[2];
+    SDL_GPUTexture *scene;
+    float gamma, headroom; /* lq_gamma; HDR headroom above SDR white (1 on SDR) */
+    float peak; /* lq_hdr_peak: highest light the display really shows; 0 trusts macOS */
+    int test_pattern; /* lq_hdr_test: bands at known light levels instead of the scene */
+    int hdr_request, hdr_active;
+    SDL_GPUPresentMode present_mode;
     SDL_GPUGraphicsPipeline *multisample[2];
     SDL_GPUGraphicsPipeline *liquid[3]; /* translucent liquids: 1x, 2x, 4x samples */
+    SDL_GPUGraphicsPipeline *smoke[3]; /* smoke puffs blended by their alpha: 1x, 2x, 4x */
     SDL_GPUTexture *multisample_color;
     int smooth, samples, mipmaps, anisotropy;
     uint8_t *submerged; /* per scene draw: the face lies inside a liquid volume */
@@ -105,6 +117,7 @@ typedef struct {
     float sun_light[4]; /* rgb: sunlight at normal incidence and full visibility; zero without a sun */
     float shadow_sizes[4]; /* cube face size per shadow array */
     float color_space[4]; /* x: exponent from summed brightness to linear light (Luminous) */
+    float limit[LQ_MAX_RUNTIME_LIGHTS][4]; /* x: most brightness the light adds to a surface; 0 none */
 } lq_light_uniforms;
 typedef struct { float face_projection[16]; } lq_shadow_uniforms;
 #define LQ_SHADOW_NEAR 2.0f
@@ -126,7 +139,8 @@ static SDL_GPUShader *ShaderCode(lq_gpu *g, const unsigned char *spv, size_t spv
     name##_msl, sizeof(name##_msl), fragment, samplers, uniforms)
 static SDL_GPUShader *Shader(lq_gpu *g, int fragment, int overlay)
 {
-    if (overlay) return fragment ? SHADER(g, lq_overlay_frag, 1, 1, 0) : SHADER(g, lq_overlay_vert, 0, 0, 0);
+    if (overlay == 2) return SHADER(g, lq_tonemap_frag, 1, 1, 1);
+    if (overlay) return fragment ? SHADER(g, lq_overlay_frag, 1, 1, 1) : SHADER(g, lq_overlay_vert, 0, 0, 0);
     return fragment ? SHADER(g, lq_world_frag, 1, 14, 2) : SHADER(g, lq_world_vert, 0, 0, 1);
 }
 /* Shadow cubes are six layers each of a 2D array texture; the shader picks
@@ -208,6 +222,7 @@ lq_gpu *LQ_GPUCreate(SDL_Window *window, int debug, char *error, size_t size)
     if (!SDL_ClaimWindowForGPUDevice(g->device, window)) goto failed;
     g->claimed = 1;
     if (!SDL_SetGPUSwapchainParameters(g->device, window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, SDL_GPU_PRESENTMODE_VSYNC)) goto failed;
+    g->present_mode = SDL_GPU_PRESENTMODE_VSYNC; g->gamma = 2.2f; g->headroom = 1; g->hdr_request = 1;
     SDL_Log("LuminousQuake GPU driver: %s", SDL_GetGPUDeviceDriver(g->device));
     vertex = Shader(g, 0, 0); fragment = Shader(g, 1, 0);
     if (!vertex || !fragment) goto failed;
@@ -220,12 +235,12 @@ lq_gpu *LQ_GPUCreate(SDL_Window *window, int debug, char *error, size_t size)
     info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
     info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
     info.depth_stencil_state.enable_depth_test = info.depth_stencil_state.enable_depth_write = true;
-    color.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    color.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
     info.target_info = (SDL_GPUGraphicsPipelineTargetInfo){&color, 1, SDL_GPU_TEXTUREFORMAT_D32_FLOAT, true, 0, 0, 0};
     g->pipeline = SDL_CreateGPUGraphicsPipeline(g->device, &info);
     for (int i = 0; i < 2; ++i) {
         SDL_GPUSampleCount samples = i ? SDL_GPU_SAMPLECOUNT_4 : SDL_GPU_SAMPLECOUNT_2;
-        if (SDL_GPUTextureSupportsSampleCount(g->device, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, samples) &&
+        if (SDL_GPUTextureSupportsSampleCount(g->device, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT, samples) &&
             SDL_GPUTextureSupportsSampleCount(g->device, SDL_GPU_TEXTUREFORMAT_D32_FLOAT, samples)) {
             info.multisample_state.sample_count = samples;
             g->multisample[i] = SDL_CreateGPUGraphicsPipeline(g->device, &info);
@@ -241,6 +256,15 @@ lq_gpu *LQ_GPUCreate(SDL_Window *window, int debug, char *error, size_t size)
     for (int i = 0; i < 3; ++i) if (!i || g->multisample[i - 1]) {
         info.multisample_state.sample_count = i == 2 ? SDL_GPU_SAMPLECOUNT_4 : i ? SDL_GPU_SAMPLECOUNT_2 : SDL_GPU_SAMPLECOUNT_1;
         g->liquid[i] = SDL_CreateGPUGraphicsPipeline(g->device, &info);
+    }
+    /* Smoke blends by its own alpha, over everything solid, depth unwritten. */
+    color.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+    color.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    color.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO;
+    color.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+    for (int i = 0; i < 3; ++i) if (!i || g->multisample[i - 1]) {
+        info.multisample_state.sample_count = i == 2 ? SDL_GPU_SAMPLECOUNT_4 : i ? SDL_GPU_SAMPLECOUNT_2 : SDL_GPU_SAMPLECOUNT_1;
+        g->smoke[i] = SDL_CreateGPUGraphicsPipeline(g->device, &info);
     }
     color = (SDL_GPUColorTargetDescription){0}; color.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
     SDL_ReleaseGPUShader(g->device, vertex); SDL_ReleaseGPUShader(g->device, fragment);
@@ -262,13 +286,26 @@ lq_gpu *LQ_GPUCreate(SDL_Window *window, int debug, char *error, size_t size)
     color.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
     info.target_info.color_target_descriptions = &color;
     info.target_info.num_color_targets = 1;
-    g->overlay_pipeline = SDL_CreateGPUGraphicsPipeline(g->device, &info);
+    for (int f = 0; f < 2; ++f) {
+        color.format = f ? SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        g->overlay_pipelines[f] = SDL_CreateGPUGraphicsPipeline(g->device, &info);
+    }
+    SDL_ReleaseGPUShader(g->device, fragment);
+    fragment = Shader(g, 1, 2);
+    if (!fragment) goto failed;
+    info.fragment_shader = fragment;
+    color.blend_state = (SDL_GPUColorTargetBlendState){0};
+    for (int f = 0; f < 2; ++f) {
+        color.format = f ? SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        g->tonemap_pipelines[f] = SDL_CreateGPUGraphicsPipeline(g->device, &info);
+    }
     SDL_ReleaseGPUShader(g->device, vertex); SDL_ReleaseGPUShader(g->device, fragment);
     vertex = fragment = NULL;
     g->repeat = Sampler(g, SDL_GPU_FILTER_NEAREST, SDL_GPU_SAMPLERADDRESSMODE_REPEAT);
     g->point = Sampler(g, SDL_GPU_FILTER_NEAREST, SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE);
     g->linear = Sampler(g, SDL_GPU_FILTER_LINEAR, SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE);
-    if (!g->pipeline || !g->liquid[0] || !g->overlay_pipeline || !g->repeat || !g->point || !g->linear) goto failed;
+    if (!g->pipeline || !g->liquid[0] || !g->overlay_pipelines[0] || !g->overlay_pipelines[1] ||
+        !g->tonemap_pipelines[0] || !g->tonemap_pipelines[1] || !g->repeat || !g->point || !g->linear) goto failed;
     if (!SDL_GPUTextureSupportsFormat(g->device, SDL_GPU_TEXTUREFORMAT_D32_FLOAT, SDL_GPU_TEXTURETYPE_2D_ARRAY,
             SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET)) {
         SDL_SetError("depth array textures are unsupported"); goto failed;
@@ -299,8 +336,10 @@ int LQ_GPUOptions(lq_gpu *g, int smooth, int samples, int vsync, char *error, si
     if (!SDL_WindowSupportsGPUPresentMode(g->device, g->window, mode)) {
         SDL_SetError("requested presentation mode is unsupported"); return Error(error, size, "GPU options");
     }
-    if (!SDL_SetGPUSwapchainParameters(g->device, g->window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, mode))
+    if (!SDL_SetGPUSwapchainParameters(g->device, g->window,
+            g->hdr_active ? SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR : SDL_GPU_SWAPCHAINCOMPOSITION_SDR, mode))
         return Error(error, size, "GPU options");
+    g->present_mode = mode;
     g->smooth = smooth != 0;
     if (g->samples != samples) { g->samples = samples; g->width = 0; }
     return 1;
@@ -548,7 +587,8 @@ int LQ_GPUFrame(lq_gpu *g, const lq_frame *f, char *error, size_t size)
     g->frame_caster_count = 0;
     for (uint32_t i = 0; i < f->draw_count; ++i) {
         lq_draw d = f->draws[i];
-        if (d.flags & ~(LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_MODEL|LQ_SURFACE_MASKED|LQ_SURFACE_WEAPON|LQ_SURFACE_ACTOR|LQ_SURFACE_DIFFUSE_EFFECT|LQ_SURFACE_SOLID_EFFECT|LQ_SURFACE_NOSHADOW|LQ_SURFACE_ERODE) ||
+        if (d.flags & ~(LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_MODEL|LQ_SURFACE_MASKED|LQ_SURFACE_WEAPON|LQ_SURFACE_ACTOR|LQ_SURFACE_DIFFUSE_EFFECT|LQ_SURFACE_SOLID_EFFECT|LQ_SURFACE_NOSHADOW|LQ_SURFACE_ERODE|LQ_SURFACE_SPRITE|
+                LQ_SURFACE_SUBMERGED) ||
             d.material >= f->material_count || d.first_index > f->index_count ||
             d.index_count > f->index_count - d.first_index || !d.index_count || d.index_count % 3) {
             SDL_SetError("invalid frame triangle range"); return Error(error, size, "GPU frame draws");
@@ -704,10 +744,57 @@ int LQ_GPUUpload(lq_gpu *g, const lq_scene *s, char *error, size_t size)
 failed:
     Error(error, size, "GPU scene upload"); ReleaseScene(g); return 0;
 }
+/* Tone mapping (tonemap.frag): Luminous light below the shoulder is shown as
+ * is; above it, highlights roll off to the ceiling, reached at the white point. */
+#define LQ_TONE_SHOULDER 0.8f
+#define LQ_TONE_WHITE 6.0f
+/* HDR output follows the window's display: extended-range linear light when
+ * macOS reports the display in HDR (and lq_hdr allows it), SDR otherwise.
+ * Checked every frame, so moving the window between displays switches it. */
+static void DisplayMode(lq_gpu *g)
+{
+    int want = 0;
+    if (g->hdr_request) {
+        SDL_DisplayID display = SDL_GetDisplayForWindow(g->window);
+        want = display && SDL_GetBooleanProperty(SDL_GetDisplayProperties(display), SDL_PROP_DISPLAY_HDR_ENABLED_BOOLEAN, false) &&
+            SDL_WindowSupportsGPUSwapchainComposition(g->device, g->window, SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR);
+    }
+    if (want != g->hdr_active && SDL_SetGPUSwapchainParameters(g->device, g->window,
+            want ? SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR : SDL_GPU_SWAPCHAINCOMPOSITION_SDR, g->present_mode)) {
+        g->hdr_active = want; g->width = 0; /* the color target changes format */
+        SDL_Log("LuminousQuake display: %s", want ? "HDR (extended dynamic range)" : "SDR");
+    }
+    g->headroom = 1;
+    if (g->hdr_active) {
+        float headroom = SDL_GetFloatProperty(SDL_GetWindowProperties(g->window), SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT, 1);
+        if (isfinite(headroom) && headroom > 1) g->headroom = fminf(headroom, 16);
+        /* A mirrored display can be told the master's headroom (a MacBook's
+         * XDR panel reports 10x) and clip what it can't show; lq_hdr_peak caps it. */
+        if (g->peak >= 1 && g->headroom > g->peak) g->headroom = g->peak;
+    }
+    {   static float logged = -1;
+        if (fabsf(g->headroom - logged) > 0.05f) { SDL_Log("LuminousQuake HDR headroom: %.2f", g->headroom); logged = g->headroom; }
+    }
+}
+void LQ_GPUTestPattern(lq_gpu *g, int on) { g->test_pattern = on != 0; }
+void LQ_GPUDisplay(lq_gpu *g, float gamma, int hdr, float peak)
+{
+    g->gamma = isfinite(gamma) && gamma >= 1 && gamma <= 3.5f ? gamma : 2.2f;
+    g->hdr_request = hdr != 0;
+    g->peak = isfinite(peak) && peak >= 1 ? peak : 0;
+}
+int LQ_GPUDisplayHDR(const lq_gpu *g, float *headroom)
+{
+    if (headroom) *headroom = g->headroom;
+    return g->hdr_active;
+}
 static int Targets(lq_gpu *g, uint32_t width, uint32_t height)
 {
     if (g->width == width && g->height == height) return 1;
-    SDL_GPUTexture *color = Texture(g, width, height, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+    SDL_GPUTexture *color = Texture(g, width, height,
+        g->hdr_active ? SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+        SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
+    SDL_GPUTexture *scene = Texture(g, width, height, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
         SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
     SDL_GPUSampleCount samples = g->samples == 4 ? SDL_GPU_SAMPLECOUNT_4 : g->samples == 2 ? SDL_GPU_SAMPLECOUNT_2 : SDL_GPU_SAMPLECOUNT_1;
     SDL_GPUTextureCreateInfo info = {0};
@@ -716,18 +803,20 @@ static int Targets(lq_gpu *g, uint32_t width, uint32_t height)
     info.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT; info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
     SDL_GPUTexture *depth = SDL_CreateGPUTexture(g->device, &info), *multisample = NULL;
     if (g->samples) {
-        info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM; info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+        info.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT; info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
         multisample = SDL_CreateGPUTexture(g->device, &info);
     }
-    if (!color || !depth || (g->samples && !multisample)) {
+    if (!color || !scene || !depth || (g->samples && !multisample)) {
         if (multisample) SDL_ReleaseGPUTexture(g->device, multisample);
+        if (scene) SDL_ReleaseGPUTexture(g->device, scene);
         if (color) SDL_ReleaseGPUTexture(g->device, color);
         if (depth) SDL_ReleaseGPUTexture(g->device, depth); return 0;
     }
     if (g->color) SDL_ReleaseGPUTexture(g->device, g->color);
+    if (g->scene) SDL_ReleaseGPUTexture(g->device, g->scene);
     if (g->depth) SDL_ReleaseGPUTexture(g->device, g->depth);
     if (g->multisample_color) SDL_ReleaseGPUTexture(g->device, g->multisample_color);
-    g->multisample_color = multisample;
+    g->multisample_color = multisample; g->scene = scene;
     g->color = color; g->depth = depth; g->width = width; g->height = height; return 1;
 }
 static void SurfaceUniforms(lq_surface_uniforms *uniforms, const lq_gpu *g,
@@ -772,6 +861,7 @@ static void LightUniforms(lq_light_uniforms *uniforms, const lq_gpu *g, const lq
         memcpy(uniforms->spot[i],light->spot,4*sizeof(float));
         uniforms->shape[i][0] = light->spot_inner; uniforms->shape[i][1] = light->source_radius;
         uniforms->shape[i][2] = light->submerged;
+        uniforms->limit[i][0] = light->limit;
         uint32_t array, cube; LQ_ShadowSlot(i, &array, &cube);
         uniforms->shape[i][3] = (float)(array * 1024 + cube);
     }
@@ -785,6 +875,7 @@ static void LightUniforms(lq_light_uniforms *uniforms, const lq_gpu *g, const lq
     uniforms->color_space[0] = view->light_gamma > 0 ? view->light_gamma : LQ_LIGHT_GAMMA;
     uniforms->color_space[1] = view->shadow_faint < 0 ? 0 : view->shadow_faint > 0 ? view->shadow_faint : LQ_SHADOW_FAINT;
     uniforms->color_space[2] = view->shadow_dominance < 0 ? 0 : view->shadow_dominance > 0 ? view->shadow_dominance : LQ_SHADOW_DOMINANCE;
+    uniforms->color_space[3] = LQ_EMISSION_GAIN;
     uniforms->tuning[1] = g->bounce_ratio;
     uniforms->tuning[2] = view->luminous_lighting && g->bounce_ratio > 0 && !view->disable_bounce;
     uniforms->tuning[3] = view->bounce_gain > 0 ? view->bounce_gain : 1;
@@ -1005,7 +1096,7 @@ int LQ_GPUDynamicProbes(lq_gpu *g, const uint8_t *pixels, char *error, size_t si
     if (!SDL_SubmitGPUCommandBuffer(command)) return Error(error, size, "GPU probe submit");
     g->probe_dynamic_active = 1; return 1;
 }
-#define LQ_SHADER_SUBMERGED 64 /* shader-only surface flag: face lies inside a liquid */
+#define LQ_SHADER_SUBMERGED LQ_SURFACE_SUBMERGED /* face lies inside a liquid */
 static void DrawSurface(lq_gpu *g, SDL_GPUCommandBuffer *command, SDL_GPURenderPass *pass, const lq_view *v,
     const lq_draw *d, uint32_t extra_flags, SDL_GPUTexture *texture, SDL_GPUTexture *const *shadows)
 {
@@ -1031,6 +1122,7 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
     uint32_t swap_width = 0, swap_height = 0;
     float matrix[16];
     if (!g->vertices || !g->indices) { SDL_SetError("scene not uploaded"); return Error(error, size, "GPU render"); }
+    DisplayMode(g);
     if (!width || !height || width > 8192 || height > 8192 || !Targets(g, width, height))
         return Error(error, size, "GPU render target size/allocation");
     if (v->luminous_lighting && v->runtime_light_count && !v->disable_shadows && !ShadowMaps(g))
@@ -1051,9 +1143,9 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
         shadows[t] = g->shadow_maps[t] && v->luminous_lighting ? g->shadow_maps[t] : g->shadow_dummy;
     SDL_GPUColorTargetInfo color = {0};
     SDL_GPUDepthStencilTargetInfo depth = {0};
-    color.texture = g->samples ? g->multisample_color : g->color; color.clear_color = (SDL_FColor){0.02f, 0.02f, 0.025f, 1};
+    color.texture = g->samples ? g->multisample_color : g->scene; color.clear_color = (SDL_FColor){0.02f, 0.02f, 0.025f, 1};
     color.load_op = SDL_GPU_LOADOP_CLEAR; color.store_op = SDL_GPU_STOREOP_STORE;
-    if (g->samples) { color.resolve_texture = g->color; color.store_op = SDL_GPU_STOREOP_RESOLVE; }
+    if (g->samples) { color.resolve_texture = g->scene; color.store_op = SDL_GPU_STOREOP_RESOLVE; }
     depth.texture = g->depth; depth.clear_depth = 1; depth.load_op = SDL_GPU_LOADOP_CLEAR;
     depth.store_op = SDL_GPU_STOREOP_DONT_CARE; depth.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
     depth.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
@@ -1104,23 +1196,81 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
         for (uint32_t i = 0; i < g->frame_draw_count; ++i) {
             const lq_draw *d = &g->frame_draws[i];
             if (liquid && translucent != ((d->flags & LQ_SURFACE_WATER) != 0)) continue;
+            if ((d->flags & LQ_SURFACE_ERODE) || ((d->flags & LQ_SURFACE_SPRITE) && v->luminous_lighting))
+                continue; /* smoke, and Luminous's feathered sprites: blended last */
             viewport.max_depth = d->flags & LQ_SURFACE_WEAPON ? 0.3f : 1.0f;
             SDL_SetGPUViewport(pass, &viewport);
             DrawSurface(g, command, pass, v, d, 0, g->frame_textures[d->material], shadows);
         }
     }
+    {   /* Smoke and Luminous sprites last, blended by their alpha over
+         * everything solid and liquid. */
+        SDL_GPUGraphicsPipeline *smoke = g->smoke[g->samples == 4 ? 2 : g->samples ? 1 : 0];
+        int bound = 0;
+        for (uint32_t i = 0; smoke && i < g->frame_draw_count; ++i) {
+            const lq_draw *d = &g->frame_draws[i];
+            if (!(d->flags & LQ_SURFACE_ERODE) && !((d->flags & LQ_SURFACE_SPRITE) && v->luminous_lighting)) continue;
+            if (!bound) {
+                SDL_BindGPUGraphicsPipeline(pass, smoke);
+                viewport.max_depth = 1; SDL_SetGPUViewport(pass, &viewport);
+                vertex = (SDL_GPUBufferBinding){g->frame_vertices, 0};
+                index = (SDL_GPUBufferBinding){g->frame_indices, 0};
+                SDL_BindGPUVertexBuffers(pass, 0, &vertex, 1);
+                SDL_BindGPUIndexBuffer(pass, &index, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                bound = 1;
+            }
+            DrawSurface(g, command, pass, v, d, 0, g->frame_textures[d->material], shadows);
+        }
+    }
     SDL_EndGPURenderPass(pass);
+    {   /* Tone mapping: the float frame to the display (see tonemap.frag). */
+        struct { float tone[4], target[4]; } display = {
+            {g->test_pattern ? 3.0f : v->luminous_lighting ? 1.0f : 0.0f, g->gamma / 2.2f, g->hdr_active ? g->headroom : 1.0f,
+             g->hdr_active ? fmaxf(LQ_TONE_WHITE, 2.0f * g->headroom) : LQ_TONE_WHITE},
+            {g->hdr_active ? 1.0f : 0.0f, g->gamma, LQ_TONE_SHOULDER, 0}};
+        SDL_GPUColorTargetInfo target = {0};
+        target.texture = g->color; target.load_op = SDL_GPU_LOADOP_DONT_CARE; target.store_op = SDL_GPU_STOREOP_STORE;
+        pass = SDL_BeginGPURenderPass(command, &target, 1, NULL);
+        SDL_BindGPUGraphicsPipeline(pass, g->tonemap_pipelines[g->hdr_active != 0]);
+        SDL_GPUTextureSamplerBinding frame = {g->scene, g->point};
+        SDL_BindGPUFragmentSamplers(pass, 0, &frame, 1);
+        SDL_PushGPUFragmentUniformData(command, 0, &display, sizeof(display));
+        SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+        SDL_EndGPURenderPass(pass);
+    }
     if (g->overlay) {
+        float transfer[4] = {g->gamma / 2.2f, 0, 0, 0};
         color.texture = g->color; color.resolve_texture = NULL; color.store_op = SDL_GPU_STOREOP_STORE;
         color.load_op = SDL_GPU_LOADOP_LOAD;
         pass = SDL_BeginGPURenderPass(command, &color, 1, NULL);
-        SDL_BindGPUGraphicsPipeline(pass, g->overlay_pipeline);
+        SDL_BindGPUGraphicsPipeline(pass, g->overlay_pipelines[g->hdr_active != 0]);
+        SDL_PushGPUFragmentUniformData(command, 0, transfer, sizeof(transfer));
         SDL_GPUTextureSamplerBinding sampler = {g->overlay, g->point};
         SDL_BindGPUFragmentSamplers(pass, 0, &sampler, 1);
         SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
         SDL_EndGPURenderPass(pass);
     }
-    if (swapchain) {
+    if (swapchain && g->hdr_active &&
+            SDL_GetGPUSwapchainTextureFormat(g->device, g->window) == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT) {
+        /* HDR: display values become linear light (extended range) as they
+         * are drawn into the swapchain, letterboxed like the SDR blit. */
+        float scale = (float)swap_width / width;
+        if ((float)swap_height / height < scale) scale = (float)swap_height / height;
+        struct { float tone[4], target[4]; } decode = {{2, 1, 1, 1}, {1, 2.2f, 1, 0}};
+        SDL_GPUColorTargetInfo target = {0};
+        target.texture = swapchain; target.load_op = SDL_GPU_LOADOP_CLEAR; target.store_op = SDL_GPU_STOREOP_STORE;
+        target.clear_color = (SDL_FColor){0, 0, 0, 1};
+        pass = SDL_BeginGPURenderPass(command, &target, 1, NULL);
+        SDL_GPUViewport box = {(swap_width - width * scale) / 2, (swap_height - height * scale) / 2,
+            width * scale, height * scale, 0, 1};
+        SDL_SetGPUViewport(pass, &box);
+        SDL_BindGPUGraphicsPipeline(pass, g->tonemap_pipelines[1]);
+        SDL_GPUTextureSamplerBinding frame = {g->color, g->point};
+        SDL_BindGPUFragmentSamplers(pass, 0, &frame, 1);
+        SDL_PushGPUFragmentUniformData(command, 0, &decode, sizeof(decode));
+        SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+        SDL_EndGPURenderPass(pass);
+    } else if (swapchain) {
         SDL_GPUBlitInfo blit = {0};
         blit.source.texture = g->color; blit.source.w = width; blit.source.h = height;
         float scale = (float)swap_width / width;
@@ -1136,9 +1286,21 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
     if (!SDL_SubmitGPUCommandBuffer(command)) return Error(error, size, "GPU submit");
     return 1;
 }
+static float HalfToFloat(uint16_t h)
+{
+    uint32_t sign = (uint32_t)(h & 0x8000) << 16, exponent = (h >> 10) & 31, mantissa = h & 1023, bits;
+    if (!exponent) {
+        if (!mantissa) bits = sign;
+        else { float f = ldexpf((float)mantissa, -24); return sign ? -f : f; }
+    } else if (exponent == 31) bits = sign | 0x7f800000u | (mantissa << 13);
+    else bits = sign | ((exponent + 112) << 23) | (mantissa << 13);
+    float f; memcpy(&f, &bits, sizeof(f)); return f;
+}
+/* Screenshots are 8-bit display values. An HDR frame holds display values
+ * that continue past SDR white; those highlights clip. */
 int LQ_GPUReadPixels(lq_gpu *g, uint8_t **pixels, uint32_t *width, uint32_t *height, char *error, size_t size)
 {
-    uint32_t bytes = g->width * g->height * 4;
+    uint32_t texel = g->hdr_active ? 8 : 4, bytes = g->width * g->height * texel;
     SDL_GPUTransferBuffer *transfer;
     SDL_GPUCommandBuffer *command;
     SDL_GPUFence *fence;
@@ -1155,8 +1317,19 @@ int LQ_GPUReadPixels(lq_gpu *g, uint8_t **pixels, uint32_t *width, uint32_t *hei
     if (!fence || !SDL_WaitForGPUFences(g->device, true, &fence, 1)) goto failed;
     void *mapped = SDL_MapGPUTransferBuffer(g->device, transfer, false);
     if (!mapped) goto failed;
-    *pixels = malloc(bytes);
-    if (*pixels) memcpy(*pixels, mapped, bytes);
+    *pixels = malloc((size_t)g->width * g->height * 4);
+    if (*pixels && texel == 4) memcpy(*pixels, mapped, bytes);
+    else if (*pixels) {
+        const uint16_t *half = mapped;
+        float peak = 0; size_t above = 0;
+        for (size_t i = 0; i < (size_t)g->width * g->height * 4; ++i) {
+            float v = HalfToFloat(half[i]);
+            if ((i & 3) != 3) { if (v > peak) peak = v; if (v > 1) ++above; }
+            (*pixels)[i] = (uint8_t)(fminf(fmaxf(v, 0), 1) * 255 + 0.5f);
+        }
+        SDL_Log("LuminousQuake HDR frame: peak %.2f of SDR white (light %.2f), %zu channel values above white; headroom %.2f",
+            peak, powf(peak, 2.2f), above, g->headroom);
+    }
     SDL_UnmapGPUTransferBuffer(g->device, transfer);
     if (!*pixels) { SDL_SetError("out of memory"); goto failed; }
     *width = g->width; *height = g->height;
@@ -1175,12 +1348,17 @@ void LQ_GPUDestroy(lq_gpu *g)
         if (g->frame_indices) SDL_ReleaseGPUBuffer(g->device, g->frame_indices);
         if (g->frame_transfer) SDL_ReleaseGPUTransferBuffer(g->device, g->frame_transfer);
         if (g->color) SDL_ReleaseGPUTexture(g->device, g->color);
+        if (g->scene) SDL_ReleaseGPUTexture(g->device, g->scene);
         if (g->depth) SDL_ReleaseGPUTexture(g->device, g->depth);
         if (g->multisample_color) SDL_ReleaseGPUTexture(g->device, g->multisample_color);
         for (int i = 0; i < 2; ++i) if (g->multisample[i]) SDL_ReleaseGPUGraphicsPipeline(g->device, g->multisample[i]);
         for (int i = 0; i < 3; ++i) if (g->liquid[i]) SDL_ReleaseGPUGraphicsPipeline(g->device, g->liquid[i]);
         if (g->pipeline) SDL_ReleaseGPUGraphicsPipeline(g->device, g->pipeline);
-        if (g->overlay_pipeline) SDL_ReleaseGPUGraphicsPipeline(g->device, g->overlay_pipeline);
+        for (int i = 0; i < 3; ++i) if (g->smoke[i]) SDL_ReleaseGPUGraphicsPipeline(g->device, g->smoke[i]);
+        for (int f = 0; f < 2; ++f) {
+            if (g->overlay_pipelines[f]) SDL_ReleaseGPUGraphicsPipeline(g->device, g->overlay_pipelines[f]);
+            if (g->tonemap_pipelines[f]) SDL_ReleaseGPUGraphicsPipeline(g->device, g->tonemap_pipelines[f]);
+        }
         if (g->overlay) SDL_ReleaseGPUTexture(g->device, g->overlay);
         for (int t = 0; t < LQ_SHADOW_ARRAYS; ++t) {
             if (g->shadow_maps[t]) SDL_ReleaseGPUTexture(g->device, g->shadow_maps[t]);

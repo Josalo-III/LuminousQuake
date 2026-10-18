@@ -211,6 +211,10 @@ fullscreen. Every edition starts new profiles on this WASD layout; a saved
 console command away: `keys_legacy` (and `keys_wasd` to switch back). Where
 `config.cfg` and `autoexec.cfg` live, the order they load in, and which classic
 settings are obsolete are in [configuration](docs/CONFIGURATION.md).
+Options includes **Gamma** right after **Brightness**: the display gamma for
+all three renderers (`lq_gamma`, 1.6–2.8, default 2.2). On a display in HDR mode
+the GPU renderers output HDR (`lq_hdr`), tone-mapping Luminous highlights up
+to the display's headroom.
 Options includes **Mouselook** immediately after **Invert Mouse**. It defaults
 to on and is saved as `freelook`; held `+mlook` bindings remain available when
 it is off.

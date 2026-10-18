@@ -17,6 +17,7 @@ with tempfile.TemporaryDirectory(prefix='lq-shaders-') as temporary:
     result = ['/* Generated from renderer/shaders by tools/build_shaders.py. GPL-2.0-or-later. */']
     # (output name, stage, source, defines): bounce.comp also builds the probes kernel.
     shaders = [(name, stage, name, []) for name in ('world', 'overlay', 'shadow') for stage in ('vert', 'frag')]
+    shaders += [('tonemap', 'frag', 'tonemap', [])]
     shaders += [('bounce', 'comp', 'bounce', []), ('probes', 'comp', 'bounce', ['-DLQ_PROBES'])]
     for name, stage, file, defines in shaders:
         source = str(root / 'renderer/shaders' / (file + '.' + stage))

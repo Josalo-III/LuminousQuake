@@ -1044,9 +1044,9 @@ again:
 /* OPTIONS MENU */
 
 #ifdef _WIN32
-#define	OPTIONS_ITEMS	16
+#define	OPTIONS_ITEMS	17
 #else
-#define	OPTIONS_ITEMS	15
+#define	OPTIONS_ITEMS	16
 #endif
 
 #define	SLIDER_RANGE	10
@@ -1066,7 +1066,7 @@ void M_Menu_Options_f (void)
 	m_entersound = true;
 
 #ifdef _WIN32
-	if ((options_cursor == 15) && (modestate != MS_WINDOWED))
+	if ((options_cursor == 16) && (modestate != MS_WINDOWED))
 	{
 		options_cursor = 0;
 	}
@@ -1096,7 +1096,20 @@ void M_AdjustSliders (int dir)
 			v_gamma.value = 1;
 		Cvar_SetValue ("gamma", v_gamma.value);
 		break;
-	case 5:	// mouse speed
+	case 5:	// LuminousQuake: display gamma, every renderer (1.6 - 2.8)
+		{
+			float g = Cvar_VariableValue ("lq_gamma");
+			if (g < 1)
+				g = 2.2f;
+			g += dir * 0.1f;
+			if (g < 1.6f)
+				g = 1.6f;
+			if (g > 2.8f)
+				g = 2.8f;
+			Cvar_SetValue ("lq_gamma", (float)((int)(g * 10 + 0.5f)) / 10);
+		}
+		break;
+	case 6:	// mouse speed
 		sensitivity.value += dir * 0.5;
 		if (sensitivity.value < 1)
 			sensitivity.value = 1;
@@ -1104,7 +1117,7 @@ void M_AdjustSliders (int dir)
 			sensitivity.value = 11;
 		Cvar_SetValue ("sensitivity", sensitivity.value);
 		break;
-	case 6:	// music volume
+	case 7:	// music volume
 #ifdef _WIN32
 		bgmvolume.value += dir * 1.0;
 #else
@@ -1116,7 +1129,7 @@ void M_AdjustSliders (int dir)
 			bgmvolume.value = 1;
 		Cvar_SetValue ("bgmvolume", bgmvolume.value);
 		break;
-	case 7:	// sfx volume
+	case 8:	// sfx volume
 		volume.value += dir * 0.1;
 		if (volume.value < 0)
 			volume.value = 0;
@@ -1125,7 +1138,7 @@ void M_AdjustSliders (int dir)
 		Cvar_SetValue ("volume", volume.value);
 		break;
 
-	case 8:	// allways run
+	case 9:	// allways run
 		if (cl_forwardspeed.value > 200)
 		{
 			Cvar_SetValue ("cl_forwardspeed", 200);
@@ -1138,30 +1151,30 @@ void M_AdjustSliders (int dir)
 		}
 		break;
 
-	case 9:	// invert mouse
+	case 10:	// invert mouse
 		Cvar_SetValue ("m_pitch", -m_pitch.value);
 		break;
 
-	case 10:	// persistent mouselook; +mlook remains available as a held binding
+	case 11:	// persistent mouselook; +mlook remains available as a held binding
 		Cvar_SetValue ("freelook", !freelook.value);
 		if (!freelook.value && !(in_mlook.state & 1) && lookspring.value)
 			V_StartPitchDrift ();
 		break;
 
-	case 11:	// lookspring
+	case 12:	// lookspring
 		Cvar_SetValue ("lookspring", !lookspring.value);
 		break;
 
-	case 12:	// lookstrafe
+	case 13:	// lookstrafe
 		Cvar_SetValue ("lookstrafe", !lookstrafe.value);
 		break;
 
-	case 13:	// renderer preference (applies when the renderer is restarted)
+	case 14:	// renderer preference (applies when the renderer is restarted)
 		Cvar_SetValue ("lq_renderer", (M_RendererChoice () + dir + 3) % 3);
 		break;
 
 #ifdef _WIN32
-	case 15:	// _windowed_mouse
+	case 16:	// _windowed_mouse
 		Cvar_SetValue ("_windowed_mouse", !_windowed_mouse.value);
 		break;
 #endif
@@ -1219,59 +1232,68 @@ void M_Options_Draw (void)
 	r = (1.0 - v_gamma.value) / 0.5;
 	M_DrawSlider (220, 64, r);
 
-	M_Print (16, 72, "           Mouse Speed");
-	r = (sensitivity.value - 1)/10;
-	M_DrawSlider (220, 72, r);
+	M_Print (16, 72, "                 Gamma");
+	{
+		float g = Cvar_VariableValue ("lq_gamma");
+		if (g < 1)
+			g = 2.2f;
+		M_DrawSlider (220, 72, (g - 1.6f) / 1.2f);
+		M_Print (320 - 8*4, 72, va("%.1f", g));
+	}
 
-	M_Print (16, 80, "       CD Music Volume");
-	r = bgmvolume.value;
+	M_Print (16, 80, "           Mouse Speed");
+	r = (sensitivity.value - 1)/10;
 	M_DrawSlider (220, 80, r);
 
-	M_Print (16, 88, "          Sound Volume");
-	r = volume.value;
+	M_Print (16, 88, "       CD Music Volume");
+	r = bgmvolume.value;
 	M_DrawSlider (220, 88, r);
 
-	M_Print (16, 96,  "            Always Run");
-	M_DrawCheckbox (220, 96, cl_forwardspeed.value > 200);
+	M_Print (16, 96, "          Sound Volume");
+	r = volume.value;
+	M_DrawSlider (220, 96, r);
 
-	M_Print (16, 104, "          Invert Mouse");
-	M_DrawCheckbox (220, 104, m_pitch.value < 0);
+	M_Print (16, 104,  "            Always Run");
+	M_DrawCheckbox (220, 104, cl_forwardspeed.value > 200);
 
-	M_Print (16, 112, "             Mouselook");
-	M_DrawCheckbox (220, 112, freelook.value);
+	M_Print (16, 112, "          Invert Mouse");
+	M_DrawCheckbox (220, 112, m_pitch.value < 0);
 
-	M_Print (16, 120, "            Lookspring");
-	M_DrawCheckbox (220, 120, lookspring.value);
+	M_Print (16, 120, "             Mouselook");
+	M_DrawCheckbox (220, 120, freelook.value);
 
-	M_Print (16, 128, "            Lookstrafe");
-	M_DrawCheckbox (220, 128, lookstrafe.value);
+	M_Print (16, 128, "            Lookspring");
+	M_DrawCheckbox (220, 128, lookspring.value);
 
-	M_Print (16, 136, "              Renderer");
+	M_Print (16, 136, "            Lookstrafe");
+	M_DrawCheckbox (220, 136, lookstrafe.value);
+
+	M_Print (16, 144, "              Renderer");
 	if (M_RendererChoice () == 2)
-		M_Print (220, 136, "Luminous");
+		M_Print (220, 144, "Luminous");
 	else if (M_RendererChoice () == 1)
-		M_Print (220, 136, "Classic GPU");
+		M_Print (220, 144, "Classic GPU");
 	else
-		M_Print (220, 136, "Software");
-	if (options_cursor == 13)
+		M_Print (220, 144, "Software");
+	if (options_cursor == 14)
 	{
 		if (M_RendererChoice () == 0)
-			M_Print (16, 160, "Software gameplay is available.");
+			M_Print (16, 168, "Software gameplay is available.");
 		else if (M_RendererChoice () == 1)
-			M_Print (16, 160, "Classic GPU world, actors/effects.");
+			M_Print (16, 168, "Classic GPU world, actors/effects.");
 		else
-			M_Print (16, 160, "Experimental: runtime light/shadow.");
-		M_Print (16, 168, "Restart or use vid_restart to apply.");
+			M_Print (16, 168, "Experimental: runtime light/shadow.");
+		M_Print (16, 176, "Restart or use vid_restart to apply.");
 	}
 
 	if (vid_menudrawfn)
-		M_Print (16, 144, "         Video Options");
+		M_Print (16, 152, "         Video Options");
 
 #ifdef _WIN32
 	if (modestate == MS_WINDOWED)
 	{
-		M_Print (16, 152, "             Use Mouse");
-		M_DrawCheckbox (220, 152, _windowed_mouse.value);
+		M_Print (16, 160, "             Use Mouse");
+		M_DrawCheckbox (220, 160, _windowed_mouse.value);
 	}
 #endif
 
@@ -1300,9 +1322,9 @@ void M_Options_Key (int k)
 			Con_ToggleConsole_f ();
 			break;
 		case 2:
-			Cbuf_AddText ("exec default.cfg\n");
+			Cbuf_AddText ("exec default.cfg\nkeys_wasd\n");	// LuminousQuake: new profiles' layout
 			break;
-		case 14:
+		case 15:
 			M_Menu_Video_f ();
 			break;
 		default:
@@ -1334,19 +1356,19 @@ void M_Options_Key (int k)
 		break;
 	}
 
-	if (options_cursor == 14 && vid_menudrawfn == NULL)
+	if (options_cursor == 15 && vid_menudrawfn == NULL)
 	{
 		if (k == K_UPARROW)
-			options_cursor = 13;
+			options_cursor = 14;
 		else
 			options_cursor = 0;
 	}
 
 #ifdef _WIN32
-	if ((options_cursor == 15) && (modestate != MS_WINDOWED))
+	if ((options_cursor == 16) && (modestate != MS_WINDOWED))
 	{
 		if (k == K_UPARROW)
-			options_cursor = 14;
+			options_cursor = 15;
 		else
 			options_cursor = 0;
 	}

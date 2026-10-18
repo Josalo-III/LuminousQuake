@@ -443,6 +443,19 @@ qboolean LQ_RenderBridgePresent(void)
             if (!LQ_GPUDynamicProbes(gpu, active ? dynamic_probes : NULL, error, sizeof(error))) goto failed;
         }
     }
+    LQ_GPUDisplay(gpu, Cvar_VariableValue("lq_gamma"), Cvar_VariableValue("lq_hdr") != 0,
+        Cvar_VariableValue("lq_hdr_peak"));
+    LQ_GPUTestPattern(gpu, Cvar_VariableValue("lq_hdr_test") != 0);
+    {   /* Say in the console when output switches between SDR and HDR. */
+        static int reported = -1; static float reported_headroom;
+        float headroom; int hdr = LQ_GPUDisplayHDR(gpu, &headroom);
+        if (hdr != reported || (hdr && fabsf(headroom - reported_headroom) > 0.25f)) {
+            /* Record first: while loading, Con_Printf redraws, re-entering here. */
+            reported = hdr; reported_headroom = headroom;
+            if (hdr) Con_Printf("Display: HDR, highlights up to %.1fx SDR white\n", headroom);
+            else Con_Printf("Display: SDR%s\n", Cvar_VariableValue("lq_hdr") != 0 ? "" : " (lq_hdr 0)");
+        }
+    }
     if (!LQ_GPUFrame(gpu, direct_frame ? LQ_EntitiesFrame() : &empty, error, sizeof(error)) ||
         !LQ_GPUOverlay(gpu, &image, error, sizeof(error)) ||
         !LQ_GPURender(gpu, &view, vid.width, vid.height, error, sizeof(error))) goto failed;

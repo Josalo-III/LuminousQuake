@@ -55,6 +55,14 @@ QuakeSpasm, ironwail and DarkPlaces all treat this as the baseline.
   - Original id1 demos still play.
   - Old saves still load.
 
+### 1a. Rerelease lighting stays as authored
+
+Decided October 18, 2026. Players of the rerelease keep the rerelease's own
+relit lights; Luminous does not swap in retail's light list or tone the
+rerelease down. The one exception is the torch accent spotlights already
+changed (they follow their flame and keep a 20% flat core). Luminous already
+matches retail's bake on retail data.
+
 ### 2. Frame blending for models
 
 **Done October 17, 2026** for Classic GPU and Luminous (`platform/gpu_entities.c`),
@@ -92,9 +100,23 @@ Luminous only. Classic GPU stays palette-exact.
   [Luminous colour](LUMINOUS_RENDERER.md#colour-linear-light-at-32-bits).
 - **Still open for this item:** translucent blending in linear light, which
   needs the float target below.
-- **HDR.** Light accumulates in a floating-point target, then exposure and
-  tone mapping bring it to the display. Find out whether macOS extended dynamic
-  range (EDR) displays can show the headroom directly.
+- **HDR — first version October 18, 2026.** The GPU renderers draw into a
+  16-bit float frame. Luminous writes linear light there with an eight-times
+  ceiling, and a tone-mapping pass brings it to the display: unchanged below
+  0.8, then a hue-keeping shoulder to white (SDR) or to the display's headroom
+  (HDR). The swapchain switches to extended-range linear light whenever the
+  window's display is in HDR mode (`lq_hdr`). A **Gamma** option for all three
+  renderers sits after Brightness (`lq_gamma`). Measured on the user's Acer
+  PM161W over HDMI: 2.1× headroom (4.2× potential); over USB-C, no HDR. Still
+  to come: exposure, blending translucent surfaces in linear light, and tuning
+  the shoulder and white point by eye on HDR. Added the same day: Video
+  Options → **HDR** and **HDR peak** (`lq_hdr_peak` caps highlights where a
+  display is told more headroom than it shows, as mirrored displays are), an
+  in-game test pattern (`lq_hdr_test`), and smoke blended in linear light.
+  HDR highlights are visible in game on the Acer PM161W once its own HDR mode
+  is switched on in the monitor's menu (it ships off); the earlier clipping
+  was that, not the engine. Next: find its peak with `lq_hdr_test` and tune
+  the shoulder and white point by eye.
 - This comes before material packs, because specular and normal-mapped light
   look wrong when computed in gamma space.
 

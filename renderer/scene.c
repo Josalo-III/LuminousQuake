@@ -148,6 +148,7 @@ static void FillRuntimeLight(lq_runtime_light *light, const lq_light_source *sou
     light->color_strength[3] = isfinite(style) ? fmaxf(style, 0) * source->output_scale : 0;
     light->falloff[0] = source->intensity; light->falloff[1] = source->attenuation;
     light->falloff[2] = source->angle_scale; light->falloff[3] = (float)source->formula;
+    light->limit = source->flame_bound ? LQ_TORCH_ACCENT_LIMIT : 0;
     if (source->spotlight) {
         memcpy(light->spot, source->spot_direction, 3*sizeof(float));
         light->spot[3] = source->spot_outer; light->spot_inner = source->spot_inner;

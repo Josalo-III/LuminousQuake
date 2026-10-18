@@ -43,8 +43,9 @@ layout(set=3,binding=1,std140) uniform Lights {
     vec4 sun_direction; // xyz: direction sunlight travels; w: incidence angle scale
     vec4 sun_light; // rgb: sunlight at normal incidence (bounce/probe layer 1 alpha: visibility)
     vec4 shadow_sizes; // cube face size per shadow array
-    vec4 color_space; // x: exponent from summed brightness to linear light;
+    vec4 color_space; // x: exponent from summed brightness to linear light; w: fullbright emission (Luminous)
                       // y: faint level, z: dominance ratio below which lights cast no shadow (0 off)
+    vec4 limit[128]; // x: most brightness the light adds to a surface; 0 none (torch accents)
 } lights;
 const float SHADOW_NEAR = 2.0;
 layout(location=0) in vec2 uv;
@@ -60,15 +61,22 @@ layout(location=0) out vec4 color;
 // the CRT gamma Quake's palette was drawn for. It matches sRGB except below
 // about 4%, where sRGB's linear toe would crush the shadows Classic shows.
 bool linear_lit = false;
+bool written_linear = false; // colour holds linear light rather than display values
 vec4 sky_color = vec4(0.0); // smooth-filtered sky; alpha 0 when unused
 vec3 lit_radiance = vec3(1.0);
 const float DISPLAY_GAMMA = 2.2;
 vec3 displayDecode(vec3 c) { return pow(max(c, vec3(0.0)), vec3(DISPLAY_GAMMA)); }
 vec3 displayEncode(vec3 c) { return pow(clamp(c, 0.0, 1.0), vec3(1.0 / DISPLAY_GAMMA)); }
+// Fullbrights (palette 224-255: flames, lava, lit panels) emit. In Luminous
+// they shine at color_space.w (3) times their palette colour in linear light:
+// tone mapping rolls them back to about their colour on SDR, and HDR displays
+// show them brighter than white.
+float emission() { return lights.parameters.y != 0u && lights.color_space.w > 0.0 ? lights.color_space.w : 1.0; }
 vec4 litEntry(float entry) {
     vec4 c = texture(colormap, vec2((entry + 0.5) / 256.0, 32.5 / 64.0));
     c.rgb = displayDecode(c.rgb);
     if (entry < 224.0) c.rgb *= lit_radiance;
+    else c.rgb *= emission();
     return c;
 }
 vec4 paletteColor(ivec2 p, int level, float grade) {
@@ -137,6 +145,26 @@ vec4 skyLayer(vec2 layer_uv, int left, bool masked) {
         w *= (i >> 1) != 0 ? weight.y : 1.0 - weight.y;
         if (masked && entry < 0.5) continue;
         sum += vec4(skyEntry(entry).rgb, 1.0) * w;
+    }
+    return sum;
+}
+// Luminous sprites, like the sky: the frame filtered bilinearly in linear
+// light, its transparent index (255) becoming fractional coverage so edges
+// feather instead of stepping. rgb is premultiplied by coverage; fullbrights
+// keep their emission.
+vec4 spriteSample(vec2 coord) {
+    ivec2 size = textureSize(indices, 0);
+    vec2 pixel = coord * vec2(size) - 0.5;
+    ivec2 base = ivec2(floor(pixel)); vec2 weight = fract(pixel);
+    vec4 sum = vec4(0.0);
+    for (int i = 0; i < 4; ++i) {
+        ivec2 p = clamp(base + ivec2(i & 1, i >> 1), ivec2(0), size - 1);
+        float entry = floor(texelFetch(indices, p, 0).r * 255.0 + 0.5);
+        if (entry > 254.5) continue;
+        float w = ((i & 1) != 0 ? weight.x : 1.0 - weight.x) * ((i >> 1) != 0 ? weight.y : 1.0 - weight.y);
+        vec3 c = displayDecode(texture(colormap, vec2((entry + 0.5) / 256.0, 32.5 / 64.0)).rgb);
+        if (entry >= 224.0) c *= emission();
+        sum += vec4(c, 1.0) * w;
     }
     return sum;
 }
@@ -279,6 +307,7 @@ float lightReach(uint i, vec3 normal, bool diffuse_effect, bool liquid, float op
         direct *= spot;
     }
     direct *= lights.color_strength[i].w;
+    if (lights.limit[i].x > 0.0) direct = min(direct, lights.limit[i].x);
     if (!liquid && opacity > 0.0 && submerged != (lights.shape[i].z > 0.5)) direct *= 1.0 - opacity;
     return direct;
 }
@@ -324,13 +353,20 @@ void main() {
     // edge also thins toward the silhouette, where the view grazes the sphere,
     // with finer noise, so a puff ends in a ragged fringe, not a bubble's rim.
     // (A cutout standing in for alpha until translucency blends in linear light.)
+    // Smoke is drawn blended (in linear light, in the float frame): the noise
+    // fades the fraction uv.y away softly, and the silhouette thins to nothing
+    // through a ragged fringe, so a puff reads as smoke, not a bubble.
+    float smoke_alpha = 1.0;
     if ((flags & 1024) != 0) {
         vec3 to_eye = normalize(surface.camera_origin.xyz - world_position);
         float rim = 1.0 - abs(dot(normalize(world_normal), to_eye));
         float n = 0.65 * noise3(world_normal * 2.5 + world_position * 0.15) +
                   0.35 * noise3(world_normal * 6.0 + world_position * 0.4 + 17.0);
         float fringe = noise3(world_normal * 14.0 + world_position * 0.9 + 41.0);
-        if (n < uv.y || fringe < smoothstep(0.2, 0.85, rim)) discard;
+        float body = smoothstep(uv.y - 0.12, uv.y + 0.12, n);
+        float edge = (1.0 - smoothstep(0.45, 0.98, rim)) * mix(1.0, fringe, smoothstep(0.35, 0.95, rim));
+        smoke_alpha = body * edge * 0.9;
+        if (smoke_alpha < 0.02) discard;
     }
     bool diffuse_effect = lights.parameters.y != 0u && (flags & 128) != 0;
     // Solid (3D) particles take the effect colour but face lights by their normals.
@@ -455,9 +491,10 @@ void main() {
                 brightness = max(illumination.r,max(illumination.g,illumination.b));
                 if (brightness > 0.001) direct_tint = illumination/brightness;
                 // Brightness sums as LIGHT summed it; it becomes linear light once.
-                // Until HDR output, the ceiling stays Classic's: twice the palette
-                // colour (brightness 255), with the light's hue kept.
-                vec3 capped = brightness > 255.0 ? illumination * (255.0 / brightness) : illumination;
+                // The frame is now floating point and tone-mapped afterwards, so
+                // the ceiling is eight times the palette colour (brightness 1024),
+                // with the light's hue kept; tone mapping rolls highlights off.
+                vec3 capped = brightness > 1024.0 ? illumination * (1024.0 / brightness) : illumination;
                 lit_radiance = pow(max(capped / 128.0, vec3(0.0)), vec3(lights.color_space.x));
                 linear_lit = !lit_effect;
             } else {
@@ -471,7 +508,8 @@ void main() {
     }
     vec2 dx = dFdx(sample_uv), dy = dFdy(sample_uv);
     float index = floor(index_value * 255.0 + 0.5);
-    if ((flags & 8) != 0 && index > 254.5) discard;
+    bool smooth_sprite = (flags & 2048) != 0 && lights.parameters.y != 0u;
+    if ((flags & 8) != 0 && index > 254.5 && !smooth_sprite) discard;
     if ((flags & 4) != 0 && !(lights.parameters.y != 0u && (flags & 32) != 0)) grade = clamp(shade, 0.0, 63.0);
     color = texture(colormap, vec2((index + 0.5) / 256.0, (grade + 0.5) / 64.0));
     // Resolve colors before interpolation. Sky, masks and UI keep level zero.
@@ -484,11 +522,27 @@ void main() {
         // effect_light is relative to; row 0 is double that and would show
         // lit effects twice as bright as the walls around them.
         color = texture(colormap, vec2((index + 0.5) / 256.0, 32.5 / 64.0));
-        color.rgb = displayEncode(displayDecode(color.rgb) *
-            pow(max(effect_light, vec3(0.0)), vec3(lights.color_space.x)));
+        color.rgb = displayDecode(color.rgb) * pow(max(effect_light, vec3(0.0)), vec3(lights.color_space.x));
+        written_linear = true;
     } else if (linear_lit) {
         if ((flags & 9) != 0) color = litEntry(index);
-        color.rgb = displayEncode(color.rgb);
+        written_linear = true;
     } else if (lights.parameters.y != 0u && index < 224.0) color.rgb *= direct_tint;
-    if (sky_color.a > 0.0) color = sky_color;
+    if (sky_color.a > 0.0) { color = sky_color; written_linear = false; }
+    if (smooth_sprite) {
+        vec4 s = spriteSample(uv);
+        if (s.a < 0.02) discard;
+        vec3 c = s.rgb / s.a;
+        if (lit_effect) c *= pow(max(effect_light, vec3(0.0)), vec3(lights.color_space.x));
+        color = vec4(c, s.a);
+        written_linear = true;
+    }
+    // Luminous writes linear light, unclamped, into the floating-point frame;
+    // the tone-mapping pass brings it to the display. Classic writes its
+    // palette colours as they are.
+    if ((flags & 1024) != 0) color.a = smoke_alpha;
+    if (lights.parameters.y != 0u && !written_linear) {
+        color.rgb = displayDecode(color.rgb);
+        if (index >= 224.0 && sky_color.a <= 0.0 && (flags & 1) == 0) color.rgb *= emission();
+    }
 }

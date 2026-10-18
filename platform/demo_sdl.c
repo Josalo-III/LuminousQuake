@@ -413,8 +413,14 @@ static int TestPlatform(qboolean no_audio)
     VERIFY(Cvar_VariableValue("lq_particles") == 0);
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); /* smooth animation off */
     VERIFY(Cvar_VariableValue("r_lerpmodels") == 1 && Cvar_VariableValue("r_lerpmove") == 1);
+    vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); /* HDR off */
+    vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); /* HDR peak 1.5x */
+    VERIFY(Cvar_VariableValue("lq_hdr") == 1 && Cvar_VariableValue("lq_hdr_peak") == 0);
     vid_menukeyfn(K_DOWNARROW);
     vid_menukeyfn(K_ENTER); Cbuf_Execute();
+    VERIFY(Cvar_VariableValue("lq_hdr") == 0 && Cvar_FindVar("lq_hdr")->archive);
+    VERIFY(fabsf(Cvar_VariableValue("lq_hdr_peak") - 1.5f) < 0.001f && Cvar_FindVar("lq_hdr_peak")->archive);
+    Cvar_SetValue("lq_hdr", 1); Cvar_SetValue("lq_hdr_peak", 0);
     VERIFY(fabsf(Cvar_VariableValue("r_wateralpha") - 0.4f) < 0.001f && Cvar_FindVar("r_wateralpha")->archive);
     VERIFY(Cvar_VariableValue("r_fluorescent") == 2 && Cvar_FindVar("r_fluorescent")->archive);
     VERIFY(Cvar_VariableValue("lq_particles") == 1 && Cvar_FindVar("lq_particles")->archive);
@@ -429,9 +435,9 @@ static int TestPlatform(qboolean no_audio)
     VERIFY(Cvar_VariableValue("gpu_mipmaps") == 2 && Cvar_FindVar("gpu_mipmaps")->archive);
     VERIFY(Cvar_VariableValue("gpu_anisotropy") == 16 && Cvar_FindVar("gpu_anisotropy")->archive);
     /* Reach 1080p through the same selector used by the player. */
-    for (int i = 0; i < 12; ++i) vid_menukeyfn(K_UPARROW);
+    for (int i = 0; i < 14; ++i) vid_menukeyfn(K_UPARROW);	/* Apply is row 14 */
     for (int i = 0; i < 12; ++i) vid_menukeyfn(K_RIGHTARROW);
-    for (int i = 0; i < 12; ++i) vid_menukeyfn(K_DOWNARROW);
+    for (int i = 0; i < 14; ++i) vid_menukeyfn(K_DOWNARROW);
     vid_menukeyfn(K_ENTER); Cbuf_Execute();
     VERIFY(vid.width == 1920 && vid.height == 1080);
     Cvar_SetValue("vid_width", 640); Cvar_SetValue("vid_height", 480);

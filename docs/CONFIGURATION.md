@@ -131,6 +131,10 @@ and only print `Unknown command`.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `lq_renderer` | 0 | 0 Software, 1 Classic GPU, 2 Luminous; applies at `vid_restart` |
+| `lq_gamma` | 2.2 | Display gamma for all three renderers (Options → **Gamma**, 1.6–2.8). Higher darkens the mid-tones, lower lifts them; 2.2 shows Quake's palette as drawn. `gamma` (Brightness) still works alongside it |
+| `lq_hdr` | 1 | GPU renderers: HDR output (macOS extended dynamic range) where the display is in HDR mode; 0 never. Video Options → **HDR** and **HDR peak** set it and `lq_hdr_peak` |
+| `lq_hdr_test` | 0 | 1 replaces the 3D view with an HDR test pattern: SDR white along the top, bands at 0.5–10× it below. Where the bands stop changing is your display's real peak, the value for `lq_hdr_peak` |
+| `lq_hdr_peak` | 0 | Caps HDR highlights at this many times SDR white; 0 uses the headroom macOS reports. Set it when bright highlights clip. First check the monitor's own menu: some, like the Acer PM161W, ship with HDR off there and clip everything above white |
 | `vid_width`, `vid_height` | 640, 480 | Render resolution; `vid_restart` applies |
 | `vid_fullscreen` | 0 | Replaces `vid_mode`; `vid_togglefullscreen` switches |
 | `vid_vsync` | 1 | Frames follow the display refresh |

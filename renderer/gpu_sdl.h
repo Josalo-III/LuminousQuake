@@ -36,5 +36,13 @@ uint32_t LQ_GPUShadowFaceUpdates(const lq_gpu *gpu);
 size_t LQ_GPUDynamicProbeBytes(const lq_gpu *gpu);
 int LQ_GPUDynamicProbes(lq_gpu *gpu, const uint8_t *pixels, char *error, size_t size);
 int LQ_GPUReadPixels(lq_gpu *gpu, uint8_t **pixels, uint32_t *width, uint32_t *height, char *error, size_t size);
+/* Display transfer: gamma (lq_gamma, 2.2 normally) for every GPU renderer,
+ * whether HDR output may be used where the display offers it (lq_hdr), and a
+ * cap on HDR highlights in multiples of SDR white (lq_hdr_peak; 0 none). */
+void LQ_GPUDisplay(lq_gpu *gpu, float gamma, int hdr, float peak);
+/* lq_hdr_test: replace the 3D view with bands at known light levels (0.5-10x SDR white). */
+void LQ_GPUTestPattern(lq_gpu *gpu, int on);
+/* Whether frames are going out as HDR, and the headroom above SDR white. */
+int LQ_GPUDisplayHDR(const lq_gpu *gpu, float *headroom);
 void LQ_GPUDestroy(lq_gpu *gpu);
 #endif

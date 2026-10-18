@@ -96,7 +96,11 @@ comes from each light's falloff and from occlusion.
   the flame's strength animation but stays where it was placed. Its cone keeps
   only the central 20% of its lit area flat (`LQ_TORCH_ACCENT_CORE`): the flat
   core's half-angle has tan = √0.2 × tan(outer), and the other 80% tapers to
-  the blurred edge. An authored tighter `_softangle` is kept. On E1M3 that is
+  the blurred edge. An authored tighter `_softangle` is kept. Each adds at
+  most 32 brightness units (`LQ_TORCH_ACCENT_LIMIT`; 128 is normal) to any
+  surface, applied per light in the shader (`limit`). The accent is light on
+  the wall, never a highlight: once the frame went floating point with an 8×
+  ceiling, uncapped accents bloomed into HDR highlights around every torch. On E1M3 that is
   49 lights. The broad flat patch on the wall behind each torch becomes a glow
   centred on the flame, close to retail's baked look. Retail and shareware have
   no accent spotlights. Their torch lights sit on the flame itself and already
@@ -377,8 +381,40 @@ table at the top.
 - **The display transfer is a pure 2.2 power**, the CRT gamma Quake's palette
   was drawn for. Exact sRGB differs only below about 4%, where its linear toe
   crushed Classic's shadows (E1M3's dark stone went visibly blacker with it).
-- **The ceiling is Classic's** until HDR output: twice the palette colour
-  (brightness 255), scaled to keep the light's hue.
+- **The ceiling** is eight times the palette colour (brightness 1024), scaled
+  to keep the light's hue. Until October 18 it was Classic's twice (255),
+  clipped at white.
+- **Brush entities under liquids.** With translucent liquids, light from the
+  other side of a liquid's surface is dimmed by its opacity, for faces judged
+  underwater. World faces are judged at upload; since October 18 doors, lifts
+  and other inline brush entities are judged every frame where they stand
+  (`Brush` in `platform/gpu_entities.c`). E1M3's zombie hatches lie on the
+  floor of a shallow pool and had taken full light, showing as bright squares
+  through 40% water.
+- **Tone mapping and HDR** (`renderer/shaders/tonemap.frag`). The GPU
+  renderers draw into a 16-bit float frame; Luminous writes linear light,
+  Classic its palette colours. A tone-mapping pass makes display values:
+  - Luminous light below 0.8 is unchanged. Above it, a shoulder (extended
+    Reinhard on the brightest channel, so hues hold) reaches the ceiling at
+    the white point: 1 at 6 on an SDR display, and on HDR the display's
+    headroom at the larger of 6 and twice the headroom.
+  - Classic passes through unchanged, so it stays palette-exact.
+  - `lq_gamma` (default 2.2) sets how display values become light, for every
+    renderer; Software applies it to its palette as it presents.
+  - The UI is drawn over the tone-mapped frame in display values, so it
+    blends as it always did. On HDR those display values continue past
+    white, and a last pass turns them into linear light as it draws into an
+    extended-range swapchain. macOS shows SDR white at the usual brightness
+    and highlights up to the headroom.
+  - HDR follows the window's display every frame (`lq_hdr`); screenshots stay
+    8-bit display values, so HDR highlights clip in them.
+  - Some monitors ship with HDR off in their own menu (the Acer PM161W does)
+    and then don't show highlights. With it on, the PM161W's peak is about
+    2× SDR white (`lq_hdr_test` grades to the 2× band), matching the 2.09×
+    headroom macOS reports. `lq_hdr_peak` (Video Options → HDR peak) caps
+    highlights for a display that shows less than it reports.
+    caps highlights at what a display really shows, and `lq_hdr_test` finds
+    that level.
 
 `--light-gamma 1` reads summed brightness as linear light directly. At four
 test cameras it is 17–35% brighter on average, with flatter contrast and
@@ -417,6 +453,15 @@ Luminous rebuilds the map for the new mode.
 
 ### Particles, sprites and travelling weapon light
 
+**Sprites are filtered like the sky** (since October 18). In Luminous every
+sprite (explosions, `s_light.spr`, bubbles) is drawn from its four nearest
+texels, bilinearly, in linear light. Its transparent index (255) becomes
+fractional coverage, so edges feather instead of stepping, and the result
+blends by that coverage in the late pass with smoke (`LQ_SURFACE_SPRITE`,
+`spriteSample` in `world.frag`). Fullbright texels keep their emission, so an
+explosion glows in HDR. Classic GPU keeps the original crisp, palette-exact
+sprite.
+
 Luminous particles use centred irregular polygons with three to six sides and
 deterministic variations in rotation, aspect and scale. Side counts are mixed
 evenly, with area normalized so extra sides do not make a particle larger.
@@ -444,10 +489,12 @@ the bottom 6% of the range and one in ten in the top half. As a puff ages it is
 **eaten away**: two octaves of 3D value noise over the sphere's surface,
 drifting with its position, cut out the fraction of its surface it has lost
 (`LQ_SURFACE_ERODE`, with the fraction in the vertex's `uv.y`; `world.frag`
-discards below it). Its edge also thins toward the silhouette: where the view
-grazes the sphere, a finer noise cuts away more and more, so a puff ends in a
-ragged fringe rather than a bubble's rim. These are cutouts standing in for
-alpha, since translucent blending in linear light waits for the HDR target.
+fades below it). Its edge also thins toward the silhouette: where the view
+grazes the sphere, opacity falls away through a finer ragged noise, so a puff
+ends in a fringe rather than a bubble's rim. Since October 18, smoke is drawn
+**blended**, in its own pass after everything solid and liquid, by that alpha
+(at most 0.9). The frame is floating point, so it blends in linear light; the
+wall shows through a puff. Before that the noise only cut holes.
 
 - **Trail smoke** (grenades, and rocket fire once it cools to the grey end of
   its ramp) is never bigger than a Software particle. Its diameter is capped at
@@ -457,7 +504,7 @@ alpha, since translucent blending in linear light waits for the HDR target.
 - **Torch smoke** (`lq_torch_smoke`, on by default, Luminous with solid
   particles only; `R_TorchSmoke` in `WinQuake/r_part.c`) rises from every
   `flame.mdl` and `flame2.mdl` within 1536 units, about fifteen puffs a second
-  each, 0.25–1 unit in radius. A flame smokes most as it dies down. While its
+  each, 0.45–1.8 units in radius. A flame smokes most as it dies down. While its
   light falls (`LQ_RenderFlameGain`, the same strength curve Luminous lights it
   with), puffs come 2.5× as often as average; while it rises, 0.6×. A puff leaves the top of the flame's first frame
   (alias models' boxes are a fixed 16 units, so the box can't be used) within
