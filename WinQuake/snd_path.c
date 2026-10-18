@@ -9,6 +9,14 @@ to SND_PATH_RANGE units of travel. A sound is reached through the open cells
 beside it. World edges are traced once per cell and cached; doors, lifts and
 other brush entities move, so steps crossing one are traced against it during
 every search.
+
+Doors muffle rather than shut. A second search ignores doors, lifts and other
+brush entities; a sound reached only that way plays at SND_MUFFLE, as through a
+closed door. The change fades: a door's seal rises from 0 to 1 over the last
+SND_FADE seconds before it reaches its closed (spawn) position and falls over
+the first SND_FADE seconds of opening; at rest it seals fully wherever it
+stands, and blocks only what it physically crosses. A mover never blocks a
+sound made inside it (a lift's or door's own noise).
 */
 
 #include "quakedef.h"
@@ -23,6 +31,8 @@ every search.
 #define SND_SOURCE_SLACK	32.0	// sources sit inside fixtures and doors
 #define SND_REFRESH		0.1		// seconds; doors move between searches
 #define SND_MAX_MOVERS	64
+#define SND_FADE		0.3		// seconds of door travel over which sound fades
+#define SND_MUFFLE		0.35	// gain of a sound heard only through closed doors
 #define SND_HEAP		(1 << 20)
 
 #define CELL_KNOWN		(1u << 26)
@@ -38,12 +48,23 @@ typedef struct
 typedef struct
 {
 	entity_t	*ent;
-	vec3_t		mins, maxs;
+	model_t		*model;	// the model when gathered; the entity may lose it before the next gather
+	float		seal;	// at the search, 0 open .. 1 shut
 } snd_mover_t;
 
+typedef struct
+{
+	vec3_t		origin;
+	double		time;
+	float		speed;
+} snd_motion_t;
+
 static snd_cell_t	cells[SND_CELLS];
-static unsigned short cost[SND_CELLS];
-static unsigned short stamp[SND_CELLS];
+static unsigned short costs[2][SND_CELLS];	// pass 0: sealing doors block; pass 1: no mover does
+static unsigned short stamps[2][SND_CELLS];
+static unsigned short *cost = costs[0], *stamp = stamps[0];
+static int		pass;
+static qboolean	leaky;		// a mover was sealing at the search: pass 1 is valid
 static unsigned short generation;
 static unsigned	heap[SND_HEAP];
 static int		heap_count;
@@ -59,6 +80,7 @@ static qboolean	searched;
 
 static snd_mover_t	movers[SND_MAX_MOVERS];
 static int		mover_count;
+static snd_motion_t	motion[MAX_EDICTS];
 
 static void SND_Tables (void)
 {
@@ -171,6 +193,22 @@ static void SND_Edges (snd_cell_t *c)
 	c->edges |= CELL_KNOWN;
 }
 
+// how shut a door is now: anchored to 1 at its closed position, 0 when it is
+// more than SND_FADE seconds of travel from it, 1 at rest anywhere
+static float SND_Seal (entity_t *ent)
+{
+	snd_motion_t	*mo = &motion[ent - cl_entities];
+	vec3_t			gap;
+	vec_t			d;
+
+	VectorSubtract (ent->origin, ent->baseline.origin, gap);
+	d = Length (gap);
+	if (d < 0.5 || mo->speed <= 0)
+		return 1;
+	d = 1 - d / (mo->speed * SND_FADE);
+	return d > 0 ? d : 0;
+}
+
 static void SND_FindMovers (void)
 {
 	int			i;
@@ -178,6 +216,7 @@ static void SND_FindMovers (void)
 	snd_mover_t	*m;
 
 	mover_count = 0;
+	leaky = false;
 	for (i=1 ; i<cl.num_entities && mover_count < SND_MAX_MOVERS ; i++)
 	{
 		ent = &cl_entities[i];
@@ -185,24 +224,58 @@ static void SND_FindMovers (void)
 			continue;
 		m = &movers[mover_count++];
 		m->ent = ent;
-		VectorAdd (ent->origin, ent->model->mins, m->mins);
-		VectorAdd (ent->origin, ent->model->maxs, m->maxs);
+		m->model = ent->model;
+		{
+			snd_motion_t	*mo = &motion[i];
+			vec3_t			step;
+			double			dt = realtime - mo->time;
+
+			if (dt < 0 || dt > 1)
+			{
+				VectorCopy (ent->origin, mo->origin);
+				mo->time = realtime;
+				mo->speed = 0;
+			}
+			else if (dt >= 0.05)
+			{
+				VectorSubtract (ent->origin, mo->origin, step);
+				mo->speed = Length (step) / dt;
+				VectorCopy (ent->origin, mo->origin);
+				mo->time = realtime;
+			}
+		}
+		m->seal = SND_Seal (ent);
+		if (m->seal > 0)
+			leaky = true;
 	}
 }
 
 // does a closed door, lift or other brush entity sit across a..b
-static vec_t SND_MoverReach (vec3_t a, vec3_t b, vec_t length)
+static vec_t SND_MoverReach (vec3_t a, vec3_t b, vec_t length, const float *source)
 {
 	int			i, k;
 	snd_mover_t	*m;
-	vec3_t		la, lb;
+	vec3_t		la, lb, mins, maxs;
 	vec_t		reach = length, r;
 
 	for (i=0 ; i<mover_count ; i++)
 	{
 		m = &movers[i];
+		if (pass || m->ent->model != m->model || m->seal <= 0)
+			continue;
+		// bounds where the door is now, not where it was at the last search
+		VectorAdd (m->ent->origin, m->model->mins, mins);
+		VectorAdd (m->ent->origin, m->model->maxs, maxs);
+		if (source)
+		{
+			for (k=0 ; k<3 ; k++)
+				if (source[k] < mins[k] - 1 || source[k] > maxs[k] + 1)
+					break;
+			if (k == 3)
+				continue;	// the mover's own sound
+		}
 		for (k=0 ; k<3 ; k++)
-			if ((a[k] < m->mins[k] && b[k] < m->mins[k]) || (a[k] > m->maxs[k] && b[k] > m->maxs[k]))
+			if ((a[k] < mins[k] && b[k] < mins[k]) || (a[k] > maxs[k] && b[k] > maxs[k]))
 				break;
 		if (k < 3)
 			continue;
@@ -262,21 +335,21 @@ static void SND_Relax (int x, int y, int z, int c)
 	SND_Push (c, index);
 }
 
-static void SND_Search (vec3_t listener)
+static void SND_UsePass (int p)
+{
+	pass = p;
+	cost = costs[p];
+	stamp = stamps[p];
+}
+
+static void SND_Spread (vec3_t listener)
 {
 	int			d, x, y, z, c, index;
 	unsigned	item;
 	snd_cell_t	*cell;
 	vec3_t		a, b, delta;
 
-	if (!++generation)
-	{
-		memset (stamp, 0, sizeof(stamp));
-		generation = 1;
-	}
 	heap_count = 0;
-	SND_FindMovers ();
-	SND_CellOf (listener, origin_cell);
 
 	// the listener enters the air through every nearby cell it can see
 	for (x=-1 ; x<=1 ; x++)
@@ -289,7 +362,7 @@ static void SND_Search (vec3_t listener)
 				SND_Centre (cell->x, cell->y, cell->z, a);
 				VectorSubtract (a, listener, delta);
 				if (!SND_Clear (cached_world->hulls, listener, a)
-					|| SND_MoverReach (listener, a, Length (delta)) < Length (delta))
+					|| SND_MoverReach (listener, a, Length (delta), NULL) < Length (delta))
 					continue;
 				SND_Relax (cell->x, cell->y, cell->z, (int)Length (delta));
 			}
@@ -317,11 +390,30 @@ static void SND_Search (vec3_t listener)
 			if (mover_count)
 			{
 				SND_Centre (x, y, z, b);
-				if (SND_MoverReach (a, b, step_cost[d]) < step_cost[d])
+				if (SND_MoverReach (a, b, step_cost[d], NULL) < step_cost[d])
 					continue;
 			}
 			SND_Relax (x, y, z, c + step_cost[d]);
 		}
+	}
+}
+
+static void SND_Search (vec3_t listener)
+{
+	if (!++generation)
+	{
+		memset (stamps, 0, sizeof(stamps));
+		generation = 1;
+	}
+	SND_FindMovers ();
+	SND_CellOf (listener, origin_cell);
+	SND_UsePass (0);
+	SND_Spread (listener);
+	if (leaky)
+	{
+		SND_UsePass (1);
+		SND_Spread (listener);
+		SND_UsePass (0);
 	}
 	searched = true;
 }
@@ -340,6 +432,7 @@ void LQ_SoundPathsUpdate (vec3_t listener)
 	if (cached_world != cl.worldmodel)
 	{
 		memset (cells, 0x80, sizeof(cells));	// no cell has key -32640
+		memset (motion, 0, sizeof(motion));
 		cached_world = cl.worldmodel;
 		searched = false;
 	}
@@ -356,17 +449,13 @@ void LQ_SoundPathsUpdate (vec3_t listener)
 	searched_at = realtime;
 }
 
-/* 1 with *distance the travel through air, -1 when no open path reaches the
-   sound within range, 0 when the paths say nothing (keep the straight line). */
-int LQ_SoundPathDistance (vec3_t source, vec_t straight, vec_t *distance)
+static int SND_PassDistance (vec3_t source, vec_t *distance)
 {
 	int			s[3], x, y, z, index, found = 0;
 	snd_cell_t	*cell;
 	vec3_t		a, delta;
 	vec_t		length, best = 0, through;
 
-	if (!searched || straight > SND_PATH_RANGE)
-		return 0;
 	SND_CellOf (source, s);
 	for (x=-1 ; x<=1 ; x++)
 		for (y=-1 ; y<=1 ; y++)
@@ -386,7 +475,7 @@ int LQ_SoundPathDistance (vec3_t source, vec_t straight, vec_t *distance)
 				if (found && through >= best)
 					continue;
 				if (SND_Reach (cached_world->hulls, a, source, length) < length - SND_SOURCE_SLACK
-					|| SND_MoverReach (a, source, length) < length - SND_SOURCE_SLACK)
+					|| SND_MoverReach (a, source, length, source) < length - SND_SOURCE_SLACK)
 					continue;
 				best = through;
 				found = 1;
@@ -394,5 +483,41 @@ int LQ_SoundPathDistance (vec3_t source, vec_t straight, vec_t *distance)
 	if (!found)
 		return -1;
 	*distance = best;
+	return 1;
+}
+
+/* 1 with *distance the travel through air, -1 when no open path reaches the
+   sound within range, 0 when the paths say nothing (keep the straight line).
+   *open scales the sound when it is reached only through doors: SND_MUFFLE
+   through a shut one, fading with the most sealed door's seal now, so the fade
+   ends exactly as a door shuts. */
+int LQ_SoundPathDistance (vec3_t source, vec_t straight, vec_t *distance, vec_t *open)
+{
+	int		i, found;
+	float	seal, most, partial = 0;
+
+	*open = 1;
+	if (!searched || straight > SND_PATH_RANGE)
+		return 0;
+	found = SND_PassDistance (source, distance);
+	if (found > 0 || !leaky)
+		return found;
+	SND_UsePass (1);
+	found = SND_PassDistance (source, distance);
+	SND_UsePass (0);
+	if (found < 0)
+		return -1;
+	// a door partly shut at the search is taken as the one in the way; with
+	// none, the sound is behind shut doors
+	most = 1;
+	for (i=0 ; i<mover_count ; i++)
+		if (movers[i].ent->model == movers[i].model && movers[i].seal > 0 && movers[i].seal < 1)
+		{
+			seal = SND_Seal (movers[i].ent);
+			if (most == 1 || seal > partial)
+				partial = seal;
+			most = partial;
+		}
+	*open = 1 - most * (1 - SND_MUFFLE);
 	return 1;
 }

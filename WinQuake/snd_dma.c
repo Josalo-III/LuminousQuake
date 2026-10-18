@@ -445,16 +445,20 @@ void SND_Spatialize(channel_t *ch)
 	snd_shut = false;
 	if (gain > 0 && ch->dist_mult > 0)
 	{
-		vec_t travelled;
-		int path = LQ_SoundPathDistance(ch->origin, dist, &travelled);
+		vec_t travelled, open;
+		int path = LQ_SoundPathDistance(ch->origin, dist, &travelled, &open);
 
 		if (path < 0)
 		{
 			gain = 0;
 			snd_shut = true;
 		}
-		else if (path > 0 && travelled > dist)
-			gain = SND_DistanceGain(travelled, ch->dist_mult);
+		else if (path > 0)
+		{
+			if (travelled > dist)
+				gain = SND_DistanceGain(travelled, ch->dist_mult);
+			gain *= open;	// a door closing or opening across the only way through
+		}
 	}
 	
 	dot = DotProduct(listener_right, source_vec);
@@ -1138,7 +1142,7 @@ static void S_SoundPaths_f(void)
 	int			i, path;
 	channel_t	*ch;
 	vec3_t		delta;
-	vec_t		straight, travelled;
+	vec_t		straight, travelled, open;
 
 	for (i=NUM_AMBIENTS, ch=channels+NUM_AMBIENTS ; i<total_channels ; i++, ch++)
 	{
@@ -1148,9 +1152,9 @@ static void S_SoundPaths_f(void)
 		straight = Length (delta);
 		if (SND_DistanceGain (straight, ch->dist_mult) <= 0)
 			continue;
-		path = LQ_SoundPathDistance (ch->origin, straight, &travelled);
-		Con_Printf ("%-24s %5.0f straight, %s %3i/%3i\n", ch->sfx->name, straight,
+		path = LQ_SoundPathDistance (ch->origin, straight, &travelled, &open);
+		Con_Printf ("%-24s %5.0f straight, %s %3i/%3i open %.2f\n", ch->sfx->name, straight,
 			path < 0 ? "  shut off" : path > 0 ? va("%5.0f path", travelled) : "  no paths",
-			ch->leftvol, ch->rightvol);
+			ch->leftvol, ch->rightvol, open);
 	}
 }

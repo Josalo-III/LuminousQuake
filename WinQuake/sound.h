@@ -188,4 +188,4 @@ qboolean LQ_SoundSamples(const char *name, const void **data, int *width, int *c
 qboolean LQ_StaticSoundClock(const char *name, double *position, qboolean *audible);
 /* LuminousQuake: sound travel through open air (snd_path.c). */
 void LQ_SoundPathsUpdate(vec3_t listener);
-int LQ_SoundPathDistance(vec3_t source, vec_t straight, vec_t *distance);
+int LQ_SoundPathDistance(vec3_t source, vec_t straight, vec_t *distance, vec_t *open);

@@ -280,6 +280,11 @@ Applying video settings writes the profile immediately; quitting also saves it.
 13.19 fixed-point edges to retain subpixel precision at these widths.
 Sound-device failure is nonfatal; `-nosound` explicitly disables audio.
 CD/music output is still absent.
+Sounds travel through open air (`WinQuake/snd_path.c`): they bend round
+corners and through openings, solid walls shut them off, and closed doors and
+lifts muffle them to 35% rather than silencing them. A door fades the sound over
+0.3 s, reaching full muffling the moment it finishes closing and lifting it over
+the first 0.3 s of opening. A door or lift never muffles its own noise.
 
 ### Frame timing and VSync
 
