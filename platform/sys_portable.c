@@ -9,6 +9,12 @@
 #include <unistd.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <execinfo.h>
+#include <fcntl.h>
+#include <signal.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 #endif
 #include <errno.h>
 #include "quakedef.h"
@@ -212,6 +218,54 @@ void Sys_LowFPPrecision(void) {}
 void Sys_HighFPPrecision(void) {}
 void Sys_SetFPCW(void) {}
 
+#ifndef _WIN32
+/* A fatal signal appends a backtrace to ~/Library/Logs/LuminousQuake/crash.log
+ * (~/.local/state/luminousquake elsewhere), since macOS may not keep a report.
+ * The handler uses only async-signal-safe calls; the path and image slide are
+ * prepared at startup. Symbolize with: atos -o LuminousQuake -l <load> <frames>. */
+static char crash_path[1024];
+static void CrashWrite(int fd, const char *text) { write(fd, text, strlen(text)); }
+static void CrashHex(int fd, unsigned long long value)
+{
+    char digits[19] = "0x"; int n = 16;
+    for (int i = 0; i < 16; ++i) digits[2 + i] = "0123456789abcdef"[(value >> ((15 - i) * 4)) & 15];
+    digits[2 + n] = 0; CrashWrite(fd, digits);
+}
+static void CrashHandler(int sig)
+{
+    int fd = crash_path[0] ? open(crash_path, O_WRONLY | O_CREAT | O_APPEND, 0644) : -1;
+    if (fd < 0) fd = 2;
+    void *frames[64]; int count = backtrace(frames, 64);
+    CrashWrite(fd, "\n=== LuminousQuake " LQ_VERSION " crashed, signal ");
+    char number[4] = {(char)('0' + sig / 10 % 10), (char)('0' + sig % 10), '\n', 0};
+    CrashWrite(fd, number);
+#ifdef __APPLE__
+    CrashWrite(fd, "load address ");
+    CrashHex(fd, 0x100000000ULL + (unsigned long long)_dyld_get_image_vmaddr_slide(0));
+    CrashWrite(fd, "\n");
+#endif
+    backtrace_symbols_fd(frames, count, fd);
+    if (fd != 2) { backtrace_symbols_fd(frames, count, 2); close(fd); }
+    signal(sig, SIG_DFL); raise(sig);
+}
+static void InstallCrashLog(void)
+{
+    const char *home = getenv("HOME");
+    if (home && strlen(home) < sizeof(crash_path) - 64) {
+#ifdef __APPLE__
+        snprintf(crash_path, sizeof(crash_path), "%s/Library/Logs/LuminousQuake", home);
+#else
+        snprintf(crash_path, sizeof(crash_path), "%s/.local/state/luminousquake", home);
+#endif
+        mkdir(crash_path, 0755);
+        strcat(crash_path, "/crash.log");
+    }
+    void *warm[1]; backtrace(warm, 1); /* load the unwinder before it is needed */
+    const int signals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT};
+    for (size_t i = 0; i < sizeof(signals) / sizeof(signals[0]); ++i) signal(signals[i], CrashHandler);
+}
+#endif
+
 int main(int argc, char **argv)
 {
     quakeparms_t parms = {0};
@@ -221,6 +275,9 @@ int main(int argc, char **argv)
     const char *capture_path = NULL;
     qboolean profile_report = false, profile_reset = false;
     int i, engine_argc = 0;
+#ifndef _WIN32
+    if (!getenv("LQ_NO_CRASH_LOG")) InstallCrashLog();
+#endif
 #ifdef LQ_SDL
     atexit(PlatformExit);
 #endif
