@@ -28,7 +28,7 @@ int 		con_linewidth;
 
 float		con_cursorspeed = 4;
 
-#define		CON_TEXTSIZE	16384
+#define		CON_TEXTSIZE	262144	// LuminousQuake: was 16384 (16 KB of scrollback)
 
 qboolean 	con_forcedup;		// because no entities to refresh
 
@@ -149,7 +149,7 @@ If the line width has changed, reformat the buffer.
 void Con_CheckResize (void)
 {
 	int		i, j, width, oldwidth, oldtotallines, numlines, numchars;
-	char	tbuf[CON_TEXTSIZE];
+	static char	tbuf[CON_TEXTSIZE];	// LuminousQuake: static now that it is 256 KB
 
 #ifdef LQ_PORTABLE
 	width = ((vid.width / (LQ_UIActive() ? 1 : LQ_UIScale())) >> 3) - 2;
@@ -369,7 +369,7 @@ Con_Printf
 Handles cursor positioning, line wrapping, etc
 ================
 */
-#define	MAXPRINTMSG	4096
+#define	MAXPRINTMSG	16384	// LuminousQuake: was 4096
 // FIXME: make a buffer size safe vsprintf?
 void Con_Printf (char *fmt, ...)
 {

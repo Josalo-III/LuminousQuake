@@ -57,6 +57,10 @@ struct
 	byte			data[MAX_DATAGRAM];
 } packetBuffer;
 
+// LuminousQuake: reliable messages still go out in the original 1024-byte
+// fragments, so original clients and servers can reassemble them.
+#define	DGRAM_FRAGMENT	NQ_DATAGRAM
+
 extern int m_return_state;
 extern int m_state;
 extern qboolean m_return_onerror;
@@ -157,14 +161,14 @@ int Datagram_SendMessage (qsocket_t *sock, sizebuf_t *data)
 	Q_memcpy(sock->sendMessage, data->data, data->cursize);
 	sock->sendMessageLength = data->cursize;
 
-	if (data->cursize <= MAX_DATAGRAM)
+	if (data->cursize <= DGRAM_FRAGMENT)
 	{
 		dataLen = data->cursize;
 		eom = NETFLAG_EOM;
 	}
 	else
 	{
-		dataLen = MAX_DATAGRAM;
+		dataLen = DGRAM_FRAGMENT;
 		eom = 0;
 	}
 	packetLen = NET_HEADERSIZE + dataLen;
@@ -190,14 +194,14 @@ int SendMessageNext (qsocket_t *sock)
 	unsigned int	dataLen;
 	unsigned int	eom;
 
-	if (sock->sendMessageLength <= MAX_DATAGRAM)
+	if (sock->sendMessageLength <= DGRAM_FRAGMENT)
 	{
 		dataLen = sock->sendMessageLength;
 		eom = NETFLAG_EOM;
 	}
 	else
 	{
-		dataLen = MAX_DATAGRAM;
+		dataLen = DGRAM_FRAGMENT;
 		eom = 0;
 	}
 	packetLen = NET_HEADERSIZE + dataLen;
@@ -223,14 +227,14 @@ int ReSendMessage (qsocket_t *sock)
 	unsigned int	dataLen;
 	unsigned int	eom;
 
-	if (sock->sendMessageLength <= MAX_DATAGRAM)
+	if (sock->sendMessageLength <= DGRAM_FRAGMENT)
 	{
 		dataLen = sock->sendMessageLength;
 		eom = NETFLAG_EOM;
 	}
 	else
 	{
-		dataLen = MAX_DATAGRAM;
+		dataLen = DGRAM_FRAGMENT;
 		eom = 0;
 	}
 	packetLen = NET_HEADERSIZE + dataLen;
@@ -389,10 +393,10 @@ int	Datagram_GetMessage (qsocket_t *sock)
 				Con_DPrintf("Duplicate ACK received\n");
 				continue;
 			}
-			sock->sendMessageLength -= MAX_DATAGRAM;
+			sock->sendMessageLength -= DGRAM_FRAGMENT;
 			if (sock->sendMessageLength > 0)
 			{
-				Q_memcpy(sock->sendMessage, sock->sendMessage+MAX_DATAGRAM, sock->sendMessageLength);
+				Q_memcpy(sock->sendMessage, sock->sendMessage+DGRAM_FRAGMENT, sock->sendMessageLength);
 				sock->sendNext = true;
 			}
 			else
@@ -429,6 +433,12 @@ int	Datagram_GetMessage (qsocket_t *sock)
 				break;
 			}
 
+			if (sock->receiveMessageLength + length > NET_MAXMESSAGE)
+			{	// LuminousQuake: never write past the reassembly buffer
+				Con_Printf ("Datagram_GetMessage: reliable message too long\n");
+				sock->receiveMessageLength = 0;
+				continue;
+			}
 			Q_memcpy(sock->receiveMessage + sock->receiveMessageLength, packetBuffer.data, length);
 			sock->receiveMessageLength += length;
 			continue;

@@ -22,7 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "r_local.h"
 #include "render_bridge.h"
 
-#define MAX_PARTICLES			2048	// default max # of particles at one
+#define MAX_PARTICLES			16384	// LuminousQuake: was 2048. default max # of particles at one
 										//  time
 #define ABSOLUTE_MIN_PARTICLES	512		// no fewer than this no matter what's
 										//  on the command line
@@ -44,9 +44,165 @@ vec3_t			r_pright, r_pup, r_ppn;
 R_InitParticles
 ===============
 */
+/*
+===============
+R_TorchSmoke
+
+LuminousQuake: smoke rises from torch and flame models, about fifteen small
+puffs a second each, most of them as the flame's light falls. The column rises
+fastest at its centre; puffs swell a little and are eaten away within about two
+seconds. Luminous with solid particles
+(lq_particles) draws it as lit spheres; other renderers never spawn it.
+===============
+*/
+cvar_t	lq_torch_smoke = {"lq_torch_smoke", "1", true};
+static double	torch_smoke_next[MAX_STATIC_ENTITIES];
+static float	torch_smoke_gain[MAX_STATIC_ENTITIES];	// last frame's flame strength
+
+// The top of a flame model's first frame, above its origin. (Alias models
+// all get a fixed 16-unit box, so the box can't say where a flame ends.)
+static float R_FlameTop (model_t *model)
+{
+	aliashdr_t	*header = (aliashdr_t *)Mod_Extradata (model);
+	mdl_t		*mdl;
+	if (!header)
+		return 8;
+	mdl = (mdl_t *)((byte *)header + header->model);
+	return mdl->scale_origin[2] + mdl->scale[2] * header->frames[0].bboxmax.v[2];
+}
+
+static void R_TorchSmoke (void)
+{
+	int			i, j;
+	entity_t	*e;
+	particle_t	*p;
+	vec3_t		delta;
+
+	if (!lq_torch_smoke.value || Cvar_VariableValue ("lq_renderer") != 2
+		|| !Cvar_VariableValue ("lq_particles") || cl.paused || !cl.worldmodel)
+		return;
+	for (i=0 ; i<cl.num_statics ; i++)
+	{
+		e = &cl_static_entities[i];
+		if (!e->model || (strcmp (e->model->name, "progs/flame.mdl") && strcmp (e->model->name, "progs/flame2.mdl")))
+			continue;
+		if (torch_smoke_next[i] > cl.time + 2)
+			torch_smoke_next[i] = 0;	// a new map restarted the clock
+		VectorSubtract (e->origin, r_origin, delta);
+		if (DotProduct (delta, delta) > 1536.0f * 1536.0f)
+			continue;	// too far to see: skip before the flame lookup
+		// A flame smokes most as it dies down: while its light falls, puffs
+		// come about 2.5 times as often as while it rises.
+		{
+			float	gain = LQ_RenderFlameGain (e->origin), rate = 1;
+			if (gain > 0 && torch_smoke_gain[i] > 0)
+				rate = gain < torch_smoke_gain[i] ? 2.5f : gain > torch_smoke_gain[i] ? 0.6f : 1;
+			if (gain > 0)
+				torch_smoke_gain[i] = gain;
+			if (torch_smoke_next[i] > cl.time)
+				continue;
+			torch_smoke_next[i] = cl.time + (0.04 + (rand() & 1023) * (0.05 / 1023)) / rate;
+		}
+		if (!free_particles)
+			continue;
+		p = free_particles;
+		free_particles = p->next;
+		p->next = active_particles;
+		active_particles = p;
+		p->type = pt_smoke;
+		p->emissive = 0;
+		p->liquid = 0;
+		p->ramp = 0;
+		p->life = 1.6f + (rand() & 1023) * (0.8f / 1023);
+		p->die = cl.time + p->life + 0.1f;
+		p->color = 3 + (rand() & 3);	// dark greys
+		for (j=0 ; j<2 ; j++)
+		{
+			p->org[j] = e->origin[j] + ((rand() & 7) - 3.5f) * 0.6f;
+			p->vel[j] = ((rand() & 7) - 3.5f);
+		}
+		p->org[2] = e->origin[2] + R_FlameTop (e->model) * 0.9f;
+		p->axis[0] = e->origin[0];
+		p->axis[1] = e->origin[1];
+		p->vel[2] = 22 + (rand() & 7);
+	}
+}
+
+/*
+===============
+R_SmokeCohesion
+
+LuminousQuake: puffs in one torch's column attract one another, so the smoke
+gathers into overlapping clumps instead of rising as separate beads. Within
+SMOKE_REACH units a pair pulls together, harder the closer they are, until
+they overlap by about half their spacing, and they partly share velocity, so a
+clump drifts as one. Columns are a few dozen puffs, so pairs are cheap.
+===============
+*/
+#define SMOKE_REACH		7.0f
+#define SMOKE_PULL		40.0f
+#define SMOKE_MAX		4096
+
+static int SmokeColumnOrder (const void *a, const void *b)
+{
+	const particle_t *p = *(const particle_t * const *)a, *q = *(const particle_t * const *)b;
+	if (p->axis[0] != q->axis[0])
+		return p->axis[0] < q->axis[0] ? -1 : 1;
+	if (p->axis[1] != q->axis[1])
+		return p->axis[1] < q->axis[1] ? -1 : 1;
+	return 0;
+}
+
+static void R_SmokeCohesion (float frametime)
+{
+	static particle_t	*smoke[SMOKE_MAX];
+	int			count = 0, first, last, i, j, k;
+	particle_t	*p;
+
+	if (frametime <= 0)
+		return;
+	for (p = active_particles ; p && count < SMOKE_MAX ; p = p->next)
+		if (p->type == pt_smoke && p->die >= cl.time)
+			smoke[count++] = p;
+	if (count < 2)
+		return;
+	qsort (smoke, count, sizeof(smoke[0]), SmokeColumnOrder);
+	for (first = 0 ; first < count ; first = last)
+	{
+		for (last = first + 1 ; last < count && !SmokeColumnOrder (&smoke[first], &smoke[last]) ; last++)
+			;
+		for (i = first ; i < last ; i++)
+			for (j = i + 1 ; j < last ; j++)
+			{
+				particle_t	*a = smoke[i], *b = smoke[j];
+				float		d[3], dist2 = 0, dist, pull, share;
+				for (k=0 ; k<3 ; k++)
+				{
+					d[k] = b->org[k] - a->org[k];
+					dist2 += d[k] * d[k];
+				}
+				if (dist2 >= SMOKE_REACH * SMOKE_REACH || dist2 < 0.25f)
+					continue;	// too far apart, or already overlapping
+				dist = sqrtf (dist2);
+				pull = SMOKE_PULL * (1 - dist / SMOKE_REACH) * frametime / dist;
+				share = 1.5f * (1 - dist / SMOKE_REACH) * frametime;
+				if (share > 0.5f)
+					share = 0.5f;
+				for (k=0 ; k<3 ; k++)
+				{
+					float	mean = (a->vel[k] + b->vel[k]) * 0.5f;
+					a->vel[k] += d[k] * pull + (mean - a->vel[k]) * share;
+					b->vel[k] += -d[k] * pull + (mean - b->vel[k]) * share;
+				}
+			}
+	}
+}
+
 void R_InitParticles (void)
 {
 	int		i;
+
+	Cvar_RegisterVariable (&lq_torch_smoke);
 
 	i = COM_CheckParm ("-particles");
 
@@ -263,7 +419,7 @@ void R_ParseParticleEffect (void)
 	int			i, count, msgcount, color;
 	
 	for (i=0 ; i<3 ; i++)
-		org[i] = MSG_ReadCoord ();
+		org[i] = MSG_ReadCoord (cl.protocolflags);
 	for (i=0 ; i<3 ; i++)
 		dir[i] = MSG_ReadChar () * (1.0/16);
 	msgcount = MSG_ReadByte ();
@@ -703,6 +859,8 @@ void R_DrawParticles (void)
 	VectorCopy (vpn, r_ppn);
 #endif
 	frametime = cl.time - cl.oldtime;
+	R_TorchSmoke ();
+	R_SmokeCohesion (frametime);
 	time3 = frametime * 15;
 	time2 = frametime * 10; // 15;
 	time1 = frametime * 5;
@@ -762,6 +920,28 @@ void R_DrawParticles (void)
 		switch (p->type)
 		{
 		case pt_static:
+			break;
+		case pt_smoke:
+			// LuminousQuake: a column over a flame rises fastest at its centre
+			// and slower toward its edge, which widens as it rises; puffs drift
+			// a little outward and wander.
+			{
+				float rx = p->org[0] - p->axis[0], ry = p->org[1] - p->axis[1];
+				float r2 = rx*rx + ry*ry, width = 2.5f + 0.12f * p->ramp * p->vel[2];
+				float rise = 14 + 26 * expf (-r2 / (width * width));
+				p->ramp += frametime;
+				if (p->ramp >= p->life)
+					p->die = -1;
+				p->vel[2] += (rise - p->vel[2]) * 3 * frametime;
+				if (r2 > 0.0001f)
+				{
+					float r = sqrtf (r2);
+					p->vel[0] += rx / r * 2.0f * frametime;
+					p->vel[1] += ry / r * 2.0f * frametime;
+				}
+				p->vel[0] += ((rand() % 3) - 1) * 8 * frametime;
+				p->vel[1] += ((rand() % 3) - 1) * 8 * frametime;
+			}
 			break;
 		case pt_fire:
 			p->ramp += time1;

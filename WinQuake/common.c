@@ -586,14 +586,43 @@ void MSG_WriteString (sizebuf_t *sb, char *s)
 		SZ_Write (sb, s, Q_strlen(s)+1);
 }
 
-void MSG_WriteCoord (sizebuf_t *sb, float f)
+/*
+LuminousQuake: coordinates and angles follow the connection's protocol flags.
+Flags 0 (protocols 15 and 666) keep the original encodings, truncation and all;
+protocol 999 (RMQ) servers choose wider ones with PRFL_* bits.
+*/
+void MSG_WriteCoord (sizebuf_t *sb, float f, unsigned int flags)
 {
-	MSG_WriteShort (sb, (int)(f*8));
+	if (flags & PRFL_FLOATCOORD)
+		MSG_WriteFloat (sb, f);
+	else if (flags & PRFL_INT32COORD)
+		MSG_WriteLong (sb, (int)floorf(f * 16 + 0.5f));
+	else if (flags & PRFL_24BITCOORD)
+	{
+		MSG_WriteShort (sb, (int)f);
+		MSG_WriteByte (sb, (int)(f * 255) % 255);
+	}
+	else
+		MSG_WriteShort (sb, (int)(f*8));
 }
 
-void MSG_WriteAngle (sizebuf_t *sb, float f)
+void MSG_WriteAngle (sizebuf_t *sb, float f, unsigned int flags)
 {
-	MSG_WriteByte (sb, ((int)f*256/360) & 255);
+	if (flags & PRFL_FLOATANGLE)
+		MSG_WriteFloat (sb, f);
+	else if (flags & PRFL_SHORTANGLE)
+		MSG_WriteShort (sb, (int)floorf(f * 65536.0f / 360.0f + 0.5f) & 65535);
+	else
+		MSG_WriteByte (sb, ((int)f*256/360) & 255);
+}
+
+// Protocols 666 and 999 send the client's view angles at 16-bit precision.
+void MSG_WriteAngle16 (sizebuf_t *sb, float f, unsigned int flags)
+{
+	if (flags & PRFL_FLOATANGLE)
+		MSG_WriteFloat (sb, f);
+	else
+		MSG_WriteShort (sb, (int)floorf(f * 65536.0f / 360.0f + 0.5f) & 65535);
 }
 
 //
@@ -724,14 +753,34 @@ char *MSG_ReadString (void)
 	return string;
 }
 
-float MSG_ReadCoord (void)
+float MSG_ReadCoord (unsigned int flags)
 {
+	if (flags & PRFL_FLOATCOORD)
+		return MSG_ReadFloat ();
+	if (flags & PRFL_INT32COORD)
+		return MSG_ReadLong () * (1.0/16);
+	if (flags & PRFL_24BITCOORD)
+	{
+		int whole = MSG_ReadShort ();
+		return whole + MSG_ReadByte () * (1.0/255);
+	}
 	return MSG_ReadShort() * (1.0/8);
 }
 
-float MSG_ReadAngle (void)
+float MSG_ReadAngle (unsigned int flags)
 {
+	if (flags & PRFL_FLOATANGLE)
+		return MSG_ReadFloat ();
+	if (flags & PRFL_SHORTANGLE)
+		return MSG_ReadShort () * (360.0/65536);
 	return MSG_ReadChar() * (360.0/256);
+}
+
+float MSG_ReadAngle16 (unsigned int flags)
+{
+	if (flags & PRFL_FLOATANGLE)
+		return MSG_ReadFloat ();
+	return MSG_ReadShort () * (360.0/65536);
 }
 
 
@@ -1245,7 +1294,7 @@ typedef struct
 	int             dirlen;
 } dpackheader_t;
 
-#define MAX_FILES_IN_PACK       2048
+#define MAX_FILES_IN_PACK       65536	// LuminousQuake: was 2048; AD's pak0 already has 1907
 
 char    com_cachedir[MAX_OSPATH];
 char    com_gamedir[MAX_OSPATH];
@@ -1651,7 +1700,7 @@ pack_t *COM_LoadPackFile (char *packfile)
 	int                             numpackfiles;
 	pack_t                  *pack;
 	int                             packhandle;
-	dpackfile_t             info[MAX_FILES_IN_PACK];
+	static dpackfile_t      info[MAX_FILES_IN_PACK];	// LuminousQuake: static; 4 MB is too much stack
 	unsigned short          crc;
 
 	if (Sys_FileOpenRead (packfile, &packhandle) == -1)
@@ -1759,6 +1808,43 @@ void COM_AddGameDirectory (char *dir)
 
 /*
 ================
+COM_Edition
+
+LuminousQuake: which release of Quake the search path holds, so each keeps
+its own profile. Shareware lacks gfx/pop.lmp; the 2021 rerelease adds files
+the 1996 packs never had (gfx/base.wad, bots/game_rules.txt).
+================
+*/
+static qboolean COM_HasFile (const char *name)
+{
+	searchpath_t	*search;
+	int				i;
+
+	for (search = com_searchpaths ; search ; search = search->next)
+	{
+		if (search->pack)
+		{
+			for (i=0 ; i<search->pack->numfiles ; i++)
+				if (!Q_strcasecmp (search->pack->files[i].name, (char *)name))
+					return true;
+		}
+		else if (Sys_FileTime (va("%s/%s", search->filename, name)) != -1)
+			return true;
+	}
+	return false;
+}
+
+const char *COM_Edition (void)
+{
+	if (!COM_HasFile ("gfx/pop.lmp"))
+		return "shareware";
+	if (COM_HasFile ("gfx/base.wad") || COM_HasFile ("bots/game_rules.txt"))
+		return "rerelease";
+	return "retail";
+}
+
+/*
+================
 COM_InitFilesystem
 ================
 */
@@ -1856,7 +1942,7 @@ void COM_InitFilesystem (void)
 	if (COM_CheckParm ("-proghack"))
 		proghack = true;
 #ifdef LQ_PORTABLE
-	LQ_InitUserDirectory(com_gamedir);
+	LQ_InitUserDirectory(com_gamedir, COM_Edition ());
 	LQ_LocalizationInit(basedir);
 #endif
 }

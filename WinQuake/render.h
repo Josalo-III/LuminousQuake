@@ -69,6 +69,10 @@ typedef struct entity_s
 											//  not split
 	qboolean				movestep;		// LuminousQuake: the server sent U_NOLERP
 											//  (MOVETYPE_STEP); GPU renderers ease its steps
+	byte					alpha;			// LuminousQuake: ENTALPHA encoding (protocols 666/999)
+	byte					scale;			// ENTSCALE encoding, protocol 999 only
+	float					lerpfinish;		// 666/999 U_LERPFINISH: when this frame's think ends,
+											//  or 0 when the server sent none (assume 0.1 s)
 } entity_t;
 
 // !!! if this is changed, it must be changed in asm_draw.h too !!!

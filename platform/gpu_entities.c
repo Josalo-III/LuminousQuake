@@ -511,21 +511,39 @@ void LQ_EntitiesBuild(const lq_scene *world)
         cl.stats[STAT_HEALTH] > 0 && !cl.intermission) Alias(&cl.viewent, 1);
     currententity = &cl_entities[0];
 }
-void LQ_EntitiesParticle(const float origin[3], int color, int emissive, int liquid, unsigned int seed)
+/* A smoke puff's size within its range: 0-1, strongly skewed small (the
+ * fourth power of a uniform draw), so small puffs far outnumber large ones:
+ * half fall in the bottom 6% of the range, one in ten in the top half. */
+static float SmokeSize(unsigned int seed)
+{
+    uint32_t h = seed * 2654435761u; h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
+    float u = (h & 0xffffff) / (float)0x1000000;
+    return u * u * u * u;
+}
+void LQ_EntitiesParticle(const float origin[3], int color, int emissive, int kind, float scale, float erode,
+    unsigned int seed)
 {
     vec3_t delta; VectorSubtract(origin, r_origin, delta);
     float distance = DotProduct(delta, vpn), size = distance < 20 ? 1.5f : 1.5f*(1+distance*0.004f);
-    if (solid_particles && liquid) {
-        /* Droplets: smooth-shaded spheres, finer when near. */
+    if (solid_particles && kind) {
+        /* Droplets and smoke puffs: smooth-shaded spheres, finer when near.
+         * A puff is a world-sized ball (scale x 1.5 units), not screen-sized. */
         const float (*sphere)[3][3];
-        uint32_t count = LQ_ParticleSphere(distance < 96, &sphere);
-        float radius = size*LQ_ParticleDropRadius(seed);
+        /* A puff is world-sized, not screen-sized, and wears away as it ages. */
+        int smoke = kind == LQ_PARTICLE_SMOKE || kind == LQ_PARTICLE_TRAIL_SMOKE;
+        /* Torch smoke: 0.25-1 unit when emitted. Trail smoke: at most half
+         * Classic's triangle (size), so never bigger than a Software particle. */
+        float radius = kind == LQ_PARTICLE_SMOKE ? scale*(0.25f + 0.75f*SmokeSize(seed))
+                     : kind == LQ_PARTICLE_TRAIL_SMOKE ? fminf(scale*(0.2f + 0.5f*SmokeSize(seed)), 0.5f) * size
+                     : size*LQ_ParticleDropRadius(seed);
+        if (radius <= 0.05f || erode >= 0.98f) return;
+        uint32_t count = LQ_ParticleSphere(distance < 96 || radius > 3, &sphere);
         Draw(count*3, particle_material, LQ_SURFACE_MODEL|
-            (emissive ? 0 : LQ_SURFACE_ACTOR|LQ_SURFACE_SOLID_EFFECT));
+            (emissive ? 0 : LQ_SURFACE_ACTOR|LQ_SURFACE_SOLID_EFFECT)|(smoke && erode > 0 ? LQ_SURFACE_ERODE : 0));
         for (uint32_t f = 0; f < count; ++f) for (int c = 0; c < 3; ++c) {
             lq_vertex *v = &vertices[frame.vertex_count++]; memset(v, 0, sizeof(*v));
             for (int j = 0; j < 3; ++j) { v->position[j] = origin[j] + radius*sphere[f][c][j]; v->normal[j] = sphere[f][c][j]; }
-            v->uv[0] = ((color & 255)+0.5f)/256; v->uv[1] = 0.5f;
+            v->uv[0] = ((color & 255)+0.5f)/256; v->uv[1] = smoke ? erode : 0.5f;
         }
         return;
     }

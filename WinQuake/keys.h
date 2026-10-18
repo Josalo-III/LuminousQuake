@@ -127,6 +127,9 @@ extern	int		key_lastpress;
 
 void Key_Event (int key, qboolean down);
 void Key_Init (void);
+// LuminousQuake: the WASD layout (on top of whatever is bound) and id's 1996
+// default.cfg layout, applied by keys_wasd and keys_legacy.
+extern const char lq_wasd_bindings[], lq_legacy_bindings[];
 void Key_WriteBindings (FILE *f);
 void Key_SetBinding (int keynum, char *binding);
 void Key_ClearStates (void);

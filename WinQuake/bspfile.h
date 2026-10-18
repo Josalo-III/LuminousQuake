@@ -31,7 +31,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	MAX_MAP_PLANES		32767
 #define	MAX_MAP_NODES		32767		// because negative shorts are contents
 #define	MAX_MAP_CLIPNODES	32767		//
-#define	MAX_MAP_LEAFS		8192
+#define	MAX_MAP_LEAFS		262144		// LuminousQuake: BSP2 maps; BSP29 still stops near 32767
 #define	MAX_MAP_VERTS		65535
 #define	MAX_MAP_FACES		65535
 #define	MAX_MAP_MARKSURFACES 65535
@@ -54,6 +54,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 
 #define BSPVERSION	29
+// LuminousQuake: the two 32-bit community formats. "2PSB" (RMQ) widens counts
+// and indices; "BSP2" also stores node and leaf bounds as floats.
+#define BSP2RMQVERSION	(('B'<<24) | ('S'<<16) | ('P'<<8) | '2')
+#define BSP2VERSION		(('2'<<24) | ('P'<<16) | ('S'<<8) | 'B')
 #define	TOOLVERSION	2
 
 typedef struct
@@ -167,6 +171,71 @@ typedef struct
 	int			planenum;
 	short		children[2];	// negative numbers are contents
 } dclipnode_t;
+
+// BSP2 and 2PSB lumps (LuminousQuake). Only the shapes that differ from BSP29.
+typedef struct
+{
+	int			planenum;
+	int			children[2];
+	short		mins[3];
+	short		maxs[3];
+	unsigned int	firstface;
+	unsigned int	numfaces;
+} dnode_2psb_t;
+
+typedef struct
+{
+	int			planenum;
+	int			children[2];
+	float		mins[3];
+	float		maxs[3];
+	unsigned int	firstface;
+	unsigned int	numfaces;
+} dnode_bsp2_t;
+
+typedef struct
+{
+	int			planenum;
+	int			children[2];
+} dclipnode_bsp2_t;
+
+typedef struct
+{
+	unsigned int	v[2];
+} dedge_bsp2_t;
+
+typedef struct
+{
+	int			planenum;
+	int			side;
+	int			firstedge;
+	int			numedges;
+	int			texinfo;
+	byte		styles[4];
+	int			lightofs;
+} dface_bsp2_t;
+
+typedef struct
+{
+	int			contents;
+	int			visofs;
+	short		mins[3];
+	short		maxs[3];
+	unsigned int	firstmarksurface;
+	unsigned int	nummarksurfaces;
+	byte		ambient_level[4];
+} dleaf_2psb_t;
+
+typedef struct
+{
+	int			contents;
+	int			visofs;
+	float		mins[3];
+	float		maxs[3];
+	unsigned int	firstmarksurface;
+	unsigned int	nummarksurfaces;
+	byte		ambient_level[4];
+} dleaf_bsp2_t;
 
 
 typedef struct texinfo_s

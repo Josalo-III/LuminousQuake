@@ -448,7 +448,10 @@ void SV_ReadClientMove (usercmd_t *move)
 
 // read current angles	
 	for (i=0 ; i<3 ; i++)
-		angle[i] = MSG_ReadAngle ();
+		if (sv.protocol == PROTOCOL_NETQUAKE)
+			angle[i] = MSG_ReadAngle (sv.protocolflags);
+		else
+			angle[i] = MSG_ReadAngle16 (sv.protocolflags);
 
 	VectorCopy (angle, host_client->edict->v.v_angle);
 		
@@ -542,6 +545,8 @@ nextmsg:
 				else if (Q_strncasecmp(s, "name", 4) == 0)
 					ret = 1;
 				else if (Q_strncasecmp(s, "noclip", 6) == 0)
+					ret = 1;
+				else if (Q_strncasecmp(s, "setpos", 6) == 0)	// LuminousQuake
 					ret = 1;
 				else if (Q_strncasecmp(s, "say", 3) == 0)
 					ret = 1;

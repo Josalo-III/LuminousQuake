@@ -84,7 +84,7 @@ void	VID_UnlockBuffer (void);
 #define	MINIMUM_MEMORY			0x550000
 #define	MINIMUM_MEMORY_LEVELPAK	(MINIMUM_MEMORY + 0x100000)
 
-#define MAX_NUM_ARGVS	50
+#define MAX_NUM_ARGVS	256	// LuminousQuake: was 50
 
 // up / down
 #define	PITCH	0
@@ -105,16 +105,23 @@ void	VID_UnlockBuffer (void);
 
 #define	ON_EPSILON		0.1			// point on plane side epsilon
 
-#define	MAX_MSGLEN		8000		// max length of a reliable message
-#define	MAX_DATAGRAM	1024		// max length of unreliable message
+// LuminousQuake: buffers sized for protocols 666 and 999. Protocol 15
+// connections stay within the original 8000 and 1024 (NQ_MSGLEN, NQ_DATAGRAM),
+// so original clients still work.
+#define	MAX_MSGLEN		64000		// max length of a reliable message
+#define	MAX_DATAGRAM	64000		// max length of unreliable message
+#define	NQ_MSGLEN		8000		// the original limits, kept for protocol 15
+#define	NQ_DATAGRAM		1024
+#define	DATAGRAM_MTU	1400		// 666/999 unreliable messages to remote clients
 
 //
 // per-level limits
 //
-#define	MAX_EDICTS		600			// FIXME: ouch! ouch! ouch!
+#define	MAX_EDICTS		32000		// array bound; max_edicts sets each level's count
+#define	NQ_MAX_EDICTS	600			// the original count, still the protocol 15 default
 #define	MAX_LIGHTSTYLES	64
-#define	MAX_MODELS		256			// these are sent over the net as bytes
-#define	MAX_SOUNDS		256			// so they cannot be blindly increased
+#define	MAX_MODELS		2048		// protocol 15 sends these as bytes, so its
+#define	MAX_SOUNDS		2048		// servers refuse indices above 255
 
 #define	SAVEGAME_COMMENT_LENGTH	39
 
@@ -232,6 +239,8 @@ typedef struct
 	int		colormap;
 	int		skin;
 	int		effects;
+	unsigned char	alpha;		// LuminousQuake: ENTALPHA encoding (666/999)
+	unsigned char	scale;		// ENTSCALE encoding, PRFL_EDICTSCALE only
 } entity_state_t;
 
 

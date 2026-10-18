@@ -101,7 +101,7 @@ edict_t *ED_Alloc (void)
 		}
 	}
 	
-	if (i == MAX_EDICTS)
+	if (i == sv.max_edicts)
 		Sys_Error ("ED_Alloc: no free edicts");
 		
 	sv.num_edicts++;
@@ -866,9 +866,15 @@ if (!strcmp(com_token, "light"))
 		if (!key)
 		{
 #ifdef LQ_PORTABLE
+			/* FitzQuake worldspawn keys, read by the client (CL_ParseWorldspawn) */
 			if (ent == sv.edicts && !strcmp(keyname, "fog"))
 			{
-				Con_Printf ("Map fog is unsupported; rendering without fog.\n");
+				Con_Printf ("Map fog is not drawn yet; rendering without fog.\n");
+				continue;
+			}
+			if (ent == sv.edicts && (!strcmp(keyname, "sky") || !strcmp(keyname, "skyname")))
+			{
+				Con_Printf ("Map skybox %s is not drawn yet; using the map's sky texture.\n", com_token);
 				continue;
 			}
 #endif

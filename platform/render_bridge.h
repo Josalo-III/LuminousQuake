@@ -6,7 +6,16 @@ void LQ_RenderAfterCommands(void);
 int LQ_RenderBridgeActive(void);
 void LQ_RenderMapChanged(void);
 int LQ_RenderGPUView(void);
-int LQ_RenderGPUParticle(const float origin[3], int color, int emissive, int liquid, unsigned int seed);
+/* Particle kinds for LQ_RenderGPUParticle. For smoke, scale is the puff's
+ * growth (1 when emitted) and erode the fraction its surface has worn away.
+ * Trail smoke (grenades, cooled rocket fire) stays within a Software
+ * particle's size. */
+enum { LQ_PARTICLE_DROPLET = 1, LQ_PARTICLE_SMOKE = 2, LQ_PARTICLE_TRAIL_SMOKE = 3 };
+int LQ_RenderGPUParticle(const float origin[3], int color, int emissive, int kind, float scale, float erode,
+    unsigned int seed);
+/* A flame model's light strength now (about 0.8-1.2, 1 on average) at a
+ * static flame's origin; 0 when there is none or no GPU renderer runs. */
+float LQ_RenderFlameGain(const float origin[3]);
 void LQ_RenderSpark(const float origin[3], int color);
 void LQ_RenderUIRegion(int x, int y, int width, int height, const unsigned char *pixels, int stride, int transparent);
 int LQ_RenderUIPainted(int x, int y);

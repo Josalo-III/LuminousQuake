@@ -210,10 +210,16 @@ int LQ_RenderGPUView(void)
     CaptureView();
     return 1;
 }
-int LQ_RenderGPUParticle(const float origin[3], int color, int emissive, int liquid, unsigned int seed)
+int LQ_RenderGPUParticle(const float origin[3], int color, int emissive, int kind, float scale, float erode,
+    unsigned int seed)
 {
     if (!direct_frame) return 0;
-    LQ_EntitiesParticle(origin, color, emissive, liquid, seed); return 1;
+    LQ_EntitiesParticle(origin, color, emissive, kind, scale, erode, seed); return 1;
+}
+float LQ_RenderFlameGain(const float origin[3])
+{
+    float gain, offset[3];
+    return LQ_FlameLight(origin, &gain, offset) ? gain : 0;
 }
 void LQ_RenderUIRegion(int x, int y, int width, int height, const byte *pixels, int stride, int transparent)
 {
@@ -296,8 +302,14 @@ static void LuminousLights(void)
     for (uint32_t i = 0; i < LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS; ++i) {
         lq_runtime_light *light = &runtime_lights[i];
         float gain, offset[3];
-        if (light->position_radius[3] <= 0 || light->source_index >= map_scene.light_source_count ||
-            !LQ_FlameLight(map_scene.light_sources[light->source_index].origin, &gain, offset)) continue;
+        if (light->position_radius[3] <= 0 || light->source_index >= map_scene.light_source_count) continue;
+        const lq_light_source *source = &map_scene.light_sources[light->source_index];
+        /* A torch's accent spotlight takes its flame's strength but stays put. */
+        if (source->flame_bound) {
+            if (LQ_FlameLight(source->flame_origin, &gain, offset)) light->color_strength[3] *= gain;
+            continue;
+        }
+        if (!LQ_FlameLight(source->origin, &gain, offset)) continue;
         light->color_strength[3] *= gain;
         for (int k = 0; k < 3; ++k) light->position_radius[k] += offset[k];
     }

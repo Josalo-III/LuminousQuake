@@ -217,8 +217,11 @@ void R_Init (void)
 	Cvar_RegisterVariable (&r_aliastransbase);
 	Cvar_RegisterVariable (&r_aliastransadj);
 
-	Cvar_SetValue ("r_maxedges", (float)NUMSTACKEDGES);
-	Cvar_SetValue ("r_maxsurfs", (float)NUMSTACKSURFACES);
+	// LuminousQuake: mod maps (Arcane Dimensions) overflow the original
+	// 2400 edges and 800 surfaces a frame, leaving parts of the world undrawn.
+	// Larger tables come from the hunk at each map load (R_NewMap).
+	Cvar_SetValue ("r_maxedges", 65536);
+	Cvar_SetValue ("r_maxsurfs", 32768);
 
 	view_clipplanes[0].leftedge = true;
 	view_clipplanes[1].rightedge = true;

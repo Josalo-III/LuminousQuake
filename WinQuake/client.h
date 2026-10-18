@@ -86,7 +86,7 @@ typedef struct
 } dlight_t;
 
 
-#define	MAX_BEAMS	24
+#define	MAX_BEAMS	32			// LuminousQuake: was 24
 typedef struct
 {
 	int		entity;
@@ -95,7 +95,7 @@ typedef struct
 	vec3_t	start, end;
 } beam_t;
 
-#define	MAX_EFRAGS		640
+#define	MAX_EFRAGS		32768		// LuminousQuake: was 640; mod maps have thousands of statics
 
 #define	MAX_MAPSTRING	2048
 #define	MAX_DEMOS		8
@@ -213,6 +213,9 @@ typedef struct
 	struct sfx_s		*sound_precache[MAX_SOUNDS];
 
 	char		levelname[40];	// for display on solo scoreboard
+	int			protocol;		// LuminousQuake: PROTOCOL_NETQUAKE, _FITZQUAKE or _RMQ
+	unsigned int	protocolflags;	// PRFL_* bits from a protocol 999 server
+	char		skyboxname[64];	// LuminousQuake: svc_skybox or worldspawn "sky"
 	int			viewentity;		// cl_entitites[cl.viewentity] = player
 	int			maxclients;
 	int			gametype;
@@ -273,8 +276,8 @@ extern	cvar_t	m_forward;
 extern	cvar_t	m_side;
 
 
-#define	MAX_TEMP_ENTITIES	64			// lightning bolts, etc
-#define	MAX_STATIC_ENTITIES	128			// torches, etc
+#define	MAX_TEMP_ENTITIES	256			// lightning bolts, etc (LuminousQuake: was 64)
+#define	MAX_STATIC_ENTITIES	8192		// torches, etc (LuminousQuake: was 128)
 
 extern	client_state_t	cl;
 
@@ -307,7 +310,7 @@ void CL_Disconnect (void);
 void CL_Disconnect_f (void);
 void CL_NextDemo (void);
 
-#define			MAX_VISEDICTS	256
+#define			MAX_VISEDICTS	4096	// LuminousQuake: was 256
 extern	int				cl_numvisedicts;
 extern	entity_t		*cl_visedicts[MAX_VISEDICTS];
 
@@ -359,6 +362,17 @@ void CL_TimeDemo_f (void);
 // cl_parse.c
 //
 void CL_ParseServerMessage (void);
+
+// LuminousQuake: FitzQuake fog, from svc_fog, the fog command and the
+// worldspawn "fog" key. Stored for the renderers; none draws it yet.
+typedef struct
+{
+	float	density;		// 0 = no fog
+	float	color[3];		// 0-1
+} cl_fog_t;
+extern	cl_fog_t	cl_fog;
+void CL_ParseFog (void);
+void CL_Fog_f (void);
 void CL_NewTranslation (int slot);
 
 //

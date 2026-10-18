@@ -32,7 +32,8 @@ typedef struct
 } emitpoint_t;
 
 typedef enum {
-	pt_static, pt_grav, pt_slowgrav, pt_fire, pt_explode, pt_explode2, pt_blob, pt_blob2
+	pt_static, pt_grav, pt_slowgrav, pt_fire, pt_explode, pt_explode2, pt_blob, pt_blob2,
+	pt_smoke	// LuminousQuake: torch smoke, ramp is its age in seconds
 } ptype_t;
 
 // !!! if this is changed, it must be changed in d_ifacea.h too !!!
@@ -50,6 +51,8 @@ typedef struct particle_s
 	int			emissive; /* effect provenance, independent of palette color */
 	unsigned int visual_seed;
 	int			liquid; /* blood, poison, lava or tar: Luminous draws droplets */
+	float		life; /* pt_smoke: seconds from emission to gone */
+	float		axis[2]; /* pt_smoke: the x, y of the flame its column rises from */
 } particle_t;
 
 #define PARTICLE_Z_CLIP	8.0

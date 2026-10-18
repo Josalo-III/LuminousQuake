@@ -98,7 +98,11 @@ with tempfile.TemporaryDirectory(prefix='lq-bsp-') as temporary:
     # linear falloff ends where the value drops below one unit.
     assert 'flags 0 formula 0 attenuation 1.000 range 499.0 spot 0.000 0.000 -1.000 outer 0.9763 inner 0.9763' in output, output
     assert 'formula 3 attenuation 2.000 range 16384.0 spot' in output, output
-    assert '0.000 0.707 -0.707 outer 0.9397 inner 0.9848' in output, output  # mangle yaw 90, pitch -45
+    # mangle yaw 90, pitch -45. The authored _softangle 20 alone gives inner
+    # 0.9848 (10 degrees); this accent sits 2 units from the torch above, so
+    # its flat core shrinks to 20% of the lit area: tan(inner) = sqrt(0.2) tan(20).
+    assert '0.000 0.707 -0.707 outer 0.9397 inner 0.9870' in output, output
+    assert 'accent spotlights follow their torch' in output, output
     assert 'origin 0.000 0.000 11.000 intensity 300.000' in output and 'flags 1 formula 0' in output, output
     output = run(root, '-map', 'ericw', '--light-info')
     assert 'Light inventory: 1 surface templates on 1 faces became 4 lights' in output, output

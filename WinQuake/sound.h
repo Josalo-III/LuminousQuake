@@ -127,8 +127,10 @@ void SNDDMA_Shutdown(void);
 // User-setable variables
 // ====================================================================
 
-#define	MAX_CHANNELS			128
-#define	MAX_DYNAMIC_CHANNELS	8
+// LuminousQuake: was 128 and 8. Eight sounds at once made busy fights cut
+// each other off; mod maps also have hundreds of ambient (static) sources.
+#define	MAX_CHANNELS			512
+#define	MAX_DYNAMIC_CHANNELS	64
 
 
 extern	channel_t   channels[MAX_CHANNELS];

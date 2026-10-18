@@ -514,6 +514,55 @@ void Key_WriteBindings (FILE *f)
 
 /*
 ===================
+keys_wasd / keys_legacy
+
+LuminousQuake: switch key layouts. keys_wasd puts the WASD layout (what a new
+profile starts with) on top of the current bindings; keys_legacy restores id's
+1996 default.cfg layout, as shareware and retail ship it, for any edition,
+including the rerelease, which has no default.cfg. Either is saved in
+config.cfg like any binding.
+===================
+*/
+const char lq_wasd_bindings[] =
+	"bind w +forward\nbind s +back\nbind a +moveleft\nbind d +moveright\n"
+	"bind SPACE +jump\nbind SHIFT +speed\nbind MOUSE1 +attack\nunbind MOUSE2\n"
+	"bind ` toggleconsole\nbind ~ toggleconsole\nbind F11 vid_togglefullscreen\n"
+	"bind 1 \"impulse 1\"\nbind 2 \"impulse 2\"\nbind 3 \"impulse 3\"\nbind 4 \"impulse 4\"\n"
+	"bind 5 \"impulse 5\"\nbind 6 \"impulse 6\"\nbind 7 \"impulse 7\"\nbind 8 \"impulse 8\"\n"
+	"bind MWHEELUP \"impulse 10\"\nbind MWHEELDOWN \"impulse 12\"\n";	// next / previous weapon
+const char lq_legacy_bindings[] =
+	"unbindall\n"
+	"bind ALT +strafe\nbind , +moveleft\nbind . +moveright\nbind DEL +lookdown\nbind PGDN +lookup\n"
+	"bind END centerview\nbind z +lookdown\nbind a +lookup\nbind d +moveup\nbind c +movedown\n"
+	"bind SHIFT +speed\nbind CTRL +attack\nbind UPARROW +forward\nbind DOWNARROW +back\n"
+	"bind LEFTARROW +left\nbind RIGHTARROW +right\nbind SPACE +jump\nbind ENTER +jump\n"
+	"bind TAB +showscores\n"
+	"bind 1 \"impulse 1\"\nbind 2 \"impulse 2\"\nbind 3 \"impulse 3\"\nbind 4 \"impulse 4\"\n"
+	"bind 5 \"impulse 5\"\nbind 6 \"impulse 6\"\nbind 7 \"impulse 7\"\nbind 8 \"impulse 8\"\n"
+	"bind 0 \"impulse 0\"\nbind / \"impulse 10\"\n"
+	"alias zoom_in \"sensitivity 2;fov 90;wait;fov 70;wait;fov 50;wait;fov 30;wait;fov 10;wait;fov 5;bind F11 zoom_out\"\n"
+	"alias zoom_out \"sensitivity 4;fov 5;wait;fov 10;wait;fov 30;wait;fov 50;wait;fov 70;wait;fov 90;bind F11 zoom_in; sensitivity 3\"\n"
+	"bind F11 zoom_in\n"
+	"bind F1 help\nbind F2 menu_save\nbind F3 menu_load\nbind F4 menu_options\nbind F5 menu_multiplayer\n"
+	"bind F6 \"echo Quicksaving...; wait; save quick\"\nbind F9 \"echo Quickloading...; wait; load quick\"\n"
+	"bind F10 quit\nbind F12 screenshot\nbind \\ +mlook\nbind PAUSE pause\nbind ESCAPE togglemenu\n"
+	"bind ~ toggleconsole\nbind ` toggleconsole\nbind t messagemode\nbind + sizeup\nbind = sizeup\n"
+	"bind - sizedown\nbind INS +klook\nbind MOUSE1 +attack\nbind MOUSE2 +forward\nbind MOUSE3 +mlook\n";
+
+static void Key_Wasd_f (void)
+{
+	Cbuf_InsertText ((char *)lq_wasd_bindings);
+	Con_Printf ("WASD key layout\n");
+}
+
+static void Key_Legacy_f (void)
+{
+	Cbuf_InsertText ((char *)lq_legacy_bindings);
+	Con_Printf ("id's 1996 key layout (default.cfg)\n");
+}
+
+/*
+===================
 Key_Init
 ===================
 */
@@ -581,6 +630,8 @@ void Key_Init (void)
 //
 // register our functions
 //
+	Cmd_AddCommand ("keys_wasd", Key_Wasd_f);
+	Cmd_AddCommand ("keys_legacy", Key_Legacy_f);
 	Cmd_AddCommand ("bind",Key_Bind_f);
 	Cmd_AddCommand ("unbind",Key_Unbind_f);
 	Cmd_AddCommand ("unbindall",Key_Unbindall_f);
@@ -702,6 +753,17 @@ void Key_Event (int key, qboolean down)
 	if (cls.demoplayback && down && consolekeys[key] && key_dest == key_game)
 	{
 		M_ToggleMenu_f ();
+		return;
+	}
+
+//
+// LuminousQuake: ` and ~ open the console when nothing is bound to them, so a
+// config that unbinds everything can't lock the console away
+//
+	if ((key == '`' || key == '~') && !keybindings[key]
+		&& (key_dest == key_game || key_dest == key_console))
+	{
+		Con_ToggleConsole_f ();
 		return;
 	}
 

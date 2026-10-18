@@ -702,9 +702,10 @@ R_AliasDrawModel
 */
 void R_AliasDrawModel (alight_t *plighting)
 {
-	finalvert_t		finalverts[MAXALIASVERTS +
+	// LuminousQuake: static now that MAXALIASVERTS is 16384
+	static finalvert_t	finalverts[MAXALIASVERTS +
 						((CACHE_SIZE - 1) / sizeof(finalvert_t)) + 1];
-	auxvert_t		auxverts[MAXALIASVERTS];
+	static auxvert_t	auxverts[MAXALIASVERTS];
 
 	r_amodels_drawn++;
 

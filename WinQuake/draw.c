@@ -47,7 +47,7 @@ typedef struct cachepic_s
 	cache_user_t	cache;
 } cachepic_t;
 
-#define	MAX_CACHED_PICS		128
+#define	MAX_CACHED_PICS		512	// LuminousQuake: was 128; mod menus and HUDs
 cachepic_t	menu_cachepics[MAX_CACHED_PICS];
 int			menu_numcachepics;
 

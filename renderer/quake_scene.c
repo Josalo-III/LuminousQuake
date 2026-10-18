@@ -7,7 +7,10 @@
 #include <stdint.h>
 void COM_InitFilesystem(void);
 static void *legacy_heap;
-#define ATLAS_SIZE 2048
+#define ATLAS_SIZE 2048       /* the original square atlas, still used when a map fits */
+#define ATLAS_WIDE 4096       /* larger maps (BSP2): bounce layers are 4x this wide, within Metal's 16384 */
+#define ATLAS_MAX_HEIGHT 16384
+static int BindTorchAccent(const lq_scene *scene, lq_light_source *light);
 static const char *standard_styles[] = {
     "m", "mmnmmommommnonmmonqnmmo", "abcdefghijklmnopqrstuvwxyzyxwvutsrqponmlkjihgfedcba",
     "mmmmmaaaaammmmmaaaaaabcdefgabcdefg", "mamamamamama", "jklmnopqrstuvwxyzyxwvutsrqponmlkj",
@@ -399,10 +402,14 @@ static int Spawn(model_t *world, lq_scene *scene)
     free(scene->light_sources); free(extras);
     lq_light_source *fitted = realloc(sources, (kept ? kept : 1) * sizeof(*sources));
     scene->light_sources = fitted ? fitted : sources; scene->light_source_count = kept;
+    uint32_t torch_accents = 0;
     for (uint32_t i = 0; i < scene->light_source_count; ++i) {
         lq_light_source *light = &scene->light_sources[i];
-        if (LQ_LightIsAccent(light)) { light->accent_gain = LQ_ACCENT_SPOT_GAIN; light->output_scale = light->output_base * LQ_ACCENT_SPOT_GAIN; }
+        if (!LQ_LightIsAccent(light)) continue;
+        light->accent_gain = LQ_ACCENT_SPOT_GAIN; light->output_scale = light->output_base * LQ_ACCENT_SPOT_GAIN;
+        if (BindTorchAccent(scene, light)) ++torch_accents;
     }
+    if (torch_accents) printf("Light inventory: %u accent spotlights follow their torch's flame\n", torch_accents);
     if (templates) printf("Light inventory: %u surface templates on %u faces became %u lights\n",
         templates, faces, kept - (total < kept ? total : kept));
     if (scene->sun_light[0] + scene->sun_light[1] + scene->sun_light[2] > 0)
@@ -525,6 +532,51 @@ static int SolidPoint(model_t *world, float point[3])
 /* LIGHT's per-face sample lattice for Luminous bounce, one unit in front of
  * the face. Points that start inside solid move toward the face center, as
  * LIGHT does before tracing; any that cannot are NaN (no sample). */
+/* The height the import's shelf packing needs for a given atlas width, or -1
+ * when a face's lightmap is wider than the atlas. Mirrors the packing below. */
+static int AtlasHeight(model_t *world, int width)
+{
+    int x = 1, y = 1, row = 0;
+    for (int i = 0; i < world->numsurfaces; ++i) {
+        msurface_t *f = world->surfaces + i;
+        if (f->flags & (SURF_DRAWSKY | SURF_DRAWTURB)) continue;
+        int w = (f->extents[0] >> 4) + 1, h = (f->extents[1] >> 4) + 1;
+        if (w < 1 || h < 1 || w + 2 > width) return -1;
+        if (x + w + 1 > width) { x = 1; y += row; row = 0; }
+        x += w + 2;
+        if (h + 2 > row) row = h + 2;
+    }
+    return row ? y + row - 1 : y;    /* the tallest last-row face needs y + h + 1 */
+}
+
+/* A rerelease accent spotlight beside a torch: bind it to the nearest
+ * light_torch_* or light_flame_* so it follows that flame's strength, and give
+ * all but the central LQ_TORCH_ACCENT_CORE of its lit area to the penumbra.
+ * The flat core's radius is sqrt(core) of the cone's at any distance, so its
+ * half-angle has tan(inner) = sqrt(core) * tan(outer). An authored tighter
+ * _softangle is kept. */
+static int BindTorchAccent(const lq_scene *scene, lq_light_source *light)
+{
+    float best = LQ_TORCH_ACCENT_REACH * LQ_TORCH_ACCENT_REACH;
+    const lq_light_source *flame = NULL;
+    for (uint32_t j = 0; j < scene->light_source_count; ++j) {
+        const lq_light_source *other = &scene->light_sources[j];
+        if (strncmp(other->classname, "light_torch", 11) && strncmp(other->classname, "light_flame", 11)) continue;
+        float d = 0;
+        for (int k = 0; k < 3; ++k) d += (other->origin[k] - light->origin[k]) * (other->origin[k] - light->origin[k]);
+        if (d < best) { best = d; flame = other; }
+    }
+    if (!flame) return 0;
+    memcpy(light->flame_origin, flame->origin, sizeof(light->flame_origin));
+    light->flame_bound = 1;
+    if (light->spot_outer > 0.01f && light->spot_outer < 1) {
+        float outer = acosf(light->spot_outer);
+        float inner = cosf(atanf(sqrtf(LQ_TORCH_ACCENT_CORE) * tanf(outer)));
+        if (inner > light->spot_inner) light->spot_inner = inner;
+    }
+    return 1;
+}
+
 static int BuildSampleGrids(model_t *world, lq_scene *s, const uint16_t (*atlas)[2])
 {
     uint64_t total = 0;
@@ -589,6 +641,7 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
     char path[MAX_QPATH];
     uint64_t vertices = 0, indices = 0;
     int atlas_x = 1, atlas_y = 1, row_height = 0, option;
+    int atlas_width = ATLAS_SIZE, atlas_height = ATLAS_SIZE;
     int lighting_bytes;
     int light_analysis = 0;
     for (int i = 1; i < argc; ++i) if (!strcmp(argv[i],"--light-analysis")) light_analysis = 1;
@@ -619,8 +672,7 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
             return Failure(s, error, size, "No live world assets");
     }
     s->colormap = (lq_image){256, 64, 4, malloc(256 * 64 * 4)};
-    s->lightmap = (lq_image){ATLAS_SIZE, ATLAS_SIZE, 4, calloc(ATLAS_SIZE * ATLAS_SIZE, 4)};
-    if (!s->colormap.pixels || !s->lightmap.pixels) return Failure(s, error, size, "Cannot allocate lighting images");
+    if (!s->colormap.pixels) return Failure(s, error, size, "Cannot allocate lighting images");
     for (int i = 0; i < 256 * 64; ++i) {
         memcpy(s->colormap.pixels + i * 4, palette + colormap[i] * 3, 3);
         s->colormap.pixels[i * 4 + 3] = 255;
@@ -636,6 +688,17 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
     world = argc ? Mod_ForName(path, false) : cl.worldmodel;
     if (!world || world->type != mod_brush) return Failure(s, error, size, "Cannot load brush map");
     loaded_world = world;
+    /* Large maps outgrow the 2048x2048 lightmap atlas; they get a 4096-wide one
+     * just tall enough for their faces. */
+    atlas_width = ATLAS_SIZE; atlas_height = AtlasHeight(world, atlas_width);
+    if (atlas_height < 0 || atlas_height > ATLAS_SIZE) {
+        atlas_width = ATLAS_WIDE; atlas_height = AtlasHeight(world, atlas_width);
+        if (atlas_height < 0) return Failure(s, error, size, "Invalid surface lightmap size");
+        if (atlas_height > ATLAS_MAX_HEIGHT) return Failure(s, error, size, "Lightmap atlas full; multiple pages are not implemented yet");
+        atlas_height = (atlas_height + 1 + 3) & ~3;   /* room for the packed rows' full height */
+    } else atlas_height = ATLAS_SIZE;
+    s->lightmap = (lq_image){(uint32_t)atlas_width, (uint32_t)atlas_height, 4, calloc((size_t)atlas_width * atlas_height, 4)};
+    if (!s->lightmap.pixels) return Failure(s, error, size, "Cannot allocate lighting images");
     if (light_analysis)
         puts("LQ_LIGHT_SAMPLE,map,face,sample_s,sample_t,x,y,z,nx,ny,nz,style,value");
     uint64_t analysis_samples = 0;
@@ -680,10 +743,10 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
         memset(draw->styles, 255, 4); draw->styles[0] = 0;
         memset(draw->bounce_styles, 255, 4);
         if (!draw->flags) {
-            if (light_width < 1 || light_height < 1 || light_width + 2 > ATLAS_SIZE || light_height + 2 > ATLAS_SIZE)
+            if (light_width < 1 || light_height < 1 || light_width + 2 > atlas_width || light_height + 2 > atlas_height)
                 FAIL("Invalid surface lightmap size");
-            if (atlas_x + light_width + 1 > ATLAS_SIZE) { atlas_x = 1; atlas_y += row_height; row_height = 0; }
-            if (atlas_y + light_height + 1 > ATLAS_SIZE) FAIL("Lightmap atlas full; multiple pages are not implemented yet");
+            if (atlas_x + light_width + 1 > atlas_width) { atlas_x = 1; atlas_y += row_height; row_height = 0; }
+            if (atlas_y + light_height + 1 > atlas_height) FAIL("Lightmap atlas full; multiple pages are not implemented yet");
             light_x = atlas_x; light_y = atlas_y; atlas_x += light_width + 2;
             face_atlas[i][0] = (uint16_t)light_x; face_atlas[i][1] = (uint16_t)light_y;
             if (light_height + 2 > row_height) row_height = light_height + 2;
@@ -713,7 +776,7 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
             for (int y = -1; y <= light_height; ++y) for (int x = -1; x <= light_width; ++x) {
                 int sx = x < 0 ? 0 : x >= light_width ? light_width - 1 : x;
                 int sy = y < 0 ? 0 : y >= light_height ? light_height - 1 : y;
-                uint8_t *pixel = s->lightmap.pixels + ((light_y + y) * ATLAS_SIZE + light_x + x) * 4;
+                uint8_t *pixel = s->lightmap.pixels + ((size_t)(light_y + y) * atlas_width + light_x + x) * 4;
                 for (int j = 0; j < maps; ++j) pixel[j] = f->samples[j * light_width * light_height + sy * light_width + sx];
                 if (!world->lightdata) pixel[0] = 255;
             }
@@ -732,7 +795,7 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
             for (int k = 0; k < 2; ++k) {
                 float coord = DotProduct(v->position, f->texinfo->vecs[k]) + f->texinfo->vecs[k][3];
                 v->uv[k] = coord / (k ? texture->height : texture->width);
-                v->light_uv[k] = ((coord - f->texturemins[k]) / 16 + 0.5f + (k ? light_y : light_x)) / ATLAS_SIZE;
+                v->light_uv[k] = ((coord - f->texturemins[k]) / 16 + 0.5f + (k ? light_y : light_x)) / (k ? atlas_height : atlas_width);
             }
         }
         for (int j = 1; j < f->numedges - 1; ++j) {
@@ -768,7 +831,7 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
     free(face_atlas);
     if (!LQ_SceneCheck(s, error, size)) { LQ_SceneFree(s); return 0; }
     printf("GPU scene: %u triangles, %u draws, %u indexed materials, %dx%d lightmap atlas\n",
-        s->index_count / 3, s->draw_count, s->material_count, ATLAS_SIZE, ATLAS_SIZE);
+        s->index_count / 3, s->draw_count, s->material_count, atlas_width, atlas_height);
     uint32_t targeted = 0, styled = 0, unresolved = 0;
     for (uint32_t i = 0; i < s->light_source_count; ++i) {
         targeted += s->light_sources[i].target[0] != 0;

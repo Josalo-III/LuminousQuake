@@ -540,12 +540,19 @@ void PF_ambientsound (void)
 	}
 
 // add an svc_spawnambient command to the level signon packet
+// LuminousQuake: 666/999 send sounds above 255; protocol 15 can't
 
-	MSG_WriteByte (&sv.signon,svc_spawnstaticsound);
+	if (soundnum > 255 && sv.protocol == PROTOCOL_NETQUAKE)
+		return;
+	SV_SignonCut ();
+	MSG_WriteByte (&sv.signon, soundnum > 255 ? svc_spawnstaticsound2 : svc_spawnstaticsound);
 	for (i=0 ; i<3 ; i++)
-		MSG_WriteCoord(&sv.signon, pos[i]);
+		MSG_WriteCoord(&sv.signon, pos[i], sv.protocolflags);
 
-	MSG_WriteByte (&sv.signon, soundnum);
+	if (soundnum > 255)
+		MSG_WriteShort (&sv.signon, soundnum);
+	else
+		MSG_WriteByte (&sv.signon, soundnum);
 
 	MSG_WriteByte (&sv.signon, vol*255);
 	MSG_WriteByte (&sv.signon, attenuation*64);
@@ -1088,7 +1095,7 @@ void PF_precache_sound (void)
 	G_INT(OFS_RETURN) = G_INT(OFS_PARM0);
 	PR_CheckEmptyString (s);
 	
-	for (i=0 ; i<MAX_SOUNDS ; i++)
+	for (i=0 ; i<SV_MaxSounds () ; i++)
 	{
 		if (!sv.sound_precache[i])
 		{
@@ -1113,7 +1120,7 @@ void PF_precache_model (void)
 	G_INT(OFS_RETURN) = G_INT(OFS_PARM0);
 	PR_CheckEmptyString (s);
 
-	for (i=0 ; i<MAX_MODELS ; i++)
+	for (i=0 ; i<SV_MaxModels () ; i++)
 	{
 		if (!sv.model_precache[i])
 		{
@@ -1570,12 +1577,12 @@ void PF_WriteLong (void)
 
 void PF_WriteAngle (void)
 {
-	MSG_WriteAngle (WriteDest(), G_FLOAT(OFS_PARM1));
+	MSG_WriteAngle (WriteDest(), G_FLOAT(OFS_PARM1), sv.protocolflags);
 }
 
 void PF_WriteCoord (void)
 {
-	MSG_WriteCoord (WriteDest(), G_FLOAT(OFS_PARM1));
+	MSG_WriteCoord (WriteDest(), G_FLOAT(OFS_PARM1), sv.protocolflags);
 }
 
 void PF_WriteString (void)
@@ -1596,22 +1603,61 @@ int SV_ModelIndex (char *name);
 void PF_makestatic (void)
 {
 	edict_t	*ent;
-	int		i;
+	int		i, bits, model, frame;
+	byte	alpha;
 	
 	ent = G_EDICT(OFS_PARM0);
+	model = SV_ModelIndex(pr_strings + ent->v.model);
+	frame = (int)ent->v.frame;
+	alpha = SV_EntityAlpha (ent);
 
-	MSG_WriteByte (&sv.signon,svc_spawnstatic);
+	// LuminousQuake: 666/999 send large models and frames and alpha; a static
+	// protocol 15 can't show correctly is not shown at all
+	bits = 0;
+	if (sv.protocol == PROTOCOL_NETQUAKE)
+	{
+		if ((model & 0xFF00) || (frame & 0xFF00))
+		{
+			ED_Free (ent);
+			return;
+		}
+	}
+	else
+	{
+		if (model & 0xFF00)
+			bits |= B_LARGEMODEL;
+		if (frame & 0xFF00)
+			bits |= B_LARGEFRAME;
+		if (alpha != ENTALPHA_DEFAULT)
+			bits |= B_ALPHA;
+	}
 
-	MSG_WriteByte (&sv.signon, SV_ModelIndex(pr_strings + ent->v.model));
+	SV_SignonCut ();
+	if (bits)
+	{
+		MSG_WriteByte (&sv.signon, svc_spawnstatic2);
+		MSG_WriteByte (&sv.signon, bits);
+	}
+	else
+		MSG_WriteByte (&sv.signon, svc_spawnstatic);
 
-	MSG_WriteByte (&sv.signon, ent->v.frame);
+	if (bits & B_LARGEMODEL)
+		MSG_WriteShort (&sv.signon, model);
+	else
+		MSG_WriteByte (&sv.signon, model);
+	if (bits & B_LARGEFRAME)
+		MSG_WriteShort (&sv.signon, frame);
+	else
+		MSG_WriteByte (&sv.signon, frame);
 	MSG_WriteByte (&sv.signon, ent->v.colormap);
 	MSG_WriteByte (&sv.signon, ent->v.skin);
 	for (i=0 ; i<3 ; i++)
 	{
-		MSG_WriteCoord(&sv.signon, ent->v.origin[i]);
-		MSG_WriteAngle(&sv.signon, ent->v.angles[i]);
+		MSG_WriteCoord(&sv.signon, ent->v.origin[i], sv.protocolflags);
+		MSG_WriteAngle(&sv.signon, ent->v.angles[i], sv.protocolflags);
 	}
+	if (bits & B_ALPHA)
+		MSG_WriteByte (&sv.signon, alpha);
 
 // throw the entity away now
 	ED_Free (ent);

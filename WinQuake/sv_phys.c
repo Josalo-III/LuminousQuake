@@ -126,10 +126,13 @@ Returns false if the entity removed itself.
 qboolean SV_RunThink (edict_t *ent)
 {
 	float	thinktime;
+	float	oldframe;
+	int		interval;
 
 	thinktime = ent->v.nextthink;
 	if (thinktime <= 0 || thinktime > sv.time + host_frametime)
 		return true;
+	oldframe = ent->v.frame;
 		
 	if (thinktime < sv.time)
 		thinktime = sv.time;	// don't let things stay in the past.
@@ -140,6 +143,16 @@ qboolean SV_RunThink (edict_t *ent)
 	pr_global_struct->self = EDICT_TO_PROG(ent);
 	pr_global_struct->other = EDICT_TO_PROG(sv.edicts);
 	PR_ExecuteProgram (ent->v.think);
+
+	// LuminousQuake: 666/999 tell the client when an animation frame's think
+	// isn't the usual 0.1 s, for smoother blending (U_LERPFINISH)
+	ent->sendinterval = false;
+	if (!ent->free && ent->v.nextthink && (ent->v.movetype == MOVETYPE_STEP || ent->v.frame != oldframe))
+	{
+		interval = (int)floorf((ent->v.nextthink - thinktime) * 255 + 0.5f);
+		if (interval >= 0 && interval < 256 && interval != 25 && interval != 26)
+			ent->sendinterval = true;	// 25 and 26 are close enough to 0.1
+	}
 	return !ent->free;
 }
 
@@ -443,8 +456,8 @@ void SV_PushMove (edict_t *pusher, float movetime)
 	vec3_t		mins, maxs, move;
 	vec3_t		entorig, pushorig;
 	int			num_moved;
-	edict_t		*moved_edict[MAX_EDICTS];
-	vec3_t		moved_from[MAX_EDICTS];
+	static edict_t	*moved_edict[MAX_EDICTS];	// LuminousQuake: static now that MAX_EDICTS is 32000
+	static vec3_t	moved_from[MAX_EDICTS];
 
 	if (!pusher->v.velocity[0] && !pusher->v.velocity[1] && !pusher->v.velocity[2])
 	{
@@ -570,8 +583,8 @@ void SV_PushRotate (edict_t *pusher, float movetime)
 	vec3_t		move, a, amove;
 	vec3_t		entorig, pushorig;
 	int			num_moved;
-	edict_t		*moved_edict[MAX_EDICTS];
-	vec3_t		moved_from[MAX_EDICTS];
+	static edict_t	*moved_edict[MAX_EDICTS];	// LuminousQuake: static now that MAX_EDICTS is 32000
+	static vec3_t	moved_from[MAX_EDICTS];
 	vec3_t		org, org2;
 	vec3_t		forward, right, up;
 

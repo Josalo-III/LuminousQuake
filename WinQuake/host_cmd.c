@@ -181,6 +181,53 @@ void Host_Noclip_f (void)
 
 /*
 ==================
+Host_SetPos_f
+
+LuminousQuake, after QuakeSpasm: setpos x y z [pitch yaw [roll]] moves the
+player there in noclip, for comparing renderers at a fixed view. A cheat, so
+not in deathmatch.
+==================
+*/
+void Host_SetPos_f (void)
+{
+	int		i;
+
+	if (cmd_source == src_command)
+	{
+		Cmd_ForwardToServer ();
+		return;
+	}
+	if (pr_global_struct->deathmatch && !host_client->privileged)
+		return;
+	if (Cmd_Argc () != 4 && Cmd_Argc () != 6 && Cmd_Argc () != 7)
+	{
+		SV_ClientPrintf ("usage: setpos x y z [pitch yaw [roll]]\n");
+		SV_ClientPrintf ("current: %i %i %i %i %i %i\n",
+			(int)sv_player->v.origin[0], (int)sv_player->v.origin[1], (int)sv_player->v.origin[2],
+			(int)sv_player->v.v_angle[0], (int)sv_player->v.v_angle[1], (int)sv_player->v.v_angle[2]);
+		return;
+	}
+	if (sv_player->v.movetype != MOVETYPE_NOCLIP)
+	{
+		noclip_anglehack = true;
+		sv_player->v.movetype = MOVETYPE_NOCLIP;
+		SV_ClientPrintf ("noclip ON\n");
+	}
+	VectorCopy (vec3_origin, sv_player->v.velocity);
+	for (i=0 ; i<3 ; i++)
+		sv_player->v.origin[i] = Q_atof (Cmd_Argv (1 + i));
+	if (Cmd_Argc () >= 6)
+	{
+		VectorCopy (vec3_origin, sv_player->v.angles);
+		for (i=0 ; i<Cmd_Argc () - 4 ; i++)
+			sv_player->v.angles[i] = Q_atof (Cmd_Argv (4 + i));
+		sv_player->v.fixangle = 1;
+	}
+	SV_LinkEdict (sv_player, false);
+}
+
+/*
+==================
 Host_Fly_f
 
 Sets client to flymode
@@ -1279,9 +1326,10 @@ void Host_PreSpawn_f (void)
 		return;
 	}
 	
-	SZ_Write (&host_client->message, sv.signon.data, sv.signon.cursize);
-	MSG_WriteByte (&host_client->message, svc_signonnum);
-	MSG_WriteByte (&host_client->message, 2);
+	// LuminousQuake: a large signon goes out in pieces (SV_SendSignonChunk);
+	// the last piece ends with svc_signonnum 2
+	host_client->signon_sent = 0;
+	SV_SendSignonChunk (host_client);
 	host_client->sendsignon = true;
 }
 
@@ -1399,8 +1447,8 @@ void Host_Spawn_f (void)
 	ent = EDICT_NUM( 1 + (host_client - svs.clients) );
 	MSG_WriteByte (&host_client->message, svc_setangle);
 	for (i=0 ; i < 2 ; i++)
-		MSG_WriteAngle (&host_client->message, ent->v.angles[i] );
-	MSG_WriteAngle (&host_client->message, 0 );
+		MSG_WriteAngle (&host_client->message, ent->v.angles[i] , sv.protocolflags);
+	MSG_WriteAngle (&host_client->message, 0 , sv.protocolflags);
 
 	SV_WriteClientdataToMessage (sv_player, &host_client->message);
 
@@ -1907,6 +1955,7 @@ void Host_InitCommands (void)
 	Cmd_AddCommand ("reconnect", Host_Reconnect_f);
 	Cmd_AddCommand ("name", Host_Name_f);
 	Cmd_AddCommand ("noclip", Host_Noclip_f);
+	Cmd_AddCommand ("setpos", Host_SetPos_f);
 	Cmd_AddCommand ("version", Host_Version_f);
 #ifdef IDGODS
 	Cmd_AddCommand ("please", Host_Please_f);

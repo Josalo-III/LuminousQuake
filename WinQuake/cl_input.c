@@ -377,7 +377,10 @@ void CL_SendMove (usercmd_t *cmd)
 	MSG_WriteFloat (&buf, cl.mtime[0]);	// so server can get ping times
 
 	for (i=0 ; i<3 ; i++)
-		MSG_WriteAngle (&buf, cl.viewangles[i]);
+		if (cl.protocol == PROTOCOL_NETQUAKE)
+			MSG_WriteAngle (&buf, cl.viewangles[i], cl.protocolflags);
+		else
+			MSG_WriteAngle16 (&buf, cl.viewangles[i], cl.protocolflags);
 	
     MSG_WriteShort (&buf, cmd->forwardmove);
     MSG_WriteShort (&buf, cmd->sidemove);

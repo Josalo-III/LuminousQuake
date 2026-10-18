@@ -24,7 +24,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 server_t		sv;
 server_static_t	svs;
 
-char	localmodels[MAX_MODELS][5];			// inline model names for precache
+char	localmodels[MAX_MODELS][8];			// inline model names for precache (LuminousQuake: room for "*2047")
+
+// LuminousQuake: the protocol a new level uses (15, 666 or 999), and the
+// entity count for 666/999 levels. Protocol 15 levels keep 600 entities.
+cvar_t	sv_protocol = {"sv_protocol", "666"};
+cvar_t	max_edicts = {"max_edicts", "8192"};
 
 //============================================================================
 
@@ -57,6 +62,8 @@ void SV_Init (void)
 	Cvar_RegisterVariable (&sv_idealpitchscale);
 	Cvar_RegisterVariable (&sv_aim);
 	Cvar_RegisterVariable (&sv_nostep);
+	Cvar_RegisterVariable (&sv_protocol);
+	Cvar_RegisterVariable (&max_edicts);
 
 	for (i=0 ; i<MAX_MODELS ; i++)
 		sprintf (localmodels[i], "*%i", i);
@@ -81,12 +88,12 @@ void SV_StartParticle (vec3_t org, vec3_t dir, int color, int count)
 {
 	int		i, v;
 
-	if (sv.datagram.cursize > MAX_DATAGRAM-16)
+	if (sv.datagram.cursize > sv.datagram.maxsize-16)
 		return;	
 	MSG_WriteByte (&sv.datagram, svc_particle);
-	MSG_WriteCoord (&sv.datagram, org[0]);
-	MSG_WriteCoord (&sv.datagram, org[1]);
-	MSG_WriteCoord (&sv.datagram, org[2]);
+	MSG_WriteCoord (&sv.datagram, org[0], sv.protocolflags);
+	MSG_WriteCoord (&sv.datagram, org[1], sv.protocolflags);
+	MSG_WriteCoord (&sv.datagram, org[2], sv.protocolflags);
 	for (i=0 ; i<3 ; i++)
 	{
 		v = dir[i]*16;
@@ -132,16 +139,16 @@ void SV_StartSound (edict_t *entity, int channel, char *sample, int volume,
 	if (channel < 0 || channel > 7)
 		Sys_Error ("SV_StartSound: channel = %i", channel);
 
-	if (sv.datagram.cursize > MAX_DATAGRAM-16)
+	if (sv.datagram.cursize > sv.datagram.maxsize-16)
 		return;	
 
 // find precache number for sound
-    for (sound_num=1 ; sound_num<MAX_SOUNDS
+    for (sound_num=1 ; sound_num<SV_MaxSounds ()
         && sv.sound_precache[sound_num] ; sound_num++)
         if (!strcmp(sample, sv.sound_precache[sound_num]))
             break;
     
-    if ( sound_num == MAX_SOUNDS || !sv.sound_precache[sound_num] )
+    if ( sound_num == SV_MaxSounds () || !sv.sound_precache[sound_num] )
     {
         Con_Printf ("SV_StartSound: %s not precacheed\n", sample);
         return;
@@ -149,13 +156,25 @@ void SV_StartSound (edict_t *entity, int channel, char *sample, int volume,
     
 	ent = NUM_FOR_EDICT(entity);
 
-	channel = (ent<<3) | channel;
-
 	field_mask = 0;
 	if (volume != DEFAULT_SOUND_PACKET_VOLUME)
 		field_mask |= SND_VOLUME;
 	if (attenuation != DEFAULT_SOUND_PACKET_ATTENUATION)
 		field_mask |= SND_ATTENUATION;
+	// LuminousQuake: 666/999 widen the entity and sound numbers; protocol 15
+	// cannot send them, so the sound is dropped.
+	if (ent >= 8192)
+	{
+		if (sv.protocol == PROTOCOL_NETQUAKE)
+			return;
+		field_mask |= SND_LARGEENTITY;
+	}
+	if (sound_num >= 256)
+	{
+		if (sv.protocol == PROTOCOL_NETQUAKE)
+			return;
+		field_mask |= SND_LARGESOUND;
+	}
 
 // directed messages go only to the entity the are targeted on
 	MSG_WriteByte (&sv.datagram, svc_sound);
@@ -164,10 +183,19 @@ void SV_StartSound (edict_t *entity, int channel, char *sample, int volume,
 		MSG_WriteByte (&sv.datagram, volume);
 	if (field_mask & SND_ATTENUATION)
 		MSG_WriteByte (&sv.datagram, attenuation*64);
-	MSG_WriteShort (&sv.datagram, channel);
-	MSG_WriteByte (&sv.datagram, sound_num);
+	if (field_mask & SND_LARGEENTITY)
+	{
+		MSG_WriteShort (&sv.datagram, ent);
+		MSG_WriteByte (&sv.datagram, channel);
+	}
+	else
+		MSG_WriteShort (&sv.datagram, (ent<<3) | channel);
+	if (field_mask & SND_LARGESOUND)
+		MSG_WriteShort (&sv.datagram, sound_num);
+	else
+		MSG_WriteByte (&sv.datagram, sound_num);
 	for (i=0 ; i<3 ; i++)
-		MSG_WriteCoord (&sv.datagram, entity->v.origin[i]+0.5*(entity->v.mins[i]+entity->v.maxs[i]));
+		MSG_WriteCoord (&sv.datagram, entity->v.origin[i]+0.5*(entity->v.mins[i]+entity->v.maxs[i]), sv.protocolflags);
 }           
 
 /*
@@ -195,8 +223,14 @@ void SV_SendServerinfo (client_t *client)
 	sprintf (message, "%c\nVERSION %4.2f SERVER (%i CRC)", 2, VERSION, pr_crc);
 	MSG_WriteString (&client->message,message);
 
+	// LuminousQuake: protocol 15 keeps an original client's message size
+	client->message.maxsize = sv.protocol == PROTOCOL_NETQUAKE ? NQ_MSGLEN : MAX_MSGLEN;
+	client->signon_sent = -1;
+
 	MSG_WriteByte (&client->message, svc_serverinfo);
-	MSG_WriteLong (&client->message, PROTOCOL_VERSION);
+	MSG_WriteLong (&client->message, sv.protocol);
+	if (sv.protocol == PROTOCOL_RMQ)
+		MSG_WriteLong (&client->message, sv.protocolflags);
 	MSG_WriteByte (&client->message, svs.maxclients);
 
 	if (!coop.value && deathmatch.value)
@@ -270,7 +304,8 @@ void SV_ConnectClient (int clientnum)
 	client->spawned = false;
 	client->edict = ent;
 	client->message.data = client->msgbuf;
-	client->message.maxsize = sizeof(client->msgbuf);
+	client->message.maxsize = NQ_MSGLEN;	// LuminousQuake: SV_SendServerinfo sets it per protocol
+	client->signon_sent = -1;
 	client->message.allowoverflow = true;		// we can catch it
 
 #ifdef IDGODS
@@ -462,7 +497,12 @@ void SV_WriteEntitiesToClient (edict_t	*clent, sizebuf_t *msg)
 				continue;		// not visible
 		}
 
-		if (msg->maxsize - msg->cursize < 16)
+		// LuminousQuake: 666/999 alpha; an invisible entity without effects isn't sent
+		ent->alpha = SV_EntityAlpha (ent);
+		if (ent != clent && ent->alpha == ENTALPHA_ZERO && !ent->v.effects)
+			continue;
+
+		if (msg->maxsize - msg->cursize < (sv.protocol == PROTOCOL_NETQUAKE ? 16 : 32))
 		{
 			Con_Printf ("packet overflow\n");
 			return;
@@ -505,6 +545,22 @@ void SV_WriteEntitiesToClient (edict_t	*clent, sizebuf_t *msg)
 		if (ent->baseline.modelindex != ent->v.modelindex)
 			bits |= U_MODEL;
 
+		if (sv.protocol != PROTOCOL_NETQUAKE)
+		{
+			if (ent->baseline.alpha != ent->alpha)
+				bits |= U_ALPHA;
+			if ((bits & U_FRAME) && ((int)ent->v.frame & 0xFF00))
+				bits |= U_FRAME2;
+			if ((bits & U_MODEL) && ((int)ent->v.modelindex & 0xFF00))
+				bits |= U_MODEL2;
+			if (ent->sendinterval)
+				bits |= U_LERPFINISH;
+			if (bits >= 65536)
+				bits |= U_EXTEND1;
+			if (bits >= 16777216)
+				bits |= U_EXTEND2;
+		}
+
 		if (e >= 256)
 			bits |= U_LONGENTITY;
 			
@@ -518,6 +574,10 @@ void SV_WriteEntitiesToClient (edict_t	*clent, sizebuf_t *msg)
 		
 		if (bits & U_MOREBITS)
 			MSG_WriteByte (msg, bits>>8);
+		if (bits & U_EXTEND1)
+			MSG_WriteByte (msg, bits>>16);
+		if (bits & U_EXTEND2)
+			MSG_WriteByte (msg, bits>>24);
 		if (bits & U_LONGENTITY)
 			MSG_WriteShort (msg,e);
 		else
@@ -534,17 +594,29 @@ void SV_WriteEntitiesToClient (edict_t	*clent, sizebuf_t *msg)
 		if (bits & U_EFFECTS)
 			MSG_WriteByte (msg, ent->v.effects);
 		if (bits & U_ORIGIN1)
-			MSG_WriteCoord (msg, ent->v.origin[0]);		
+			MSG_WriteCoord (msg, ent->v.origin[0], sv.protocolflags);		
 		if (bits & U_ANGLE1)
-			MSG_WriteAngle(msg, ent->v.angles[0]);
+			MSG_WriteAngle(msg, ent->v.angles[0], sv.protocolflags);
 		if (bits & U_ORIGIN2)
-			MSG_WriteCoord (msg, ent->v.origin[1]);
+			MSG_WriteCoord (msg, ent->v.origin[1], sv.protocolflags);
 		if (bits & U_ANGLE2)
-			MSG_WriteAngle(msg, ent->v.angles[1]);
+			MSG_WriteAngle(msg, ent->v.angles[1], sv.protocolflags);
 		if (bits & U_ORIGIN3)
-			MSG_WriteCoord (msg, ent->v.origin[2]);
+			MSG_WriteCoord (msg, ent->v.origin[2], sv.protocolflags);
 		if (bits & U_ANGLE3)
-			MSG_WriteAngle(msg, ent->v.angles[2]);
+			MSG_WriteAngle(msg, ent->v.angles[2], sv.protocolflags);
+
+		if (bits & U_ALPHA)
+			MSG_WriteByte (msg, ent->alpha);
+		if (bits & U_FRAME2)
+			MSG_WriteByte (msg, (int)ent->v.frame >> 8);
+		if (bits & U_MODEL2)
+			MSG_WriteByte (msg, (int)ent->v.modelindex >> 8);
+		if (bits & U_LERPFINISH)
+		{
+			int interval = (int)floorf((ent->v.nextthink - sv.time) * 255 + 0.5f);
+			MSG_WriteByte (msg, interval < 0 ? 0 : interval > 255 ? 255 : interval);
+		}
 	}
 }
 
@@ -579,6 +651,7 @@ void SV_WriteClientdataToMessage (edict_t *ent, sizebuf_t *msg)
 	int		i;
 	edict_t	*other;
 	int		items;
+	int		weaponmodel;
 #ifndef QUAKE2
 	eval_t	*val;
 #endif
@@ -593,7 +666,7 @@ void SV_WriteClientdataToMessage (edict_t *ent, sizebuf_t *msg)
 		MSG_WriteByte (msg, ent->v.dmg_save);
 		MSG_WriteByte (msg, ent->v.dmg_take);
 		for (i=0 ; i<3 ; i++)
-			MSG_WriteCoord (msg, other->v.origin[i] + 0.5*(other->v.mins[i] + other->v.maxs[i]));
+			MSG_WriteCoord (msg, other->v.origin[i] + 0.5*(other->v.mins[i] + other->v.maxs[i]), sv.protocolflags);
 	
 		ent->v.dmg_take = 0;
 		ent->v.dmg_save = 0;
@@ -609,7 +682,7 @@ void SV_WriteClientdataToMessage (edict_t *ent, sizebuf_t *msg)
 	{
 		MSG_WriteByte (msg, svc_setangle);
 		for (i=0 ; i < 3 ; i++)
-			MSG_WriteAngle (msg, ent->v.angles[i] );
+			MSG_WriteAngle (msg, ent->v.angles[i] , sv.protocolflags);
 		ent->v.fixangle = 0;
 	}
 
@@ -659,10 +732,41 @@ void SV_WriteClientdataToMessage (edict_t *ent, sizebuf_t *msg)
 //	if (ent->v.weapon)
 		bits |= SU_WEAPON;
 
+	weaponmodel = SV_ModelIndex(pr_strings+ent->v.weaponmodel);
+	if (sv.protocol != PROTOCOL_NETQUAKE)
+	{
+		if (weaponmodel & 0xFF00)
+			bits |= SU_WEAPON2;
+		if ((int)ent->v.armorvalue & 0xFF00)
+			bits |= SU_ARMOR2;
+		if ((int)ent->v.currentammo & 0xFF00)
+			bits |= SU_AMMO2;
+		if ((int)ent->v.ammo_shells & 0xFF00)
+			bits |= SU_SHELLS2;
+		if ((int)ent->v.ammo_nails & 0xFF00)
+			bits |= SU_NAILS2;
+		if ((int)ent->v.ammo_rockets & 0xFF00)
+			bits |= SU_ROCKETS2;
+		if ((int)ent->v.ammo_cells & 0xFF00)
+			bits |= SU_CELLS2;
+		if ((bits & SU_WEAPONFRAME) && ((int)ent->v.weaponframe & 0xFF00))
+			bits |= SU_WEAPONFRAME2;
+		if (SV_EntityAlpha (ent) != ENTALPHA_DEFAULT)
+			bits |= SU_WEAPONALPHA;	// the weapon takes the player's alpha
+		if (bits >= 65536)
+			bits |= SU_EXTEND1;
+		if (bits >= 16777216)
+			bits |= SU_EXTEND2;
+	}
+
 // send the data
 
 	MSG_WriteByte (msg, svc_clientdata);
 	MSG_WriteShort (msg, bits);
+	if (bits & SU_EXTEND1)
+		MSG_WriteByte (msg, bits>>16);
+	if (bits & SU_EXTEND2)
+		MSG_WriteByte (msg, bits>>24);
 
 	if (bits & SU_VIEWHEIGHT)
 		MSG_WriteChar (msg, ent->v.view_ofs[2]);
@@ -686,7 +790,7 @@ void SV_WriteClientdataToMessage (edict_t *ent, sizebuf_t *msg)
 	if (bits & SU_ARMOR)
 		MSG_WriteByte (msg, ent->v.armorvalue);
 	if (bits & SU_WEAPON)
-		MSG_WriteByte (msg, SV_ModelIndex(pr_strings+ent->v.weaponmodel));
+		MSG_WriteByte (msg, weaponmodel);
 	
 	MSG_WriteShort (msg, ent->v.health);
 	MSG_WriteByte (msg, ent->v.currentammo);
@@ -710,6 +814,25 @@ void SV_WriteClientdataToMessage (edict_t *ent, sizebuf_t *msg)
 			}
 		}
 	}
+
+	if (bits & SU_WEAPON2)
+		MSG_WriteByte (msg, weaponmodel >> 8);
+	if (bits & SU_ARMOR2)
+		MSG_WriteByte (msg, (int)ent->v.armorvalue >> 8);
+	if (bits & SU_AMMO2)
+		MSG_WriteByte (msg, (int)ent->v.currentammo >> 8);
+	if (bits & SU_SHELLS2)
+		MSG_WriteByte (msg, (int)ent->v.ammo_shells >> 8);
+	if (bits & SU_NAILS2)
+		MSG_WriteByte (msg, (int)ent->v.ammo_nails >> 8);
+	if (bits & SU_ROCKETS2)
+		MSG_WriteByte (msg, (int)ent->v.ammo_rockets >> 8);
+	if (bits & SU_CELLS2)
+		MSG_WriteByte (msg, (int)ent->v.ammo_cells >> 8);
+	if (bits & SU_WEAPONFRAME2)
+		MSG_WriteByte (msg, (int)ent->v.weaponframe >> 8);
+	if (bits & SU_WEAPONALPHA)
+		MSG_WriteByte (msg, SV_EntityAlpha (ent));
 }
 
 /*
@@ -719,11 +842,18 @@ SV_SendClientDatagram
 */
 qboolean SV_SendClientDatagram (client_t *client)
 {
-	byte		buf[MAX_DATAGRAM];
+	static byte	buf[MAX_DATAGRAM];
 	sizebuf_t	msg;
 	
 	msg.data = buf;
-	msg.maxsize = sizeof(buf);
+	// LuminousQuake: protocol 15 keeps the original datagram; 666/999 send
+	// large ones locally and stay under a typical MTU over the network.
+	if (sv.protocol == PROTOCOL_NETQUAKE)
+		msg.maxsize = NQ_DATAGRAM;
+	else if (client->netconnection->driver == 0)	// loopback
+		msg.maxsize = MAX_DATAGRAM;
+	else
+		msg.maxsize = DATAGRAM_MTU;
 	msg.cursize = 0;
 
 	MSG_WriteByte (&msg, svc_time);
@@ -841,6 +971,12 @@ void SV_SendClientMessages (void)
 		// send a full message when the next signon stage has been requested
 		// some other message data (name changes, etc) may accumulate 
 		// between signon stages
+			// LuminousQuake: continue a signon too large for one message
+			if (host_client->signon_sent >= 0 && !host_client->message.cursize)
+			{
+				SV_SendSignonChunk (host_client);
+				host_client->sendsignon = true;
+			}
 			if (!host_client->sendsignon)
 			{
 				if (realtime - host_client->last_message > 5)
@@ -901,6 +1037,95 @@ SV_ModelIndex
 
 ================
 */
+/*
+================
+SV_EntityAlpha
+
+LuminousQuake: the ENTALPHA encoding of an entity's QuakeC alpha field.
+================
+*/
+byte SV_EntityAlpha (edict_t *ent)
+{
+	float	a;
+	if (sv.alpha_ofs < 0)
+		return ENTALPHA_DEFAULT;
+	a = ((float *)&ent->v)[sv.alpha_ofs];
+	return ENTALPHA_ENCODE(a);
+}
+
+/*
+================
+SV_SignonCut / SV_SendSignonChunk
+
+LuminousQuake: a large map's signon (baselines, statics, ambient sounds) no
+longer fits one reliable message. Engine code marks where each of its
+messages starts; the signon is sent in pieces that end at those marks, so no
+piece splits a message. QuakeC MSG_INIT writes stay with the piece they
+started in. Protocol 15 pieces fit an original client's 8000 bytes.
+================
+*/
+void SV_SignonCut (void)
+{
+	int	at = sv.signon.cursize;
+	if (sv.num_signon_cuts >= MAX_SIGNON_CUTS)
+		return;
+	if (sv.num_signon_cuts && sv.signon_cuts[sv.num_signon_cuts - 1] >= at)
+		return;
+	sv.signon_cuts[sv.num_signon_cuts++] = at;
+}
+
+void SV_SendSignonChunk (client_t *client)
+{
+	int	start = client->signon_sent, end = sv.signon.cursize;
+	int	limit, room, lo, hi;
+
+	if (start < 0)
+		return;
+	if (!start)
+		Con_DPrintf ("Signon: %i bytes, %i message starts\n", sv.signon.cursize, sv.num_signon_cuts);
+	limit = sv.protocol == PROTOCOL_NETQUAKE ? NQ_SIGNON_CHUNK : MAX_MSGLEN - 1024;
+	room = client->message.maxsize - client->message.cursize - 16;
+	if (room > limit)
+		room = limit;
+	if (end - start > room)
+	{
+		// the last cut within room, else the first one past start
+		lo = 0; hi = sv.num_signon_cuts;
+		while (lo < hi)
+		{
+			int mid = (lo + hi) / 2;
+			if (sv.signon_cuts[mid] <= start + room) lo = mid + 1; else hi = mid;
+		}
+		if (lo > 0 && sv.signon_cuts[lo - 1] > start)
+			end = sv.signon_cuts[lo - 1];
+		else if (lo < sv.num_signon_cuts)
+			end = sv.signon_cuts[lo];
+	}
+	SZ_Write (&client->message, sv.signon.data + start, end - start);
+	if (end >= sv.signon.cursize)
+	{
+		MSG_WriteByte (&client->message, svc_signonnum);
+		MSG_WriteByte (&client->message, 2);
+		client->signon_sent = -1;
+	}
+	else
+		client->signon_sent = end;
+}
+
+/*
+LuminousQuake: protocol 15 sends model and sound numbers as bytes, so its
+servers keep the original 256 of each.
+*/
+int SV_MaxModels (void)
+{
+	return sv.protocol == PROTOCOL_NETQUAKE ? 256 : MAX_MODELS;
+}
+
+int SV_MaxSounds (void)
+{
+	return sv.protocol == PROTOCOL_NETQUAKE ? 256 : MAX_SOUNDS;
+}
+
 int SV_ModelIndex (char *name)
 {
 	int		i;
@@ -908,10 +1133,10 @@ int SV_ModelIndex (char *name)
 	if (!name || !name[0])
 		return 0;
 
-	for (i=0 ; i<MAX_MODELS && sv.model_precache[i] ; i++)
+	for (i=0 ; i<SV_MaxModels () && sv.model_precache[i] ; i++)
 		if (!strcmp(sv.model_precache[i], name))
 			return i;
-	if (i==MAX_MODELS || !sv.model_precache[i])
+	if (i==SV_MaxModels () || !sv.model_precache[i])
 		Sys_Error ("SV_ModelIndex: model %s not precached", name);
 	return i;
 }
@@ -924,7 +1149,7 @@ SV_CreateBaseline
 */
 void SV_CreateBaseline (void)
 {
-	int			i;
+	int			i, bits;
 	edict_t			*svent;
 	int				entnum;	
 		
@@ -955,22 +1180,56 @@ void SV_CreateBaseline (void)
 			svent->baseline.modelindex =
 				SV_ModelIndex(pr_strings + svent->v.model);
 		}
+		svent->baseline.alpha = SV_EntityAlpha (svent);
+		svent->baseline.scale = ENTSCALE_DEFAULT;
+
+		// LuminousQuake: 666/999 send large models and frames and alpha;
+		// protocol 15 can't, so those baseline fields fall back
+		bits = 0;
+		if (sv.protocol == PROTOCOL_NETQUAKE)
+		{
+			if (svent->baseline.modelindex & 0xFF00)
+				svent->baseline.modelindex = 0;
+			if (svent->baseline.frame & 0xFF00)
+				svent->baseline.frame = 0;
+			svent->baseline.alpha = ENTALPHA_DEFAULT;
+		}
+		else
+		{
+			if (svent->baseline.modelindex & 0xFF00)
+				bits |= B_LARGEMODEL;
+			if (svent->baseline.frame & 0xFF00)
+				bits |= B_LARGEFRAME;
+			if (svent->baseline.alpha != ENTALPHA_DEFAULT)
+				bits |= B_ALPHA;
+		}
 		
 	//
 	// add to the message
 	//
-		MSG_WriteByte (&sv.signon,svc_spawnbaseline);		
+		SV_SignonCut ();
+		MSG_WriteByte (&sv.signon, bits ? svc_spawnbaseline2 : svc_spawnbaseline);
 		MSG_WriteShort (&sv.signon,entnum);
+		if (bits)
+			MSG_WriteByte (&sv.signon, bits);
 
-		MSG_WriteByte (&sv.signon, svent->baseline.modelindex);
-		MSG_WriteByte (&sv.signon, svent->baseline.frame);
+		if (bits & B_LARGEMODEL)
+			MSG_WriteShort (&sv.signon, svent->baseline.modelindex);
+		else
+			MSG_WriteByte (&sv.signon, svent->baseline.modelindex);
+		if (bits & B_LARGEFRAME)
+			MSG_WriteShort (&sv.signon, svent->baseline.frame);
+		else
+			MSG_WriteByte (&sv.signon, svent->baseline.frame);
 		MSG_WriteByte (&sv.signon, svent->baseline.colormap);
 		MSG_WriteByte (&sv.signon, svent->baseline.skin);
 		for (i=0 ; i<3 ; i++)
 		{
-			MSG_WriteCoord(&sv.signon, svent->baseline.origin[i]);
-			MSG_WriteAngle(&sv.signon, svent->baseline.angles[i]);
+			MSG_WriteCoord(&sv.signon, svent->baseline.origin[i], sv.protocolflags);
+			MSG_WriteAngle(&sv.signon, svent->baseline.angles[i], sv.protocolflags);
 		}
+		if (bits & B_ALPHA)
+			MSG_WriteByte (&sv.signon, svent->baseline.alpha);
 	}
 }
 
@@ -1102,16 +1361,40 @@ void SV_SpawnServer (char *server)
 // load progs to get entity field count
 	PR_LoadProgs ();
 
+// LuminousQuake: the protocol is fixed for the level. Protocol 15 keeps
+// the original limits, so original clients can still connect; 999 serves
+// 32-bit coordinates and 16-bit angles, as QuakeSpasm does.
+	sv.protocol = (int)sv_protocol.value;
+	if (sv.protocol != PROTOCOL_NETQUAKE && sv.protocol != PROTOCOL_FITZQUAKE && sv.protocol != PROTOCOL_RMQ)
+	{
+		Con_Printf ("sv_protocol %s is not 15, 666 or 999; using 666\n", sv_protocol.string);
+		sv.protocol = PROTOCOL_FITZQUAKE;
+	}
+	sv.protocolflags = sv.protocol == PROTOCOL_RMQ ? PRFL_INT32COORD | PRFL_SHORTANGLE : 0;
+	{
+		ddef_t *alpha = ED_FindField ("alpha");
+		sv.alpha_ofs = alpha && sv.protocol != PROTOCOL_NETQUAKE ? alpha->ofs : -1;
+	}
+
 // allocate server memory
-	sv.max_edicts = MAX_EDICTS;
+	if (sv.protocol == PROTOCOL_NETQUAKE)
+		sv.max_edicts = NQ_MAX_EDICTS;
+	else
+	{
+		sv.max_edicts = (int)max_edicts.value;
+		if (sv.max_edicts < NQ_MAX_EDICTS)
+			sv.max_edicts = NQ_MAX_EDICTS;
+		if (sv.max_edicts > MAX_EDICTS)
+			sv.max_edicts = MAX_EDICTS;
+	}
 	
 	sv.edicts = Hunk_AllocName (sv.max_edicts*pr_edict_size, "edicts");
 
-	sv.datagram.maxsize = sizeof(sv.datagram_buf);
+	sv.datagram.maxsize = sv.protocol == PROTOCOL_NETQUAKE ? NQ_DATAGRAM : MAX_DATAGRAM;
 	sv.datagram.cursize = 0;
 	sv.datagram.data = sv.datagram_buf;
 	
-	sv.reliable_datagram.maxsize = sizeof(sv.reliable_datagram_buf);
+	sv.reliable_datagram.maxsize = sv.datagram.maxsize;
 	sv.reliable_datagram.cursize = 0;
 	sv.reliable_datagram.data = sv.reliable_datagram_buf;
 	
@@ -1152,6 +1435,13 @@ void SV_SpawnServer (char *server)
 
 	sv.model_precache[0] = pr_strings;
 	sv.model_precache[1] = sv.modelname;
+	if (sv.worldmodel->numsubmodels + 1 > SV_MaxModels ())
+	{
+		Con_Printf ("Couldn't spawn server %s: its %i brush models need protocol 666, not %i\n",
+			sv.modelname, sv.worldmodel->numsubmodels, sv.protocol);
+		sv.active = false;
+		return;
+	}
 	for (i=1 ; i<sv.worldmodel->numsubmodels ; i++)
 	{
 		sv.model_precache[1+i] = localmodels[i];

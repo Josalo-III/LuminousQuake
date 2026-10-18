@@ -72,7 +72,7 @@ Cbuf_Init
 */
 void Cbuf_Init (void)
 {
-	SZ_Alloc (&cmd_text, 8192);		// space for commands and script files
+	SZ_Alloc (&cmd_text, 1<<18);		// space for commands and script files (LuminousQuake: was 8192; mod quake.rc files exceed it)
 }
 
 
@@ -302,6 +302,16 @@ void Cmd_Exec_f (void)
 		if (!Q_strcasecmp(Cmd_Argv(1), "autoexec.cfg"))
 		{
 			Con_Printf ("Optional autoexec.cfg not found; continuing with current settings.\n");
+			return;
+		}
+		/* A new profile: the game's default.cfg (shareware and retail ship
+		 * id's 1996 layout, which starts with unbindall) has just run, so put
+		 * LuminousQuake's WASD layout on top of it. Once the profile saves a
+		 * config.cfg, that wins. */
+		if (!Q_strcasecmp(Cmd_Argv(1), "config.cfg"))
+		{
+			Con_Printf ("No saved config.cfg in this profile; starting from LuminousQuake's key layout.\n");
+			Cbuf_InsertText ((char *)lq_wasd_bindings);
 			return;
 		}
 #endif

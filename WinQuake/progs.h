@@ -38,9 +38,11 @@ typedef struct edict_s
 	link_t		area;				// linked to a division node or leaf
 	
 	int			num_leafs;
-	short		leafnums[MAX_ENT_LEAFS];
+	int			leafnums[MAX_ENT_LEAFS];	// LuminousQuake: BSP2 leaf counts
 
 	entity_state_t	baseline;
+	byte		alpha;				// LuminousQuake: ENTALPHA encoding of the QuakeC alpha field
+	qboolean	sendinterval;		// 666/999: send U_LERPFINISH, the think isn't 0.1 s
 	
 	float		freetime;			// sv.time when the object was freed
 	entvars_t	v;					// C exported fields from progs
@@ -131,4 +133,5 @@ void ED_PrintEdicts (void);
 void ED_PrintNum (int ent);
 
 eval_t *GetEdictFieldValue(edict_t *ed, char *field);
+ddef_t *ED_FindField (char *name);
 

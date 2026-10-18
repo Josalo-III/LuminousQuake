@@ -58,7 +58,7 @@ int			soundtime;		// sample PAIRS
 int   		paintedtime; 	// sample PAIRS
 
 
-#define	MAX_SFX		512
+#define	MAX_SFX		4096	// LuminousQuake: was 512; protocols 666/999 allow 2048 precaches
 sfx_t		*known_sfx;		// hunk allocated [MAX_SFX]
 int			num_sfx;
 

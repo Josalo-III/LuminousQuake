@@ -205,8 +205,12 @@ is not required. Compatibility with rerelease multiplayer servers is unverified
 and is a separate question from playing their game data locally.
 
 Default controls: WASD movement, mouse look, left mouse attack, Space jump,
-Shift run, number keys for weapons, Escape menu, grave key console, F11
-fullscreen. Existing Quake configuration scripts override these defaults.
+Shift run, number keys and mouse wheel for weapons, Escape menu, grave key console, F11
+fullscreen. Every edition starts new profiles on this WASD layout; a saved
+`config.cfg` or your `autoexec.cfg` overrides it. id's 1996 layout is one
+console command away: `keys_legacy` (and `keys_wasd` to switch back). Where
+`config.cfg` and `autoexec.cfg` live, the order they load in, and which classic
+settings are obsolete are in [configuration](docs/CONFIGURATION.md).
 Options includes **Mouselook** immediately after **Invert Mouse**. It defaults
 to on and is saved as `freelook`; held `+mlook` bindings remain available when
 it is off.
@@ -339,7 +343,8 @@ python3 tests/retail_smoke.py ./build-sanitize/luminousquake "$PWD/quake-complet
 
 It links/copies only PAKs into a temporary directory; generated configs, saves,
 demos and screenshots never go into the supplied installation. Interactive
-runs normally save `config.cfg` in their game directory. For bounded captures
+runs save `config.cfg` in the profile for their edition (shareware, retail or
+rerelease); see [configuration](docs/CONFIGURATION.md). For bounded captures
 use `--run-seconds 8 --screenshot /tmp/quake.bmp`.
 
 ## Provenance and license

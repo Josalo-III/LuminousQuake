@@ -304,8 +304,34 @@ vec4 effectProbe(sampler3D probes, float blocks, float base, vec3 point, vec3 n,
     return 0.5 * (probeCube(probes, blocks, base, point, diagonal) +
                   probeCube(probes, blocks, base, point, -diagonal));
 }
+// Value noise over 3D space, 0-1, for eroding smoke.
+float hash3(vec3 p) {
+    p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+    p += dot(p, p.yxz + 33.33);
+    return fract((p.x + p.y) * p.z);
+}
+float noise3(vec3 p) {
+    vec3 i = floor(p), f = fract(p), u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(hash3(i), hash3(i + vec3(1,0,0)), u.x),
+                   mix(hash3(i + vec3(0,1,0)), hash3(i + vec3(1,1,0)), u.x), u.y),
+               mix(mix(hash3(i + vec3(0,0,1)), hash3(i + vec3(1,0,1)), u.x),
+                   mix(hash3(i + vec3(0,1,1)), hash3(i + vec3(1,1,1)), u.x), u.y), u.z);
+}
 void main() {
     int flags = int(surface.parameters.y);
+    // Smoke erodes: noise over the puff's surface (its normal) and where it is
+    // (so the pattern churns as it rises) cuts away the fraction uv.y. Its
+    // edge also thins toward the silhouette, where the view grazes the sphere,
+    // with finer noise, so a puff ends in a ragged fringe, not a bubble's rim.
+    // (A cutout standing in for alpha until translucency blends in linear light.)
+    if ((flags & 1024) != 0) {
+        vec3 to_eye = normalize(surface.camera_origin.xyz - world_position);
+        float rim = 1.0 - abs(dot(normalize(world_normal), to_eye));
+        float n = 0.65 * noise3(world_normal * 2.5 + world_position * 0.15) +
+                  0.35 * noise3(world_normal * 6.0 + world_position * 0.4 + 17.0);
+        float fringe = noise3(world_normal * 14.0 + world_position * 0.9 + 41.0);
+        if (n < uv.y || fringe < smoothstep(0.2, 0.85, rim)) discard;
+    }
     bool diffuse_effect = lights.parameters.y != 0u && (flags & 128) != 0;
     // Solid (3D) particles take the effect colour but face lights by their normals.
     bool lit_effect = diffuse_effect || (lights.parameters.y != 0u && (flags & 512) != 0);

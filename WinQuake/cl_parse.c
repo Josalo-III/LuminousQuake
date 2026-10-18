@@ -65,8 +65,22 @@ char *svc_strings[] =
 	"svc_finale",			// [string] music [string] text
 	"svc_cdtrack",			// [byte] track [byte] looptrack
 	"svc_sellscreen",
-	"svc_cutscene"
+	"svc_cutscene",
+	"", "",					// 35, 36
+	"svc_skybox",			// 37: [string] name (protocols 666/999)
+	"", "",					// 38, 39
+	"svc_bf",				// 40
+	"svc_fog",				// 41
+	"svc_spawnbaseline2",	// 42
+	"svc_spawnstatic2",		// 43
+	"svc_spawnstaticsound2"	// 44
 };
+
+// LuminousQuake: protocols 666 and 999 add fields to the messages below.
+static qboolean CL_ExtendedProtocol (void)
+{
+	return cl.protocol == PROTOCOL_FITZQUAKE || cl.protocol == PROTOCOL_RMQ;
+}
 
 //=============================================================================
 
@@ -121,17 +135,29 @@ void CL_ParseStartSoundPacket(void)
 	else
 		attenuation = DEFAULT_SOUND_PACKET_ATTENUATION;
 	
-	channel = MSG_ReadShort ();
-	sound_num = MSG_ReadByte ();
+	if (field_mask & SND_LARGEENTITY)
+	{
+		ent = (unsigned short)MSG_ReadShort ();
+		channel = MSG_ReadByte ();
+	}
+	else
+	{
+		channel = (unsigned short)MSG_ReadShort ();
+		ent = channel >> 3;
+		channel &= 7;
+	}
+	if (field_mask & SND_LARGESOUND)
+		sound_num = (unsigned short)MSG_ReadShort ();
+	else
+		sound_num = MSG_ReadByte ();
 
-	ent = channel >> 3;
-	channel &= 7;
-
-	if (ent > MAX_EDICTS)
+	if (ent >= MAX_EDICTS)
 		Host_Error ("CL_ParseStartSoundPacket: ent = %i", ent);
+	if (sound_num >= MAX_SOUNDS)
+		Host_Error ("CL_ParseStartSoundPacket: sound = %i", sound_num);
 	
 	for (i=0 ; i<3 ; i++)
-		pos[i] = MSG_ReadCoord ();
+		pos[i] = MSG_ReadCoord (cl.protocolflags);
  
     S_StartSound (ent, channel, cl.sound_precache[sound_num], pos, volume/255.0, attenuation);
 }       
@@ -150,7 +176,7 @@ void CL_KeepaliveMessage (void)
 	static float lastmsg;
 	int		ret;
 	sizebuf_t	old;
-	byte		olddata[8192];
+	static byte	olddata[NET_MAXMESSAGE];
 	
 	if (sv.active)
 		return;		// no need if server is local
@@ -199,6 +225,49 @@ void CL_KeepaliveMessage (void)
 
 /*
 ==================
+CL_ParseWorldspawn
+
+LuminousQuake: the FitzQuake worldspawn keys "fog" (density red green blue)
+and "sky" (a gfx/env skybox name); svc_fog and svc_skybox override them.
+==================
+*/
+static void CL_ParseWorldspawn (void)
+{
+	char	key[128], *data;
+
+	memset (&cl_fog, 0, sizeof(cl_fog));
+	if (!cl.worldmodel || !cl.worldmodel->entities)
+		return;
+	data = COM_Parse (cl.worldmodel->entities);
+	if (!data || com_token[0] != '{')
+		return;
+	while (1)
+	{
+		data = COM_Parse (data);
+		if (!data || com_token[0] == '}')
+			return;
+		Q_strncpy (key, com_token[0] == '_' ? com_token + 1 : com_token, sizeof(key) - 1);
+		key[sizeof(key) - 1] = 0;
+		data = COM_Parse (data);
+		if (!data)
+			return;
+		if (!Q_strcmp (key, "fog"))
+		{
+			float v[4] = {0, 0, 0, 0};
+			sscanf (com_token, "%f %f %f %f", &v[0], &v[1], &v[2], &v[3]);
+			cl_fog.density = v[0] < 0 ? 0 : v[0];
+			cl_fog.color[0] = v[1]; cl_fog.color[1] = v[2]; cl_fog.color[2] = v[3];
+		}
+		else if (!Q_strcmp (key, "sky") || !Q_strcmp (key, "skyname"))
+		{
+			Q_strncpy (cl.skyboxname, com_token, sizeof(cl.skyboxname) - 1);
+			cl.skyboxname[sizeof(cl.skyboxname) - 1] = 0;
+		}
+	}
+}
+
+/*
+==================
 CL_ParseServerInfo
 ==================
 */
@@ -207,8 +276,8 @@ void CL_ParseServerInfo (void)
 	char	*str;
 	int		i;
 	int		nummodels, numsounds;
-	char	model_precache[MAX_MODELS][MAX_QPATH];
-	char	sound_precache[MAX_SOUNDS][MAX_QPATH];
+	static char	model_precache[MAX_MODELS][MAX_QPATH];
+	static char	sound_precache[MAX_SOUNDS][MAX_QPATH];
 	
 	Con_DPrintf ("Serverinfo packet received.\n");
 //
@@ -218,10 +287,21 @@ void CL_ParseServerInfo (void)
 
 // parse protocol version number
 	i = MSG_ReadLong ();
-	if (i != PROTOCOL_VERSION)
+	if (i != PROTOCOL_NETQUAKE && i != PROTOCOL_FITZQUAKE && i != PROTOCOL_RMQ)
 	{
-		Con_Printf ("Server returned version %i, not %i", i, PROTOCOL_VERSION);
+		Con_Printf ("Server returned version %i, not %i, %i or %i\n", i,
+			PROTOCOL_NETQUAKE, PROTOCOL_FITZQUAKE, PROTOCOL_RMQ);
 		return;
+	}
+	cl.protocol = i;
+	cl.protocolflags = 0;
+	if (cl.protocol == PROTOCOL_RMQ)
+	{
+		const unsigned int supported = PRFL_SHORTANGLE | PRFL_FLOATANGLE | PRFL_24BITCOORD
+			| PRFL_FLOATCOORD | PRFL_EDICTSCALE | PRFL_ALPHASANITY | PRFL_INT32COORD;
+		cl.protocolflags = (unsigned int)MSG_ReadLong ();
+		if (cl.protocolflags & ~supported)
+			Con_Printf ("PROTOCOL_RMQ protocolflags %i contains unknown flags\n", cl.protocolflags);
 	}
 
 // parse maxclients
@@ -308,6 +388,7 @@ void CL_ParseServerInfo (void)
 
 // local state
 	cl_entities[0].model = cl.worldmodel = cl.model_precache[1];
+	CL_ParseWorldspawn ();
 	
 	R_NewMap ();
 
@@ -326,7 +407,7 @@ If an entities model or origin changes from frame to frame, it must be
 relinked.  Other attributes can change without relinking.
 ==================
 */
-int	bitcounts[16];
+int	bitcounts[32];
 
 void CL_ParseUpdate (int bits)
 {
@@ -349,6 +430,13 @@ void CL_ParseUpdate (int bits)
 		i = MSG_ReadByte ();
 		bits |= (i<<8);
 	}
+	if (CL_ExtendedProtocol ())
+	{
+		if (bits & U_EXTEND1)
+			bits |= MSG_ReadByte () << 16;
+		if (bits & U_EXTEND2)
+			bits |= MSG_ReadByte () << 24;
+	}
 
 	if (bits & U_LONGENTITY)	
 		num = MSG_ReadShort ();
@@ -357,8 +445,8 @@ void CL_ParseUpdate (int bits)
 
 	ent = CL_EntityNum (num);
 
-for (i=0 ; i<16 ; i++)
-if (bits&(1<<i))
+for (i=0 ; i<32 ; i++)
+if (bits&(1u<<i))
 	bitcounts[i]++;
 
 	if (ent->msgtime != cl.mtime[1])
@@ -369,39 +457,18 @@ if (bits&(1<<i))
 	ent->msgtime = cl.mtime[0];
 	
 	if (bits & U_MODEL)
-	{
 		modnum = MSG_ReadByte ();
-		if (modnum >= MAX_MODELS)
-			Host_Error ("CL_ParseModel: bad modnum");
-	}
 	else
 		modnum = ent->baseline.modelindex;
-		
-	model = cl.model_precache[modnum];
-	if (model != ent->model)
-	{
-		ent->model = model;
-	// automatic animation (torches, etc) can be either all together
-	// or randomized
-		if (model)
-		{
-			if (model->synctype == ST_RAND)
-				ent->syncbase = (float)(rand()&0x7fff) / 0x7fff;
-			else
-				ent->syncbase = 0.0;
-		}
-		else
-			forcelink = true;	// hack to make null model players work
-#ifdef GLQUAKE
-		if (num > 0 && num <= cl.maxclients)
-			R_TranslatePlayerSkin (num - 1);
-#endif
-	}
 	
 	if (bits & U_FRAME)
 		ent->frame = MSG_ReadByte ();
 	else
 		ent->frame = ent->baseline.frame;
+
+	// LuminousQuake: colormap, skin, effects and the coordinates follow;
+	// the 666/999 high bytes of model and frame come after those, so the
+	// model is resolved below once they are read.
 
 	if (bits & U_COLORMAP)
 		i = MSG_ReadByte();
@@ -445,35 +512,79 @@ if (bits&(1<<i))
 	VectorCopy (ent->msg_angles[0], ent->msg_angles[1]);
 
 	if (bits & U_ORIGIN1)
-		ent->msg_origins[0][0] = MSG_ReadCoord ();
+		ent->msg_origins[0][0] = MSG_ReadCoord (cl.protocolflags);
 	else
 		ent->msg_origins[0][0] = ent->baseline.origin[0];
 	if (bits & U_ANGLE1)
-		ent->msg_angles[0][0] = MSG_ReadAngle();
+		ent->msg_angles[0][0] = MSG_ReadAngle (cl.protocolflags);
 	else
 		ent->msg_angles[0][0] = ent->baseline.angles[0];
 
 	if (bits & U_ORIGIN2)
-		ent->msg_origins[0][1] = MSG_ReadCoord ();
+		ent->msg_origins[0][1] = MSG_ReadCoord (cl.protocolflags);
 	else
 		ent->msg_origins[0][1] = ent->baseline.origin[1];
 	if (bits & U_ANGLE2)
-		ent->msg_angles[0][1] = MSG_ReadAngle();
+		ent->msg_angles[0][1] = MSG_ReadAngle (cl.protocolflags);
 	else
 		ent->msg_angles[0][1] = ent->baseline.angles[1];
 
 	if (bits & U_ORIGIN3)
-		ent->msg_origins[0][2] = MSG_ReadCoord ();
+		ent->msg_origins[0][2] = MSG_ReadCoord (cl.protocolflags);
 	else
 		ent->msg_origins[0][2] = ent->baseline.origin[2];
 	if (bits & U_ANGLE3)
-		ent->msg_angles[0][2] = MSG_ReadAngle();
+		ent->msg_angles[0][2] = MSG_ReadAngle (cl.protocolflags);
 	else
 		ent->msg_angles[0][2] = ent->baseline.angles[2];
 
 	if ( bits & U_NOLERP )
 		ent->forcelink = true;
 	ent->movestep = (bits & U_NOLERP) != 0;
+
+	if (CL_ExtendedProtocol ())
+	{
+		ent->alpha = (bits & U_ALPHA) ? MSG_ReadByte () : ent->baseline.alpha;
+		ent->scale = (bits & U_SCALE) ? MSG_ReadByte () : ent->baseline.scale;
+		if (bits & U_FRAME2)
+			ent->frame = (ent->frame & 0x00FF) | (MSG_ReadByte () << 8);
+		if (bits & U_MODEL2)
+			modnum = (modnum & 0x00FF) | (MSG_ReadByte () << 8);
+		if (bits & U_LERPFINISH)
+			ent->lerpfinish = ent->msgtime + MSG_ReadByte () / 255.0f;
+		else
+			ent->lerpfinish = 0;
+	}
+	else
+	{
+		ent->alpha = ent->baseline.alpha;
+		ent->scale = ent->baseline.scale;
+		ent->lerpfinish = 0;
+	}
+
+	if (modnum >= MAX_MODELS)
+		Host_Error ("CL_ParseModel: bad modnum");
+	model = cl.model_precache[modnum];
+	if (model != ent->model)
+	{
+		ent->model = model;
+	// automatic animation (torches, etc) can be either all together
+	// or randomized
+		if (model)
+		{
+			if (model->synctype == ST_RAND)
+				ent->syncbase = (float)(rand()&0x7fff) / 0x7fff;
+			else
+				ent->syncbase = 0.0;
+		}
+		else
+			forcelink = true;	// hack to make null model players work
+#ifdef GLQUAKE
+		if (num > 0 && num <= cl.maxclients)
+			R_TranslatePlayerSkin (num - 1);
+#endif
+	}
+	
 
 	if ( forcelink )
 	{	// didn't have an update last message
@@ -490,19 +601,24 @@ if (bits&(1<<i))
 CL_ParseBaseline
 ==================
 */
-void CL_ParseBaseline (entity_t *ent)
+void CL_ParseBaseline (entity_t *ent, int version)
 {
 	int			i;
+	int			bits = version == 2 ? MSG_ReadByte () : 0;	// svc_spawnbaseline2 / svc_spawnstatic2
 	
-	ent->baseline.modelindex = MSG_ReadByte ();
-	ent->baseline.frame = MSG_ReadByte ();
+	ent->baseline.modelindex = (bits & B_LARGEMODEL) ? (unsigned short)MSG_ReadShort () : MSG_ReadByte ();
+	ent->baseline.frame = (bits & B_LARGEFRAME) ? (unsigned short)MSG_ReadShort () : MSG_ReadByte ();
 	ent->baseline.colormap = MSG_ReadByte();
 	ent->baseline.skin = MSG_ReadByte();
 	for (i=0 ; i<3 ; i++)
 	{
-		ent->baseline.origin[i] = MSG_ReadCoord ();
-		ent->baseline.angles[i] = MSG_ReadAngle ();
+		ent->baseline.origin[i] = MSG_ReadCoord (cl.protocolflags);
+		ent->baseline.angles[i] = MSG_ReadAngle (cl.protocolflags);
 	}
+	ent->baseline.alpha = (bits & B_ALPHA) ? MSG_ReadByte () : ENTALPHA_DEFAULT;
+	ent->baseline.scale = (bits & B_SCALE) ? MSG_ReadByte () : ENTSCALE_DEFAULT;
+	if (ent->baseline.modelindex >= MAX_MODELS)
+		Host_Error ("CL_ParseBaseline: bad modelindex %i", ent->baseline.modelindex);
 }
 
 
@@ -513,9 +629,20 @@ CL_ParseClientdata
 Server information pertaining to this client only
 ==================
 */
-void CL_ParseClientdata (int bits)
+void CL_ParseClientdata (void)
 {
 	int		i, j;
+	int		bits;
+	int		weapon, armor, ammo, packs[4], weaponframe;
+
+	bits = (unsigned short)MSG_ReadShort ();
+	if (CL_ExtendedProtocol ())
+	{
+		if (bits & SU_EXTEND1)
+			bits |= MSG_ReadByte () << 16;
+		if (bits & SU_EXTEND2)
+			bits |= MSG_ReadByte () << 24;
+	}
 	
 	if (bits & SU_VIEWHEIGHT)
 		cl.viewheight = MSG_ReadChar ();
@@ -555,30 +682,9 @@ void CL_ParseClientdata (int bits)
 	cl.onground = (bits & SU_ONGROUND) != 0;
 	cl.inwater = (bits & SU_INWATER) != 0;
 
-	if (bits & SU_WEAPONFRAME)
-		cl.stats[STAT_WEAPONFRAME] = MSG_ReadByte ();
-	else
-		cl.stats[STAT_WEAPONFRAME] = 0;
-
-	if (bits & SU_ARMOR)
-		i = MSG_ReadByte ();
-	else
-		i = 0;
-	if (cl.stats[STAT_ARMOR] != i)
-	{
-		cl.stats[STAT_ARMOR] = i;
-		Sbar_Changed ();
-	}
-
-	if (bits & SU_WEAPON)
-		i = MSG_ReadByte ();
-	else
-		i = 0;
-	if (cl.stats[STAT_WEAPON] != i)
-	{
-		cl.stats[STAT_WEAPON] = i;
-		Sbar_Changed ();
-	}
+	weaponframe = (bits & SU_WEAPONFRAME) ? MSG_ReadByte () : 0;
+	armor = (bits & SU_ARMOR) ? MSG_ReadByte () : 0;
+	weapon = (bits & SU_WEAPON) ? MSG_ReadByte () : 0;
 	
 	i = MSG_ReadShort ();
 	if (cl.stats[STAT_HEALTH] != i)
@@ -587,24 +693,53 @@ void CL_ParseClientdata (int bits)
 		Sbar_Changed ();
 	}
 
-	i = MSG_ReadByte ();
-	if (cl.stats[STAT_AMMO] != i)
+	ammo = MSG_ReadByte ();
+	for (i=0 ; i<4 ; i++)
+		packs[i] = MSG_ReadByte ();
+
+	i = MSG_ReadByte ();	// the active weapon, handled below
+
+	// LuminousQuake: the 666/999 high bytes come after the original fields
+	if (CL_ExtendedProtocol ())
 	{
-		cl.stats[STAT_AMMO] = i;
+		if (bits & SU_WEAPON2)
+			weapon |= MSG_ReadByte () << 8;
+		if (bits & SU_ARMOR2)
+			armor |= MSG_ReadByte () << 8;
+		if (bits & SU_AMMO2)
+			ammo |= MSG_ReadByte () << 8;
+		for (j=0 ; j<4 ; j++)
+			if (bits & (SU_SHELLS2 << j))
+				packs[j] |= MSG_ReadByte () << 8;
+		if (bits & SU_WEAPONFRAME2)
+			weaponframe |= MSG_ReadByte () << 8;
+		cl.viewent.alpha = (bits & SU_WEAPONALPHA) ? MSG_ReadByte () : ENTALPHA_DEFAULT;
+	}
+	else
+		cl.viewent.alpha = ENTALPHA_DEFAULT;
+
+	cl.stats[STAT_WEAPONFRAME] = weaponframe;
+	if (cl.stats[STAT_ARMOR] != armor)
+	{
+		cl.stats[STAT_ARMOR] = armor;
 		Sbar_Changed ();
 	}
-
-	for (i=0 ; i<4 ; i++)
+	if (cl.stats[STAT_WEAPON] != weapon)
 	{
-		j = MSG_ReadByte ();
-		if (cl.stats[STAT_SHELLS+i] != j)
+		cl.stats[STAT_WEAPON] = weapon;
+		Sbar_Changed ();
+	}
+	if (cl.stats[STAT_AMMO] != ammo)
+	{
+		cl.stats[STAT_AMMO] = ammo;
+		Sbar_Changed ();
+	}
+	for (j=0 ; j<4 ; j++)
+		if (cl.stats[STAT_SHELLS+j] != packs[j])
 		{
-			cl.stats[STAT_SHELLS+i] = j;
+			cl.stats[STAT_SHELLS+j] = packs[j];
 			Sbar_Changed ();
 		}
-	}
-
-	i = MSG_ReadByte ();
 
 	if (standard_quake)
 	{
@@ -667,7 +802,7 @@ void CL_NewTranslation (int slot)
 CL_ParseStatic
 =====================
 */
-void CL_ParseStatic (void)
+void CL_ParseStatic (int version)
 {
 	entity_t *ent;
 	int		i;
@@ -677,7 +812,7 @@ void CL_ParseStatic (void)
 		Host_Error ("Too many static entities");
 	ent = &cl_static_entities[i];
 	cl.num_statics++;
-	CL_ParseBaseline (ent);
+	CL_ParseBaseline (ent, version);
 
 // copy it to the current state
 	ent->model = cl.model_precache[ent->baseline.modelindex];
@@ -685,6 +820,8 @@ void CL_ParseStatic (void)
 	ent->colormap = vid.colormap;
 	ent->skinnum = ent->baseline.skin;
 	ent->effects = ent->baseline.effects;
+	ent->alpha = ent->baseline.alpha;
+	ent->scale = ent->baseline.scale;
 
 	VectorCopy (ent->baseline.origin, ent->origin);
 	VectorCopy (ent->baseline.angles, ent->angles);	
@@ -696,21 +833,69 @@ void CL_ParseStatic (void)
 CL_ParseStaticSound
 ===================
 */
-void CL_ParseStaticSound (void)
+void CL_ParseStaticSound (int version)
 {
 	vec3_t		org;
 	int			sound_num, vol, atten;
 	int			i;
 	
 	for (i=0 ; i<3 ; i++)
-		org[i] = MSG_ReadCoord ();
-	sound_num = MSG_ReadByte ();
+		org[i] = MSG_ReadCoord (cl.protocolflags);
+	sound_num = version == 2 ? (unsigned short)MSG_ReadShort () : MSG_ReadByte ();
+	if (sound_num >= MAX_SOUNDS)
+		Host_Error ("CL_ParseStaticSound: bad sound %i", sound_num);
 	vol = MSG_ReadByte ();
 	atten = MSG_ReadByte ();
 	
 	S_StaticSound (cl.sound_precache[sound_num], org, vol, atten);
 }
 
+
+/*
+=====================
+CL_ParseFog / CL_Fog_f
+
+LuminousQuake: FitzQuake fog. The renderers do not draw fog yet, so the
+values are only kept; a fade time is accepted and ignored.
+=====================
+*/
+cl_fog_t	cl_fog;
+
+void CL_ParseFog (void)
+{
+	int		i;
+	cl_fog.density = MSG_ReadByte () / 255.0f;
+	for (i=0 ; i<3 ; i++)
+		cl_fog.color[i] = MSG_ReadByte () / 255.0f;
+	(void)MSG_ReadShort ();	// fade time in hundredths of a second
+}
+
+void CL_Fog_f (void)
+{
+	int		i, argc = Cmd_Argc ();
+	switch (argc)
+	{
+	case 1:
+		Con_Printf ("usage: fog <density> [<red> <green> <blue> [<time>]] or fog <red> <green> <blue>\n");
+		Con_Printf ("current values: %g %g %g %g\n", cl_fog.density,
+			cl_fog.color[0], cl_fog.color[1], cl_fog.color[2]);
+		return;
+	case 4:		// red green blue
+		for (i=0 ; i<3 ; i++)
+			cl_fog.color[i] = Q_atof (Cmd_Argv (1 + i));
+		break;
+	default:	// density [red green blue [time]]
+		cl_fog.density = Q_atof (Cmd_Argv (1));
+		if (argc >= 5)
+			for (i=0 ; i<3 ; i++)
+				cl_fog.color[i] = Q_atof (Cmd_Argv (2 + i));
+		break;
+	}
+	for (i=0 ; i<3 ; i++)
+		cl_fog.color[i] = cl_fog.color[i] < 0 ? 0 : cl_fog.color[i] > 1 ? 1 : cl_fog.color[i];
+	if (cl_fog.density < 0)
+		cl_fog.density = 0;
+}
 
 #define SHOWNET(x) if(cl_shownet.value==2)Con_Printf ("%3i:%s\n", msg_readcount-1, x);
 
@@ -790,14 +975,15 @@ void CL_ParseServerMessage (void)
 			break;
 			
 		case svc_clientdata:
-			i = MSG_ReadShort ();
-			CL_ParseClientdata (i);
+			CL_ParseClientdata ();
 			break;
 		
 		case svc_version:
 			i = MSG_ReadLong ();
-			if (i != PROTOCOL_VERSION)
-				Host_Error ("CL_ParseServerMessage: Server is protocol %i instead of %i\n", i, PROTOCOL_VERSION);
+			if (i != PROTOCOL_NETQUAKE && i != PROTOCOL_FITZQUAKE && i != PROTOCOL_RMQ)
+				Host_Error ("CL_ParseServerMessage: Server is protocol %i instead of %i, %i or %i\n",
+					i, PROTOCOL_NETQUAKE, PROTOCOL_FITZQUAKE, PROTOCOL_RMQ);
+			cl.protocol = i;
 			break;
 			
 		case svc_disconnect:
@@ -826,7 +1012,7 @@ void CL_ParseServerMessage (void)
 			
 		case svc_setangle:
 			for (i=0 ; i<3 ; i++)
-				cl.viewangles[i] = MSG_ReadAngle ();
+				cl.viewangles[i] = MSG_ReadAngle (cl.protocolflags);
 			break;
 			
 		case svc_setview:
@@ -846,7 +1032,7 @@ void CL_ParseServerMessage (void)
 			break;
 			
 		case svc_stopsound:
-			i = MSG_ReadShort();
+			i = (unsigned short)MSG_ReadShort();
 			S_StopSound(i>>3, i&7);
 			break;
 		
@@ -880,13 +1066,35 @@ void CL_ParseServerMessage (void)
 			break;
 
 		case svc_spawnbaseline:
-			i = MSG_ReadShort ();
+			i = (unsigned short)MSG_ReadShort ();
 			// must use CL_EntityNum() to force cl.num_entities up
-			CL_ParseBaseline (CL_EntityNum(i));
+			CL_ParseBaseline (CL_EntityNum(i), 1);
 			break;
 		case svc_spawnstatic:
-			CL_ParseStatic ();
+			CL_ParseStatic (1);
 			break;			
+
+		// LuminousQuake: protocols 666 and 999
+		case svc_spawnbaseline2:
+			i = (unsigned short)MSG_ReadShort ();
+			CL_ParseBaseline (CL_EntityNum(i), 2);
+			break;
+		case svc_spawnstatic2:
+			CL_ParseStatic (2);
+			break;
+		case svc_spawnstaticsound2:
+			CL_ParseStaticSound (2);
+			break;
+		case svc_skybox:
+			Q_strncpy (cl.skyboxname, MSG_ReadString (), sizeof(cl.skyboxname) - 1);
+			cl.skyboxname[sizeof(cl.skyboxname) - 1] = 0;
+			break;
+		case svc_bf:
+			Cmd_ExecuteString ("bf", src_command);
+			break;
+		case svc_fog:
+			CL_ParseFog ();
+			break;
 		case svc_temp_entity:
 			CL_ParseTEnt ();
 			break;
@@ -936,7 +1144,7 @@ void CL_ParseServerMessage (void)
 			break;
 			
 		case svc_spawnstaticsound:
-			CL_ParseStaticSound ();
+			CL_ParseStaticSound (1);
 			break;
 
 		case svc_cdtrack:

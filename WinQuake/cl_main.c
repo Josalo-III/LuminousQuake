@@ -777,6 +777,7 @@ void CL_Init (void)
 //	Cvar_RegisterVariable (&cl_autofire);
 	
 	Cmd_AddCommand ("entities", CL_PrintEntities_f);
+	Cmd_AddCommand ("fog", CL_Fog_f);
 	Cmd_AddCommand ("disconnect", CL_Disconnect_f);
 	Cmd_AddCommand ("record", CL_Record_f);
 	Cmd_AddCommand ("stop", CL_Stop_f);

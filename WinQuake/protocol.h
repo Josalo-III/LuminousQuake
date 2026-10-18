@@ -19,7 +19,20 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 // protocol.h -- communications protocols
 
-#define	PROTOCOL_VERSION	15
+#define	PROTOCOL_VERSION	15		// original NetQuake
+#define	PROTOCOL_NETQUAKE	15
+#define	PROTOCOL_FITZQUAKE	666		// LuminousQuake: FitzQuake/QuakeSpasm extended limits
+#define	PROTOCOL_RMQ		999		// LuminousQuake: 666 plus selectable coordinate and angle sizes
+
+// PROTOCOL_RMQ flags, sent as a long after the version in svc_serverinfo
+#define	PRFL_SHORTANGLE		(1<<1)
+#define	PRFL_FLOATANGLE		(1<<2)
+#define	PRFL_24BITCOORD		(1<<3)
+#define	PRFL_FLOATCOORD		(1<<4)
+#define	PRFL_EDICTSCALE		(1<<5)
+#define	PRFL_ALPHASANITY	(1<<6)		// alpha uses the ENTALPHA encoding everywhere
+#define	PRFL_INT32COORD		(1<<7)
+#define	PRFL_MOREFLAGS		(1<<31)
 
 // if the high bit of the servercmd is set, the low bits are fast update flags:
 #define	U_MOREBITS	(1<<0)
@@ -27,7 +40,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	U_ORIGIN2	(1<<2)
 #define	U_ORIGIN3	(1<<3)
 #define	U_ANGLE2	(1<<4)
-#define	U_NOLERP	(1<<5)		// don't interpolate movement
+#define	U_NOLERP	(1<<5)		// don't interpolate movement (MOVETYPE_STEP)
 #define	U_FRAME		(1<<6)
 #define U_SIGNAL	(1<<7)		// just differentiates from other updates
 
@@ -39,6 +52,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	U_SKIN		(1<<12)
 #define	U_EFFECTS	(1<<13)
 #define	U_LONGENTITY	(1<<14)
+// protocols 666 and 999
+#define	U_EXTEND1	(1<<15)
+#define	U_ALPHA		(1<<16)		// 1 byte, ENTALPHA encoding, not sent if equal to baseline
+#define	U_FRAME2	(1<<17)		// 1 byte, .frame & 0xFF00
+#define	U_MODEL2	(1<<18)		// 1 byte, .modelindex & 0xFF00
+#define	U_LERPFINISH	(1<<19)	// 1 byte, 0.0-1.0 maps to 0-255: nextthink - time, sent unless 0.1
+#define	U_SCALE		(1<<20)		// 1 byte, PRFL_EDICTSCALE only
+#define	U_EXTEND2	(1<<23)
 
 
 #define	SU_VIEWHEIGHT	(1<<0)
@@ -56,11 +77,41 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	SU_WEAPONFRAME	(1<<12)
 #define	SU_ARMOR		(1<<13)
 #define	SU_WEAPON		(1<<14)
+// protocols 666 and 999
+#define	SU_EXTEND1		(1<<15)
+#define	SU_WEAPON2		(1<<16)		// .weaponmodel & 0xFF00
+#define	SU_ARMOR2		(1<<17)		// .armorvalue & 0xFF00
+#define	SU_AMMO2		(1<<18)		// .currentammo & 0xFF00
+#define	SU_SHELLS2		(1<<19)
+#define	SU_NAILS2		(1<<20)
+#define	SU_ROCKETS2		(1<<21)
+#define	SU_CELLS2		(1<<22)
+#define	SU_EXTEND2		(1<<23)
+#define	SU_WEAPONFRAME2	(1<<24)		// .weaponframe & 0xFF00
+#define	SU_WEAPONALPHA	(1<<25)		// ENTALPHA encoding of the player's alpha
+#define	SU_EXTEND3		(1<<31)
 
 // a sound with no channel is a local only sound
 #define	SND_VOLUME		(1<<0)		// a byte
 #define	SND_ATTENUATION	(1<<1)		// a byte
 #define	SND_LOOPING		(1<<2)		// a long
+#define	SND_LARGEENTITY	(1<<3)		// 666/999: a short entity and a byte channel
+#define	SND_LARGESOUND	(1<<4)		// 666/999: a short sound number
+
+// 666/999 baseline and static flags
+#define	B_LARGEMODEL	(1<<0)		// modelindex is a short
+#define	B_LARGEFRAME	(1<<1)		// frame is a short
+#define	B_ALPHA			(1<<2)		// 1 byte, ENTALPHA encoding
+#define	B_SCALE			(1<<3)		// 1 byte, PRFL_EDICTSCALE only
+
+// 666/999 entity alpha: 0 is the default (opaque, water obeys r_wateralpha),
+// 1 is invisible, 255 is opaque.
+#define	ENTALPHA_DEFAULT	0
+#define	ENTALPHA_ZERO		1
+#define	ENTALPHA_ONE		255
+#define	ENTALPHA_ENCODE(a)	(((a)==0)?ENTALPHA_DEFAULT:(int)floorf(((a)<0?0:(a)>1?1:(a))*254.0f+1.5f))
+#define	ENTALPHA_DECODE(a)	(((a)==ENTALPHA_DEFAULT)?1.0f:((float)(a)-1)/254.0f)
+#define	ENTSCALE_DEFAULT	16		// U_SCALE / B_SCALE: 16 is 1.0
 
 
 // defaults for clientinfo messages
@@ -129,6 +180,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define svc_sellscreen		33
 
 #define svc_cutscene		34
+
+// protocols 666 and 999
+#define	svc_skybox			37		// [string] name
+#define	svc_bf				40		// no data: the bonus flash
+#define	svc_fog				41		// [byte] density [byte] red [byte] green [byte] blue [short] time*100
+#define	svc_spawnbaseline2	42		// like svc_spawnbaseline, with a B_* flag byte
+#define	svc_spawnstatic2	43		// like svc_spawnstatic, with a B_* flag byte
+#define	svc_spawnstaticsound2	44	// [coord3] [short] samp [byte] vol [byte] aten
 
 //
 // client to server

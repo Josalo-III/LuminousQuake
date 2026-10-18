@@ -32,6 +32,10 @@ typedef struct
 
 typedef enum {ss_loading, ss_active} server_state_t;
 
+#define	SIGNON_SIZE		(4*1024*1024)	// LuminousQuake: was 8192
+#define	MAX_SIGNON_CUTS	262144
+#define	NQ_SIGNON_CHUNK	7500			// fits an original client's 8000-byte message
+
 typedef struct
 {
 	qboolean	active;				// false if only a net client
@@ -44,6 +48,9 @@ typedef struct
 	int			lastcheck;			// used by PF_checkclient
 	double		lastchecktime;
 	
+	int			protocol;			// LuminousQuake: sv_protocol when the level started
+	unsigned int	protocolflags;	// PRFL_* bits for PROTOCOL_RMQ, else 0
+	int			alpha_ofs;			// QuakeC "alpha" field offset in floats, or -1
 	char		name[64];			// map name
 #ifdef QUAKE2
 	char		startspot[64];
@@ -67,8 +74,12 @@ typedef struct
 	sizebuf_t	reliable_datagram;	// copied to all clients at end of frame
 	byte		reliable_datagram_buf[MAX_DATAGRAM];
 
+	// LuminousQuake: the signon grew past one message for large maps. It is
+	// sent in pieces that end only where an engine-written message begins.
 	sizebuf_t	signon;
-	byte		signon_buf[8192];
+	byte		signon_buf[SIGNON_SIZE];
+	int			signon_cuts[MAX_SIGNON_CUTS];
+	int			num_signon_cuts;
 } server_t;
 
 
@@ -82,6 +93,8 @@ typedef struct client_s
 	qboolean		dropasap;			// has been told to go to another level
 	qboolean		privileged;			// can execute any host command
 	qboolean		sendsignon;			// only valid before spawned
+	int				signon_sent;		// LuminousQuake: bytes of sv.signon sent so far,
+										//  or -1 when no prespawn is in progress
 
 	double			last_message;		// reliable messages must be sent
 										// periodically
@@ -230,6 +243,11 @@ void SV_SendClientMessages (void);
 void SV_ClearDatagram (void);
 
 int SV_ModelIndex (char *name);
+int SV_MaxModels (void);
+int SV_MaxSounds (void);
+void SV_SignonCut (void);
+byte SV_EntityAlpha (edict_t *ent);
+void SV_SendSignonChunk (client_t *client);
 
 void SV_SetIdealPitch (void);
 

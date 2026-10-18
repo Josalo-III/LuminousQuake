@@ -102,8 +102,9 @@ void MSG_WriteShort (sizebuf_t *sb, int c);
 void MSG_WriteLong (sizebuf_t *sb, int c);
 void MSG_WriteFloat (sizebuf_t *sb, float f);
 void MSG_WriteString (sizebuf_t *sb, char *s);
-void MSG_WriteCoord (sizebuf_t *sb, float f);
-void MSG_WriteAngle (sizebuf_t *sb, float f);
+void MSG_WriteCoord (sizebuf_t *sb, float f, unsigned int flags);
+void MSG_WriteAngle (sizebuf_t *sb, float f, unsigned int flags);
+void MSG_WriteAngle16 (sizebuf_t *sb, float f, unsigned int flags);
 
 extern	int			msg_readcount;
 extern	qboolean	msg_badread;		// set if a read goes beyond end of message
@@ -116,8 +117,9 @@ int MSG_ReadLong (void);
 float MSG_ReadFloat (void);
 char *MSG_ReadString (void);
 
-float MSG_ReadCoord (void);
-float MSG_ReadAngle (void);
+float MSG_ReadCoord (unsigned int flags);
+float MSG_ReadAngle (unsigned int flags);
+float MSG_ReadAngle16 (unsigned int flags);
 
 //============================================================================
 
@@ -182,5 +184,6 @@ void COM_LoadCacheFile (char *path, struct cache_user_s *cu);
 extern	struct cvar_s	registered;
 
 extern qboolean		standard_quake, rogue, hipnotic;
+const char *COM_Edition (void);	// LuminousQuake: "shareware", "retail" or "rerelease"
 
 void COM_InitByteOrder(void);

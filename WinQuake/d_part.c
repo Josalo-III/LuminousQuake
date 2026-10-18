@@ -56,8 +56,31 @@ D_DrawParticle
 void D_DrawParticle (particle_t *pparticle)
 {
 #ifdef LQ_PORTABLE
+	/* LuminousQuake: liquids draw as droplets and smoke as puffs, both shaded
+	 * spheres in Luminous. Fire turns to smoke once it cools to the grey end of
+	 * its ramp (ramp3[2..5]); a puff swells as it cools, torch smoke swells and
+	 * then thins away. */
+	int		kind = pparticle->liquid ? LQ_PARTICLE_DROPLET : 0;
+	float	scale = 0, erode = 0, age;
+	if (pparticle->type == pt_fire && pparticle->ramp >= 2)
+	{
+		age = (pparticle->ramp - 2) / 4;	// the grey end of ramp3 runs 2 to 6
+		kind = LQ_PARTICLE_TRAIL_SMOKE;
+		scale = 1 + age;
+		erode = age * 0.9f;
+	}
+	else if (pparticle->type == pt_smoke)
+	{
+		age = pparticle->life > 0 ? pparticle->ramp / pparticle->life : 1;
+		kind = LQ_PARTICLE_SMOKE;
+		scale = 1 + 0.8f * age;
+		erode = age < 0.05f ? 0 : (age - 0.05f) / 0.7f;	// holes open at once; gone by three quarters
+	}
 	if (LQ_RenderGPUParticle(pparticle->org, (int)pparticle->color,
-		pparticle->emissive && !(pparticle->type == pt_fire && pparticle->ramp >= 2), pparticle->liquid, pparticle->visual_seed)) return;
+		pparticle->emissive && !(pparticle->type == pt_fire && pparticle->ramp >= 2), kind, scale, erode,
+		pparticle->visual_seed)) return;
+	if (pparticle->type == pt_smoke)
+		return;	// torch smoke is a Luminous effect only
 #endif
 	vec3_t	local, transformed;
 	float	zi;

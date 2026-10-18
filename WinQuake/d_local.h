@@ -32,7 +32,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define DS_SPAN_LIST_END	-128
 
-#define SURFCACHE_SIZE_AT_320X200	600*1024
+#define SURFCACHE_SIZE_AT_320X200	(8*1024*1024)	// LuminousQuake: was 600 KB
 
 typedef struct surfcache_s
 {

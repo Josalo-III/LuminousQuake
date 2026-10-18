@@ -360,7 +360,15 @@ int main(int argc, char **argv)
         Sys_Error("Legacy low-level VCR recording/playback is not supported by this portable build; ordinary demos are separate");
     parms.argc = com_argc; parms.argv = com_argv;
     parms.basedir = ".";
-    parms.memsize = 256 * 1024 * 1024;
+    /* 512 MB holds the largest Arcane Dimensions maps; -heapsize <KB> as in QuakeSpasm. */
+    parms.memsize = 512 * 1024 * 1024;
+    i = COM_CheckParm("-heapsize");
+    if (i && i + 1 < com_argc) {
+        long kb = atol(com_argv[i + 1]);
+        if (kb < 16 * 1024) Sys_Error("-heapsize needs at least 16384 KB");
+        if (kb > 4L * 1024 * 1024 - 1) Sys_Error("-heapsize is limited to 4 GB");
+        parms.memsize = (int)(kb * 1024);
+    }
     parms.membase = malloc(parms.memsize);
     if (!parms.membase) Sys_Error("Cannot allocate engine heap");
     i = COM_CheckParm("-basedir");

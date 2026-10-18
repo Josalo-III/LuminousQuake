@@ -72,7 +72,9 @@ with tempfile.TemporaryDirectory(prefix='lqr-') as directory:
     checked_log = log.replace('Software renderer fallback: Software selected', 'Software renderer selected')
     good = (result.returncode == 0 and all(item in log for item in expected) and
             not any(item in checked_log for item in failures) and
-            all((user / 'id1' / ('lq_smoke.' + ext)).stat().st_size > 100 for ext in ('dem', 'sav')) and
+            # profiles are <userdir>/<edition>/id1 (shareware, retail or rerelease)
+            len(list(user.glob('*/id1/lq_smoke.dem'))) == 1 and
+            all(f.stat().st_size > 100 for ext in ('dem', 'sav') for f in user.glob('*/id1/lq_smoke.' + ext)) and
             (root / 'frame.bmp').stat().st_size > 1000)
     if classic:
         good = (good and log.count('Classic GPU: copied live BSP world;') >= 4 and

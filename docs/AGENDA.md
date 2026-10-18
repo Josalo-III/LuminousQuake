@@ -14,7 +14,23 @@ and constraints. This page sets the order.
 
 ### 1. Modern content: FitzQuake protocol 666, BSP2 and raised limits
 
-Next up. The engine has the 1996 limits: network protocol 15, 600 entities
+**Mostly done October 17–18, 2026.** BSP2 and 2PSB load, the
+server and client speak protocols 15, 666 and 999 (`sv_protocol`, default
+666), and the limits are raised. Arcane Dimensions starts `ad_tfuma` in all
+three renderers. All nine of its BSP2 maps sign on headless. Original id1
+demos play, and old saves load. Still open:
+- entity alpha, fog and skyboxes are received but not drawn;
+- `U_LERPFINISH` isn't yet used by frame blending;
+- Luminous bounce on a large map takes about 27 s at load;
+- AD hasn't been played by hand.
+
+Other 1996 hardware limits were raised the same day: pak files, the QuakeC
+stack, zone memory, cached pictures, particles, Software clipping and surface
+cache, alias vertices, the console, command-line arguments, and 64
+simultaneous sounds instead of 8. Details are in [HANDOFF.md](HANDOFF.md) and
+[CONFIGURATION.md](CONFIGURATION.md).
+
+Before this work, the engine had the 1996 limits: network protocol 15, 600 entities
 (`WinQuake/quakedef.h:114`) and BSP version 29 only (`WinQuake/model.c:1164`).
 Arcane Dimensions, Quoth-era maps and most content from the 2010s need more.
 QuakeSpasm, ironwail and DarkPlaces all treat this as the baseline.
@@ -94,7 +110,8 @@ Rygel) goes in an ignored game directory.
 From the [Luminous notes](LUMINOUS_RENDERER.md#next-implementation-sequence):
 
 - Probe visibility weighting against light leaking through walls.
-- A bounce/probe cache, so map load doesn't redo the gather.
+- A bounce/probe cache, so map load doesn't redo the gather. In RAM first,
+  for the last two maps (item 6).
 - Staged [light reconstruction](LIGHT_RECONSTRUCTION.md).
 - Refinement of the in-game path against Classic GPU.
 
@@ -125,6 +142,26 @@ them. Principles, decided October 17, 2026:
   spotlights are culled to their cones, unbounded falloffs stop at their fade
   level or `_gate`, and faint or overwhelmed lights skip shadow filtering.
   E1M3: 76 → about 110 fps uncapped.
+- **Recent maps stay loaded.** Decided October 17: keep the built scenes of
+  the last two maps in memory, under a size limit. A map restart after a
+  death, frequent on Nightmare, then reuses them instead of rebuilding. The
+  expensive part is Luminous's bounce (27 s on `ad_tfuma`); the BSP reload
+  itself is quick. Key the cache on the map file and the settings that shape
+  the scene. Not the whole game, since texture upgrades make that too large.
+  This is item 5's bounce/probe cache, held in RAM first.
+- **Lighting resolution scales with memory.** Decided October 17: a
+  user-assigned memory budget for lighting (probe spacing, shadow map size,
+  bounce resolution), and Luminous uses as much of it as helps. 64 GB is high
+  but not unusual, and the 1996 heap gives no hint of what is available.
+- **One RAM slider for both.** Decided October 17. Two options, each on by
+  default: "Allocate available RAM to scene caching" and "Allocate available
+  RAM to lighting complexity". A slider divides the available RAM between them
+  as percentages, default 50/50, and is enabled only while both are on. With
+  one option on, it gets all of the available RAM; with neither, Luminous uses
+  today's fixed sizes. "Available RAM" is a data field in the same place: an
+  amount of memory, prefilled at 50% of the RAM free when it is first shown,
+  and limited to 100% of free RAM. The slider divides that amount. "Free"
+  includes inactive and purgeable pages, which macOS reclaims on demand.
 - **Balance follows the hardware.** Measured October 17 at 1080p: the CPU does
   about 4 ms of work a frame, the GPU about 12 ms. Work that can run on either
   should move to whichever is idle, chosen at run time from measured load, not

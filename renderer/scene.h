@@ -14,7 +14,8 @@ enum { LQ_SURFACE_SKY = 1, LQ_SURFACE_WATER = 2, LQ_SURFACE_MODEL = 4,
        /* 64 is reserved for the GPU's submerged-world-face flag. */
        LQ_SURFACE_DIFFUSE_EFFECT = 128, /* small, unoriented lit particles/sprites */
        LQ_SURFACE_NOSHADOW = 256, /* self-lit projectiles must not occlude their own source */
-       LQ_SURFACE_SOLID_EFFECT = 512 /* small lit 3D particles: effect colour, oriented normals */ };
+       LQ_SURFACE_SOLID_EFFECT = 512, /* small lit 3D particles: effect colour, oriented normals */
+       LQ_SURFACE_ERODE = 1024 /* smoke: noise cuts away the fraction uv.y of the surface */ };
 typedef struct { lq_image indices; char name[17]; uint32_t resource_id; } lq_material;
 typedef struct {
     uint32_t first_index, index_count, material, flags;
@@ -50,6 +51,12 @@ enum { LQ_LIGHT_LINEAR, LQ_LIGHT_INVERSE, LQ_LIGHT_INVERSE2, LQ_LIGHT_INFINITE,
  * white). Luminous scales their output so they draw the eye in a darker scene
  * without dominating it. Linear spotlights keep their compiler strength. */
 #define LQ_ACCENT_SPOT_GAIN 0.15f
+/* Rerelease accent spotlights within this distance of a light_torch_* or
+ * light_flame_* follow that flame's strength (not its position), and only the
+ * central LQ_TORCH_ACCENT_CORE of their lit area stays flat: the rest tapers to
+ * the cone edge. */
+#define LQ_TORCH_ACCENT_REACH 128.0f
+#define LQ_TORCH_ACCENT_CORE 0.2f
 /* Luminous bounce is gathered repeatedly, as ericw-tools' radiosity is: each
  * bounce reflects the previous one's light off the texture color and scales
  * it by bounce_scale, so it fades geometrically. */
@@ -76,6 +83,8 @@ typedef struct {
     float accent_gain; /* applied output gain for accent spotlights; 1 otherwise */
     float output_base; /* compiler output scale before any accent gain */
     float gate; /* ericw-tools _gate: brightness below which the light stops; 0 unset */
+    float flame_origin[3]; /* the torch or flame an accent spotlight lights; valid when flame_bound */
+    uint32_t flame_bound;
     uint32_t formula, spotlight;
     uint32_t style, spawnflags, entity_index, flags;
     char classname[64], target[64], targetname[64];

@@ -221,7 +221,7 @@ void	R_ZDrawSubmodelPolys (model_t *clmodel);
 // Alias models
 //=========================================================
 
-#define MAXALIASVERTS		2000	// TODO: tune this
+#define MAXALIASVERTS		16384	// LuminousQuake: was 2000; higher-poly community models
 #define ALIAS_Z_CLIP_PLANE	5
 
 extern int				numverts;

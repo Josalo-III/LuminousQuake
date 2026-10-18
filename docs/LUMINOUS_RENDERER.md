@@ -89,6 +89,18 @@ comes from each light's falloff and from occlusion.
   dominating it. Linear spotlights, such as id's targeted fixtures, keep their
   compiler strength. The viewer's `--accent-gain G` overrides the gain for
   comparison; 0.3 still dominates the wall, and 0.08 nearly disappears.
+- **Torch accents.** Most rerelease accent spotlights (673 of them in id1,
+  30–95 units from the flame) light a wall torch or flame. Each one within
+  128 units of a `light_torch_*` or `light_flame_*` (`LQ_TORCH_ACCENT_REACH`)
+  is tied to that flame when the scene loads (`BindTorchAccent`). It follows
+  the flame's strength animation but stays where it was placed. Its cone keeps
+  only the central 20% of its lit area flat (`LQ_TORCH_ACCENT_CORE`): the flat
+  core's half-angle has tan = √0.2 × tan(outer), and the other 80% tapers to
+  the blurred edge. An authored tighter `_softangle` is kept. On E1M3 that is
+  49 lights. The broad flat patch on the wall behind each torch becomes a glow
+  centred on the flame, close to retail's baked look. Retail and shareware have
+  no accent spotlights. Their torch lights sit on the flame itself and already
+  follow its animation.
 - **Flame lights.** A map light with a static flame model at its origin
   (`flame.mdl` on wall torches, `flame2.mdl` on flame balls) follows that
   flame's animation (`LQ_FlameLight`). Each pose's emission is the model's
@@ -424,6 +436,44 @@ color starts from the palette at Quake's normal brightness (colormap row 32)
 and scales with the light they receive, as a wall's does. Until October 16
 they started from row 0, about twice as bright, so lit blood and smoke looked
 nearly fullbright and pale smoke washed out to white.
+
+With solid particles on (`lq_particles 1`), blood, poison, tar and lava fly as
+shaded spheres, and so does smoke. Each puff draws its size from a range skewed
+hard toward small: the fourth power of a uniform draw, so half the puffs fall in
+the bottom 6% of the range and one in ten in the top half. As a puff ages it is
+**eaten away**: two octaves of 3D value noise over the sphere's surface,
+drifting with its position, cut out the fraction of its surface it has lost
+(`LQ_SURFACE_ERODE`, with the fraction in the vertex's `uv.y`; `world.frag`
+discards below it). Its edge also thins toward the silhouette: where the view
+grazes the sphere, a finer noise cuts away more and more, so a puff ends in a
+ragged fringe rather than a bubble's rim. These are cutouts standing in for
+alpha, since translucent blending in linear light waits for the HDR target.
+
+- **Trail smoke** (grenades, and rocket fire once it cools to the grey end of
+  its ramp) is never bigger than a Software particle. Its diameter is capped at
+  Classic's particle triangle, 1.5 × (1 + 0.004 × distance) units, the GPU
+  equivalent of Software's 1–4 pixel square. It doubles in size and wears away
+  to 90% as it cools.
+- **Torch smoke** (`lq_torch_smoke`, on by default, Luminous with solid
+  particles only; `R_TorchSmoke` in `WinQuake/r_part.c`) rises from every
+  `flame.mdl` and `flame2.mdl` within 1536 units, about fifteen puffs a second
+  each, 0.25–1 unit in radius. A flame smokes most as it dies down. While its
+  light falls (`LQ_RenderFlameGain`, the same strength curve Luminous lights it
+  with), puffs come 2.5× as often as average; while it rises, 0.6×. A puff leaves the top of the flame's first frame
+  (alias models' boxes are a fixed 16 units, so the box can't be used) within
+  about 2 units of its centre. The column is a plume: puffs rise at
+  14 + 26·e^(−r²/w²) units a second, fastest on the axis, where r is the
+  distance from the flame's axis. Its width w starts at 2.5 units and grows as
+  it rises. Puffs drift slowly outward, wander a little and grow to 1.8× their
+  size. Puffs in one column attract one another (`R_SmokeCohesion`): within
+  7 units a pair pulls together, harder the closer they are, until they
+  overlap, and they partly share velocity, so the smoke gathers into
+  overlapping clumps that drift as one instead of rising as separate beads.
+  Erosion starts at once and a
+  puff is gone three quarters of the way through its 1.6–2.4 s life. (A roll of each puff around the column was tried on
+  October 18 and taken out: it couldn't be seen at these sizes.)
+- Puffs are dark grey and lit like blood, so a torch lights its own smoke, and
+  they cast no shadows. Software and Classic GPU never spawn torch smoke.
 
 | Effect | Self-lit appearance | Illumination source |
 | --- | --- | --- |

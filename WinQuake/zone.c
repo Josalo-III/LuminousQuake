@@ -21,7 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 
-#define	DYNAMIC_SIZE	0xc000
+#define	DYNAMIC_SIZE	(4*1024*1024)	// LuminousQuake: was 48 KB; mods register many cvars and aliases
 
 #define	ZONEID	0x1d4a11
 #define MINFRAGMENT	64
