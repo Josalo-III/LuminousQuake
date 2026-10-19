@@ -289,6 +289,13 @@ void VID_Init(unsigned char *palette)
     if (COM_CheckParm("-window")) Cvar_SetValue("vid_fullscreen", 0);
     SDL_SetMainReady();
     SDL_SetHint(SDL_HINT_MAC_PRESS_AND_HOLD, "0");
+#ifdef __APPLE__
+    /* Fullscreen without a macOS fullscreen Space. After the slide into a
+     * Space, macOS sent no mouse motion at all until a click in the window
+     * (input.log, October 19), so mouse look stayed dead after startup.
+     * SDL_VIDEO_MAC_FULLSCREEN_SPACES=1 in the environment still wins. */
+    SDL_SetHint(SDL_HINT_VIDEO_MAC_FULLSCREEN_SPACES, "0");
+#endif
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) Sys_Error("SDL video initialization failed: %s", SDL_GetError());
     flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (vid_fullscreen.value) flags |= SDL_WINDOW_FULLSCREEN;

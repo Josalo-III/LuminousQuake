@@ -81,10 +81,12 @@ void IN_ClearStates(void)
     Key_ClearStates();
 }
 /* Diagnostics for vertical look failing until a click: capture changes,
- * window events, and for 30 s after capture one sample a second of the
- * cursor's screen position (it should not move while captured). Written to
+ * window events, mouse buttons, and for 60 s after capture one sample a second of the
+ * cursor's screen position (it should not move while captured), the motion
+ * received, and the view angles and look state. Written to
  * ~/Library/Logs/LuminousQuake/input.log, replaced each launch. */
 static Uint64 capture_log_until, capture_log_next;
+static int motion_events; static float motion_x, motion_y; /* every motion event since the last sample */
 static void InputLog(const char *format, ...)
 {
     static FILE *file; static int tried;
@@ -103,12 +105,15 @@ static void CaptureSample(void)
 {
     SDL_Window *window = LQ_SDLWindow();
     Uint64 now = SDL_GetTicks();
-    if (!mouse_active || now > capture_log_until || now < capture_log_next) return;
+    if (now > capture_log_until || now < capture_log_next) return;
     capture_log_next = now + 1000;
     float x, y; SDL_GetGlobalMouseState(&x, &y);
-    InputLog("sample: cursor %.0f,%.0f relative %d keyboard-focus %d mouse-focus %d pitch %.1f",
-        x, y, window && SDL_GetWindowRelativeMouseMode(window), SDL_GetKeyboardFocus() == window,
-        SDL_GetMouseFocus() == window, cl.viewangles[PITCH]);
+    InputLog("sample: captured %d cursor %.0f,%.0f relative %d keyboard-focus %d mouse-focus %d "
+        "motion %d events %+.0f,%+.0f pitch %.1f yaw %.1f freelook %g mlook %d strafe %d key_dest %d",
+        mouse_active, x, y, window && SDL_GetWindowRelativeMouseMode(window), SDL_GetKeyboardFocus() == window,
+        SDL_GetMouseFocus() == window, motion_events, motion_x, motion_y, cl.viewangles[PITCH],
+        cl.viewangles[YAW], freelook.value, in_mlook.state, in_strafe.state, (int)key_dest);
+    motion_events = 0; motion_x = motion_y = 0;
 }
 void LQ_UpdateCapture(void)
 {
@@ -144,7 +149,7 @@ void LQ_UpdateCapture(void)
     InputLog("capture %s: relative %d keyboard-focus %d mouse-focus %d fullscreen %d", wanted ? "on" : "off",
         window && SDL_GetWindowRelativeMouseMode(window), SDL_GetKeyboardFocus() == window,
         SDL_GetMouseFocus() == window, window && (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0);
-    if (wanted) capture_log_until = SDL_GetTicks() + 30000, capture_log_next = 0;
+    if (wanted) capture_log_until = SDL_GetTicks() + 60000, capture_log_next = 0;
     mouse_x = mouse_y = previous_x = previous_y = 0;
     SDL_GetRelativeMouseState(NULL, NULL);
 }
@@ -277,6 +282,9 @@ void LQ_HandleEvent(const SDL_Event *event)
         suppress_text = false;
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
+        InputLog("mouse button %d %s: captured %d relative %d pitch %.1f", event->button.button,
+            event->type == SDL_EVENT_MOUSE_BUTTON_DOWN ? "down" : "up", mouse_active,
+            SDL_GetWindowRelativeMouseMode(LQ_SDLWindow()), cl.viewangles[PITCH]);
         if (focused) Button(MouseKey(event->button.button), event->type == SDL_EVENT_MOUSE_BUTTON_DOWN);
         break;
     case SDL_EVENT_MOUSE_WHEEL:
@@ -287,6 +295,7 @@ void LQ_HandleEvent(const SDL_Event *event)
         }
         break;
     case SDL_EVENT_MOUSE_MOTION:
+        ++motion_events; motion_x += event->motion.xrel; motion_y += event->motion.yrel;
         if (mouse_active) { mouse_x += event->motion.xrel; mouse_y += event->motion.yrel; }
         break;
     default: break;

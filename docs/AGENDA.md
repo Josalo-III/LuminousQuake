@@ -287,6 +287,45 @@ protocol for interoperability is decided when this starts.
   it was that release, not its `+attack`. `LQ_MacSettleWindowMove`
   (`platform/mac_launch.m`) now ends such a move when no button is down.
   Needs the user's check.
+  A build of d655769 (October 19, `build-d655769/`) has it too. Its first
+  session looked fine, but the bug came back (user), so it predates the
+  October 19 experiments and doesn't show up on every launch. The user has
+  never seen it with the single shared profile (before 8d69fbf). The profile
+  split changes no input or window code. Before and after the split, the
+  rerelease profile has `freelook 1` and `vid_fullscreen 1`; the split only
+  changed key bindings. Test: `build-1e88477/` (the last single-profile
+  commit) with `-userdir build-1e88477-profile`, a copy of today's rerelease
+  profile. Result: same bug, so the split is cleared.
+  Lead (October 19): launching the app with Option and choosing the data
+  folder made the bug go away, though only over a few tries. That path
+  (`LQ_MacInstallation`) starts SDL video early, calls
+  `activateIgnoringOtherApps`, and takes clicks in its dialogs before the
+  game window exists. A normal launch does none of that, and neither does
+  running the binary from a terminal. Suspect: the window goes fullscreen
+  before the app is active and key, and the first click activates it.
+  Possible fix: activate the app and make the game window key before
+  fullscreen and before turning on relative mouse mode.
+  But the input log from a failing run at 10:10 shows keyboard focus, relative
+  mode on and the cursor held still, with pitch stuck at 0.0. So the app was
+  active and capture worked. `input.log` now also records mouse buttons, the
+  motion each second (event count and summed x/y) and the view and look
+  state, for 60 s.
+  **Found (Dock launch, 10:14):** from capture at 5 s to the first click at
+  19.8 s, SDL delivered no motion events at all, in either axis, although the
+  user was moving. Horizontal look was dead too, not only vertical.
+  `freelook 1`, relative mode on, both focuses held, cursor still. Motion
+  started the moment the button came up (22–62 events a second). The engine
+  is not at fault: macOS sends the app no "mouse moved" events until a click
+  in the window. Candidates: the fullscreen Space transition (window created
+  fullscreen; occluded and enter-fullscreen events at 3.9 s), or the app not
+  yet being the window server's frontmost app. Tests: starting windowed
+  (`-window`) and fullscreen without a Space
+  (`SDL_VIDEO_MAC_FULLSCREEN_SPACES=0`) both work with no click (user), so
+  the fullscreen Space is the cause. **Fix, October 19:** `VID_Init` sets that
+  hint to 0 on macOS (`platform/vid_sdl.c`), so fullscreen no longer uses a
+  Space. Confirmed by the user from a Dock launch. Still to decide
+  whether `LQ_MacSettleWindowMove` and the release-on-window-event code are
+  still needed.
 
 These were already recorded elsewhere. They are listed here so they appear in
 every Not-yet-done list.
