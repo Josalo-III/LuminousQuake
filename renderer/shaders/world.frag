@@ -349,24 +349,23 @@ float noise3(vec3 p) {
 void main() {
     int flags = int(surface.parameters.y);
     // Smoke erodes: noise over the puff's surface (its normal) and where it is
-    // (so the pattern churns as it rises) cuts away the fraction uv.y. Its
-    // edge also thins toward the silhouette, where the view grazes the sphere,
-    // with finer noise, so a puff ends in a ragged fringe, not a bubble's rim.
-    // (A cutout standing in for alpha until translucency blends in linear light.)
-    // Smoke is drawn blended (in linear light, in the float frame): the noise
-    // fades the fraction uv.y away softly, and the silhouette thins to nothing
-    // through a ragged fringe, so a puff reads as smoke, not a bubble.
+    // (so the pattern churns as it rises) cuts away the fraction uv.y, and
+    // finer noise frays the silhouette, where the view grazes the sphere, so
+    // a puff ends in a ragged edge, not a bubble's rim. What remains is blended
+    // (in linear light, in the float frame) by how much smoke the view passes
+    // through: densest straight through the middle, thinning smoothly toward
+    // the rim and toward the eroded holes, and thinner as the puff ages, so
+    // opacity never steps from a flat disc to nothing.
     float smoke_alpha = 1.0;
     if ((flags & 1024) != 0) {
         vec3 to_eye = normalize(surface.camera_origin.xyz - world_position);
-        float rim = 1.0 - abs(dot(normalize(world_normal), to_eye));
+        float facing = abs(dot(normalize(world_normal), to_eye)), rim = 1.0 - facing;
         float n = 0.65 * noise3(world_normal * 2.5 + world_position * 0.15) +
                   0.35 * noise3(world_normal * 6.0 + world_position * 0.4 + 17.0);
         float fringe = noise3(world_normal * 14.0 + world_position * 0.9 + 41.0);
-        float body = smoothstep(uv.y - 0.12, uv.y + 0.12, n);
-        float edge = (1.0 - smoothstep(0.45, 0.98, rim)) * mix(1.0, fringe, smoothstep(0.35, 0.95, rim));
-        smoke_alpha = body * edge * 0.9;
-        if (smoke_alpha < 0.02) discard;
+        if (n < uv.y || fringe < smoothstep(0.2, 0.85, rim)) discard;
+        float body = smoothstep(uv.y, uv.y + 0.3, n);
+        smoke_alpha = 0.7 * facing * mix(0.3, 1.0, body) * (1.0 - 0.5 * uv.y);
     }
     bool diffuse_effect = lights.parameters.y != 0u && (flags & 128) != 0;
     // Solid (3D) particles take the effect colour but face lights by their normals.
