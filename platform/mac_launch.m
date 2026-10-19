@@ -85,16 +85,3 @@ int LQ_MacInstallation(int argc, char **argv, char *path, size_t size)
         return 1;
     }
 }
-int LQ_MacSettleWindowMove(SDL_Window *window)
-{
-    if (!window || ([NSEvent pressedMouseButtons] & 1)) return 0; /* a real drag ends on its own */
-    NSWindow *nswindow = (__bridge NSWindow *)SDL_GetPointerProperty(SDL_GetWindowProperties(window),
-        SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
-    id delegate = [nswindow delegate];
-    SEL moving = NSSelectorFromString(@"isMoving"), finish = NSSelectorFromString(@"windowDidFinishMoving");
-    /* SDL's own window listener; another SDL version without them is left alone. */
-    if (![delegate respondsToSelector:moving] || ![delegate respondsToSelector:finish]) return 0;
-    if (!((BOOL (*)(id, SEL))[delegate methodForSelector:moving])(delegate, moving)) return 0;
-    ((void (*)(id, SEL))[delegate methodForSelector:finish])(delegate, finish);
-    return 1;
-}

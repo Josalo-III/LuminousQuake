@@ -21,12 +21,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 /* SDL key translation/capture adapted for NetQuake. See SOURCE_PROVENANCE.md. */
-#include <stdarg.h>
 #include "quakedef.h"
 #include "sdl_backend.h"
-#ifdef __APPLE__
-#include "mac_launch.h"
-#endif
 
 static qboolean initialized, focused, quit_requested, demo_active, mouse_active, suppress_text;
 static int pressed[SDL_SCANCODE_COUNT], held[256];
@@ -80,41 +76,6 @@ void IN_ClearStates(void)
     mouse_x = mouse_y = previous_x = previous_y = 0;
     Key_ClearStates();
 }
-/* Diagnostics for vertical look failing until a click: capture changes,
- * window events, mouse buttons, and for 60 s after capture one sample a second of the
- * cursor's screen position (it should not move while captured), the motion
- * received, and the view angles and look state. Written to
- * ~/Library/Logs/LuminousQuake/input.log, replaced each launch. */
-static Uint64 capture_log_until, capture_log_next;
-static int motion_events; static float motion_x, motion_y; /* every motion event since the last sample */
-static void InputLog(const char *format, ...)
-{
-    static FILE *file; static int tried;
-    if (!tried) {
-        const char *home = getenv("HOME"); char path[1024];
-        tried = 1;
-        if (home && snprintf(path, sizeof(path), "%s/Library/Logs/LuminousQuake/input.log", home) < (int)sizeof(path))
-            file = fopen(path, "w");
-    }
-    if (!file) return;
-    va_list args; va_start(args, format);
-    fprintf(file, "%8.3f ", SDL_GetTicks() / 1000.0); vfprintf(file, format, args); fputc('\n', file);
-    va_end(args); fflush(file);
-}
-static void CaptureSample(void)
-{
-    SDL_Window *window = LQ_SDLWindow();
-    Uint64 now = SDL_GetTicks();
-    if (now > capture_log_until || now < capture_log_next) return;
-    capture_log_next = now + 1000;
-    float x, y; SDL_GetGlobalMouseState(&x, &y);
-    InputLog("sample: captured %d cursor %.0f,%.0f relative %d keyboard-focus %d mouse-focus %d "
-        "motion %d events %+.0f,%+.0f pitch %.1f yaw %.1f freelook %g mlook %d strafe %d key_dest %d",
-        mouse_active, x, y, window && SDL_GetWindowRelativeMouseMode(window), SDL_GetKeyboardFocus() == window,
-        SDL_GetMouseFocus() == window, motion_events, motion_x, motion_y, cl.viewangles[PITCH],
-        cl.viewangles[YAW], freelook.value, in_mlook.state, in_strafe.state, (int)key_dest);
-    motion_events = 0; motion_x = motion_y = 0;
-}
 void LQ_UpdateCapture(void)
 {
     SDL_Window *window = LQ_SDLWindow();
@@ -127,11 +88,6 @@ void LQ_UpdateCapture(void)
     qboolean wanted = initialized && window && focused && in_mouse.value && !in_nograb.value &&
         !COM_CheckParm("-nomouse") && key_dest == key_game && !cl.paused &&
         (demo_active || (cls.state == ca_connected && !con_forcedup));
-#ifdef __APPLE__
-    if (wanted && LQ_MacSettleWindowMove(window))
-        Con_Printf("Mouse capture: a window move had no click to end it; relative mode applied.\n"),
-        InputLog("window move without a click ended; relative mode applied");
-#endif
     if (wanted == mouse_active) return;
     if (wanted) {
         if (!SDL_SetWindowRelativeMouseMode(window, true)) {
@@ -146,22 +102,8 @@ void LQ_UpdateCapture(void)
         }
     }
     mouse_active = wanted;
-    InputLog("capture %s: relative %d keyboard-focus %d mouse-focus %d fullscreen %d", wanted ? "on" : "off",
-        window && SDL_GetWindowRelativeMouseMode(window), SDL_GetKeyboardFocus() == window,
-        SDL_GetMouseFocus() == window, window && (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0);
-    if (wanted) capture_log_until = SDL_GetTicks() + 60000, capture_log_next = 0;
     mouse_x = mouse_y = previous_x = previous_y = 0;
     SDL_GetRelativeMouseState(NULL, NULL);
-}
-/* Drop relative mode so the next LQ_UpdateCapture applies it afresh. */
-static void ReleaseCapture(void)
-{
-    InputLog("release capture after a window event");
-    SDL_Window *window = LQ_SDLWindow();
-    if (!mouse_active || !window) return;
-    SDL_SetWindowRelativeMouseMode(window, false);
-    SDL_SetWindowMouseGrab(window, false);
-    mouse_active = false;
 }
 void LQ_SetFocus(qboolean value)
 {
@@ -219,19 +161,8 @@ static void Button(int key, qboolean down)
 void LQ_HandleEvent(const SDL_Event *event)
 {
     int key;
-    if (event->type >= SDL_EVENT_WINDOW_FIRST && event->type <= SDL_EVENT_WINDOW_LAST &&
-        event->type != SDL_EVENT_WINDOW_EXPOSED)
-        InputLog("window event 0x%x", (unsigned)event->type);
     switch (event->type) {
     case SDL_EVENT_QUIT: quit_requested = true; break;
-    case SDL_EVENT_WINDOW_ENTER_FULLSCREEN: case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
-    case SDL_EVENT_WINDOW_SHOWN: case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
-        /* macOS animates into and out of a fullscreen Space. Relative mode
-         * set during that animation can leave the cursor free: it stops at
-         * the screen's top or bottom edge, so vertical look dies while
-         * horizontal still works, until a click. Capture again afterwards. */
-        if (event->window.windowID == SDL_GetWindowID(LQ_SDLWindow())) ReleaseCapture();
-        break;
     case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
     case SDL_EVENT_WINDOW_FOCUS_LOST:
     case SDL_EVENT_WINDOW_MINIMIZED:
@@ -242,7 +173,7 @@ void LQ_HandleEvent(const SDL_Event *event)
         switch (event->type) {
         case SDL_EVENT_WINDOW_CLOSE_REQUESTED: quit_requested = true; break;
         case SDL_EVENT_WINDOW_FOCUS_LOST: case SDL_EVENT_WINDOW_MINIMIZED: LQ_SetFocus(false); break;
-        case SDL_EVENT_WINDOW_FOCUS_GAINED: ReleaseCapture(); LQ_SetFocus(true); break;
+        case SDL_EVENT_WINDOW_FOCUS_GAINED: LQ_SetFocus(true); break;
         case SDL_EVENT_WINDOW_EXPOSED: case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: VID_Update(NULL); break;
         default: break;
         }
@@ -282,9 +213,6 @@ void LQ_HandleEvent(const SDL_Event *event)
         suppress_text = false;
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
-        InputLog("mouse button %d %s: captured %d relative %d pitch %.1f", event->button.button,
-            event->type == SDL_EVENT_MOUSE_BUTTON_DOWN ? "down" : "up", mouse_active,
-            SDL_GetWindowRelativeMouseMode(LQ_SDLWindow()), cl.viewangles[PITCH]);
         if (focused) Button(MouseKey(event->button.button), event->type == SDL_EVENT_MOUSE_BUTTON_DOWN);
         break;
     case SDL_EVENT_MOUSE_WHEEL:
@@ -295,7 +223,6 @@ void LQ_HandleEvent(const SDL_Event *event)
         }
         break;
     case SDL_EVENT_MOUSE_MOTION:
-        ++motion_events; motion_x += event->motion.xrel; motion_y += event->motion.yrel;
         if (mouse_active) { mouse_x += event->motion.xrel; mouse_y += event->motion.yrel; }
         break;
     default: break;
@@ -308,7 +235,6 @@ void LQ_PumpEvents(void)
     LQ_UpdateCapture();
     while (SDL_PollEvent(&event)) LQ_HandleEvent(&event);
     LQ_UpdateCapture();
-    CaptureSample();
 }
 void IN_Move(usercmd_t *cmd)
 {
