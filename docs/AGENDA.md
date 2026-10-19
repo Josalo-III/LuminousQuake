@@ -107,16 +107,23 @@ Luminous only. Classic GPU stays palette-exact.
   (HDR). The swapchain switches to extended-range linear light whenever the
   window's display is in HDR mode (`lq_hdr`). A **Gamma** option for all three
   renderers sits after Brightness (`lq_gamma`). Measured on the user's Acer
-  PM161W over HDMI: 2.1× headroom (4.2× potential); over USB-C, no HDR. Still
+  PM161W: 2.1× headroom (4.2× potential), over USB-C or HDMI. Still
   to come: exposure, blending translucent surfaces in linear light, and tuning
   the shoulder and white point by eye on HDR. Added the same day: Video
   Options → **HDR** and **HDR peak** (`lq_hdr_peak` caps highlights where a
   display is told more headroom than it shows, as mirrored displays are), an
   in-game test pattern (`lq_hdr_test`), and smoke blended in linear light.
+  Smoke (October 19) keeps the ragged cutout that broke up its spheres:
+  eroded holes and a frayed silhouette. Inside that edge it is blended by how
+  much smoke the view crosses: densest through the middle (70%), thinning
+  smoothly toward the rim and the holes, and thinner as it ages.
   HDR highlights are visible in game on the Acer PM161W once its own HDR mode
   is switched on in the monitor's menu (it ships off); the earlier clipping
-  was that, not the engine. Next: find its peak with `lq_hdr_test` and tune
-  the shoulder and white point by eye.
+  was that, not the engine (and that switch, not the cable, was why USB-C
+  showed no HDR at first). Its peak, found with `lq_hdr_test`, is 2×: the 3,
+  4, 6 and 10× bands look the same. That matches the 2.09× headroom macOS
+  reports, so the default cap ("as reported") is right and `lq_hdr_peak`
+  isn't needed. Next: tune the shoulder and white point by eye.
 - This comes before material packs, because specular and normal-mapped light
   look wrong when computed in gamma space.
 
@@ -164,6 +171,48 @@ them. Principles, decided October 17, 2026:
   spotlights are culled to their cones, unbounded falloffs stop at their fade
   level or `_gate`, and faint or overwhelmed lights skip shadow filtering.
   E1M3: 76 → about 110 fps uncapped.
+- **Overheating, October 18.** Idle monsters' blended poses shift their bounds
+  a little every frame, and the shadow cache counted that as movement: on
+  E1M3, about 45 lights redrew 109 cube faces every frame with the player
+  standing still. A caster now counts as moving only after drifting 2 units
+  from where its shadow was last drawn: 12 faces a frame, 84 → 120 fps (the
+  VSync cap). What remains is the main scene pass, about 11 ms a frame at
+  2560×1920 on the M1 Max; at 120 Hz it holds the GPU at its maximum clock,
+  while at 60 fps (`host_maxfps 60`) the GPU stays at its medium clock.
+  `developer 1` prints the per-frame shadow work once a second. Capping the
+  frame rate is not the fix; the cost is.
+- **Lights that reach nothing on screen, October 19.** A map light was kept
+  whenever its reach overlapped the view's PVS; the on-screen test ran only
+  over the slot budget. At E1M3's start that was 70 lights, each shaded and
+  shadowed. Now a light is kept only if it lights a PVS surface inside the
+  selection view (a little wider than the screen): 24 there, with the frame
+  unchanged (0.06% of pixels differ, from smoke). Uncapped, without VSync:
+  159 → 191 fps at 640×480, 123 → 143 fps at 1280×960. The rest is about 6 ms
+  a frame that doesn't scale with resolution; the CPU spends 2.1 ms preparing
+  the scene and 2.5 ms submitting it. Next: profile that fixed cost.
+  **Revised the same day:** dropping those lights made performance collapse
+  in play. Those fixed-camera measurements missed it: a light that left the
+  view lost its slot and came back in another, so its whole shadow cube was
+  redrawn whenever the player looked around (a room of 48 lights turned
+  through two circles: 55 full cube rebuilds, against none before). Reachable
+  lights now keep their slots again; those lighting nothing in view are
+  marked offscreen, and the shadow pass leaves their cubes untouched until
+  they light something in view, then redraws what casters moved through
+  meanwhile. Ranking by view applies only over the slot budget, since
+  ranking by it under budget moved lights between shadow tiers at every
+  turn. Not yet measured in game.
+- **E1M1's start, October 19.** The "crash" there is thermal: uncapped, the
+  frame rate falls from ~100 to ~20 fps within 20 s while every count (lights,
+  shadow redraws, draws) stays constant, so the GPU is throttling, and
+  run-to-run comparisons swing 2x. 79 lights reach surfaces on screen there;
+  about 45 are ericw-tools `_surface` emitters (one per ~128-unit piece of
+  each tlight/slipside panel: 12 on the slipgate sides, 15 on one lamp
+  strip), each a shadowed point light. 5.6 lights shade an on-screen surface
+  on average, 24 at most. `lq_lights` lists the kept lights and what they
+  touch. Undecided: merge neighbouring emitters of one panel into one light,
+  or keep emitters unshadowed (the rerelease's lighting is otherwise kept as
+  authored, item 1a). A lead to check: the pre-HDR build measured higher in
+  interleaved runs (32 against 11-24 fps).
 - **Recent maps stay loaded.** Decided October 17: keep the built scenes of
   the last two maps in memory, under a size limit. A map restart after a
   death, frequent on Nightmare, then reuses them instead of rebuilding. The
@@ -171,6 +220,13 @@ them. Principles, decided October 17, 2026:
   itself is quick. Key the cache on the map file and the settings that shape
   the scene. Not the whole game, since texture upgrades make that too large.
   This is item 5's bounce/probe cache, held in RAM first.
+  **Done October 19** (`platform/render_bridge.c`): the last two maps' scenes
+  are kept, keyed by game folder, map name, a hash of geometry, entities and
+  lightmaps, the renderer and the fluorescent camera. A restart, or a return
+  to a map, reuses the scene (bounce skipped; the frame matches a fresh
+  build). `lq_scene_cache_mb` caps it: 0 (default) is a quarter of free RAM
+  when first needed, the agenda's 50% available split 50/50; -1 is off. The
+  RAM slider below will set it.
 - **Lighting resolution scales with memory.** Decided October 17: a
   user-assigned memory budget for lighting (probe spacing, shadow map size,
   bounce resolution), and Luminous uses as much of it as helps. 64 GB is high
@@ -214,6 +270,23 @@ protocol for interoperability is decided when this starts.
   blur**, unless a specific mod we support needs one.
 
 ## Open items carried from earlier work
+
+- Vertical mouse look fails until the trackpad is clicked (October 18). The
+  engine side checks out: `freelook 1`, nothing held, one `setangle` at spawn,
+  and synthetic vertical motion turns the view from the first frame, with the
+  user's own profile and save. Fix attempted October 19, unconfirmed: relative
+  mouse mode is reapplied after the window enters or leaves fullscreen, is
+  shown, changes display or gains focus (macOS animates into a fullscreen
+  Space; capture set during it can leave the cursor free to stop at the
+  screen's edge). Needs the user's check on the trackpad.
+  Still failing after that (user, October 19). Cause found in SDL 3.4's Cocoa
+  backend: macOS repositioning the window (going fullscreen after config.cfg
+  sets `vid_fullscreen`) marks it "moving", which only a left-button release
+  ends; while it is set, SDL reports relative mode on but leaves the cursor
+  free, so vertical look runs into the menu bar or Dock. The click that fixed
+  it was that release, not its `+attack`. `LQ_MacSettleWindowMove`
+  (`platform/mac_launch.m`) now ends such a move when no button is down.
+  Needs the user's check.
 
 These were already recorded elsewhere. They are listed here so they appear in
 every Not-yet-done list.
