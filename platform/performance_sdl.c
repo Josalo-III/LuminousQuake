@@ -116,13 +116,13 @@ static int MonitorMain(void *unused)
             if (++hot >= 2) { next = LQ_PERF_CONSTRAINED; hot = 2; }
         } else if (busy <= 0.65) {
             hot = 0;
-            if (++cool >= 8) { next = LQ_PERF_HEADROOM; cool = 8; }
+            if (++cool >= 4) { next = LQ_PERF_HEADROOM; cool = 4; }
         } else hot = cool = 0;
         if (next != state) { state = next; ++transitions; }
         Publish(state, valid, valid ? (unsigned)(busy * 100) : 0, transitions);
         /* Shutdown signals this semaphore; it never has to wait a full sample
          * interval. Gameplay consumers are not signaled by the monitor. */
-    } while (!SDL_WaitSemaphoreTimeout(performance.stop, 250));
+    } while (!SDL_WaitSemaphoreTimeout(performance.stop, 500)); /* twice a second */
     return 0;
 }
 

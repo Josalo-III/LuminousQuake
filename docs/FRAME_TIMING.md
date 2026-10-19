@@ -43,9 +43,10 @@ thread on the same schedule. `lq_clock_mode` is saved in the user config:
 The 2 ms margin requires at least eight logical CPUs, a worker budget that
 leaves room for the main thread, clock and two spare CPUs, and the shared
 resource monitor reporting headroom. The automatic six workers on the ten-core
-M1 Max meet this requirement. CPU utilization is sampled every 250 ms by
-`platform/performance_sdl.c`; two consecutive samples at or above 85% mean
-constrained, eight at or below 65% mean headroom, and unknown utilization takes
+M1 Max meet this requirement. CPU utilization is sampled every 500 ms by
+`platform/performance_sdl.c` (performance measures sample at most twice a
+second); two consecutive samples at or above 85% mean constrained (1 s), four
+at or below 65% mean headroom (2 s), and unknown utilization takes
 the 0.5 ms margin. Menus, console and pauses wake at the deadline in every
 mode. Margin and policy change only between ticks and never reset the epoch or
 tick sequence.
