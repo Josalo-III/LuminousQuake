@@ -221,6 +221,7 @@ typedef struct {
     uint32_t source_index; /* scene light-source index; never sent to the GPU */
     uint8_t submerged; /* origin inside water, slime or lava */
     float limit; /* most brightness this light adds to a surface; 0 none (torch accents) */
+    uint8_t offscreen; /* lights nothing in the selection view: its shadow updates wait; never sent to the GPU */
 } lq_runtime_light;
 typedef struct {
     float origin[3], angles[3], horizontal_fov;

@@ -294,7 +294,8 @@ static uint8_t *ShownDraws(const lq_scene *scene, const lq_draw *visible, const 
     }
     return shown;
 }
-typedef struct { float score; uint32_t offscreen, entity, source; } light_candidate;
+/* offscreen orders candidates (over budget only); hidden marks the light. */
+typedef struct { float score; uint32_t offscreen, hidden, entity, source; } light_candidate;
 static int CandidateOrder(const void *a, const void *b)
 {
     const light_candidate *x = a, *y = b;
@@ -338,13 +339,17 @@ uint32_t LQ_BuildRuntimeLightsInView(const lq_scene *scene, const float styles[2
             if (!overlap) continue;
         }
         float dx = source->origin[0]-camera[0], dy = source->origin[1]-camera[1], dz = source->origin[2]-camera[2];
-        list[count++] = (light_candidate){sqrtf(dx*dx+dy*dy+dz*dz)-fminf(range,1024), 0, source->entity_index, i};
+        list[count++] = (light_candidate){sqrtf(dx*dx+dy*dy+dz*dz)-fminf(range,1024), 0, 0, source->entity_index, i};
     }
-    /* Over budget: drop sources that light no PVS draw, and rank those that
-     * light a draw on screen ahead of those that light only draws off it.
-     * Nearness alone let lights behind the camera displace distant lights on
-     * what the player is looking at. */
-    float *range = count > slots && visible ? calloc(scene->light_source_count, sizeof(*range)) : NULL;
+    /* Drop sources that light no PVS draw. Given a selection view (slightly
+     * wider than the screen), mark those that light nothing inside it
+     * offscreen and, over budget, rank them after those that do. Offscreen
+     * lights keep their slots, and so their cached shadow cubes, while the
+     * view turns; the shadow pass defers their updates. Dropping them instead
+     * (October 19) rebuilt whole cubes whenever the player looked around.
+     * Under budget, rank stays by nearness alone: ranking by view as well
+     * moved lights between shadow tiers, and so slots, at every turn. */
+    float *range = visible && (clip || count > slots) ? calloc(scene->light_source_count, sizeof(*range)) : NULL;
     uint8_t *reach = range ? malloc(scene->light_source_count) : NULL;
     if (reach) {
         uint8_t *shown = ShownDraws(scene, visible, clip);
@@ -354,7 +359,8 @@ uint32_t LQ_BuildRuntimeLightsInView(const lq_scene *scene, const float styles[2
         uint32_t kept = 0;
         for (uint32_t j = 0; j < count; ++j) {
             if (!reach[list[j].source]) continue;
-            list[j].offscreen = shown && reach[list[j].source] < 2;
+            list[j].hidden = shown && reach[list[j].source] < 2;
+            list[j].offscreen = count > slots && list[j].hidden;
             list[kept++] = list[j];
         }
         count = kept;
@@ -380,6 +386,7 @@ uint32_t LQ_BuildRuntimeLightsInView(const lq_scene *scene, const float styles[2
         for (uint32_t j = 0; j < count; ++j) if (!placed[j] && list[j].source == previous[slot].source_index) {
             if (j < band_start[tier] / 1.5f || j >= band_end[tier] * 1.5f) break; /* re-tier */
             FillRuntimeLight(&output[slot], &scene->light_sources[list[j].source], list[j].source, styles);
+            output[slot].offscreen = (uint8_t)list[j].hidden;
             placed[j] = 1; break;
         }
     }
@@ -397,6 +404,7 @@ uint32_t LQ_BuildRuntimeLightsInView(const lq_scene *scene, const float styles[2
         }
         if (chosen == UINT32_MAX) break;
         FillRuntimeLight(&output[chosen], &scene->light_sources[list[j].source], list[j].source, styles);
+        output[chosen].offscreen = (uint8_t)list[j].hidden;
     }
     free(list);
     for (uint32_t slot = 0; slot < slots; ++slot)

@@ -71,12 +71,13 @@ struct lq_gpu {
     struct lq_caster_range { float min[3], max[3]; uint32_t first, count; } *caster_ranges;
     uint32_t caster_range_count, caster_range_world_count;
     /* Moving casters this frame (actors, brush models): bounds of frame draws. */
-    struct lq_caster { float min[3], max[3]; uint32_t draw; uint8_t moved; } *frame_casters;
+    struct lq_caster { float min[3], max[3]; uint32_t draw, rest; uint8_t moved; } *frame_casters;
     uint32_t frame_caster_count, frame_caster_capacity;
     /* Last frame's caster bounds: a caster found there unchanged is at rest. */
-    float (*rest_bounds)[6];
+    float (*rest_bounds)[6], (*rest_scratch)[6];
     uint32_t rest_count, rest_capacity;
     uint8_t shadow_dynamic_faces[LQ_MAX_RUNTIME_LIGHTS]; /* faces last drawn with moving casters */
+    uint8_t shadow_stale[LQ_MAX_RUNTIME_LIGHTS]; /* faces moving casters touched while the light was offscreen */
     uint8_t shadow_brushes[LQ_MAX_RUNTIME_LIGHTS]; /* static_brush_shadows used for the cached cube */
     float shadow_keys[LQ_MAX_RUNTIME_LIGHTS][4];
     uint32_t shadow_sources[LQ_MAX_RUNTIME_LIGHTS];
@@ -121,6 +122,14 @@ typedef struct {
 } lq_light_uniforms;
 typedef struct { float face_projection[16]; } lq_shadow_uniforms;
 #define LQ_SHADOW_NEAR 2.0f
+/* How far (in units) a caster's bounds may drift from where its shadow was
+ * last drawn before it counts as moving. */
+#define LQ_REST_DRIFT 2.0f
+static int NearBounds(const float a[6], const float b[6])
+{
+    for (int k = 0; k < 6; ++k) if (fabsf(a[k] - b[k]) > LQ_REST_DRIFT) return 0;
+    return 1;
+}
 static int Error(char *error, size_t size, const char *what)
 { snprintf(error, size, "%s: %s", what, SDL_GetError()); return 0; }
 static SDL_GPUShader *ShaderCode(lq_gpu *g, const unsigned char *spv, size_t spv_size,
@@ -607,19 +616,31 @@ int LQ_GPUFrame(lq_gpu *g, const lq_frame *f, char *error, size_t size)
             struct lq_caster *c = &g->frame_casters[g->frame_caster_count++];
             c->draw = i;
             memcpy(c->min, g->frame_bounds[i], sizeof(c->min)); memcpy(c->max, g->frame_bounds[i] + 3, sizeof(c->max));
-            c->moved = 1;
+            c->moved = 1; c->rest = UINT32_MAX;
             for (uint32_t j = 0; j < g->rest_count; ++j)
-                if (!memcmp(g->rest_bounds[j], g->frame_bounds[i], sizeof(g->rest_bounds[j]))) { c->moved = 0; break; }
+                if (NearBounds(g->rest_bounds[j], g->frame_bounds[i])) { c->moved = 0; c->rest = j; break; }
         }
     }
-    /* Remember this frame's casters for the next frame's rest test. */
+    /* Remember where each caster's shadow was last drawn for the next frame's
+     * rest test. A caster at rest keeps that position, so an idle monster's
+     * blended poses (which shift its bounds a little every frame) redraw its
+     * shadows only once they have drifted LQ_REST_DRIFT units, not every frame;
+     * a moving one is recorded where it is now. */
     if (g->rest_capacity < g->frame_caster_count) {
         float (*next)[6] = realloc(g->rest_bounds, g->frame_caster_count * sizeof(*next));
-        if (!next) { SDL_SetError("out of memory"); return Error(error, size, "GPU rest bounds"); }
-        g->rest_bounds = next; g->rest_capacity = g->frame_caster_count;
+        float (*scratch)[6] = realloc(g->rest_scratch, g->frame_caster_count * sizeof(*scratch));
+        if (next) g->rest_bounds = next;
+        if (scratch) g->rest_scratch = scratch;
+        if (!next || !scratch) { SDL_SetError("out of memory"); return Error(error, size, "GPU rest bounds"); }
+        g->rest_capacity = g->frame_caster_count;
     }
-    for (uint32_t i = 0; i < g->frame_caster_count; ++i)
-        memcpy(g->rest_bounds[i], g->frame_bounds[g->frame_casters[i].draw], sizeof(g->rest_bounds[i]));
+    for (uint32_t i = 0; i < g->frame_caster_count; ++i) {
+        const struct lq_caster *c = &g->frame_casters[i];
+        memcpy(g->rest_scratch[i], c->rest != UINT32_MAX ? g->rest_bounds[c->rest] : g->frame_bounds[c->draw],
+            sizeof(g->rest_scratch[i]));
+    }
+    if (g->frame_caster_count)
+        memcpy(g->rest_bounds, g->rest_scratch, g->frame_caster_count * sizeof(*g->rest_bounds));
     g->rest_count = g->frame_caster_count;
     uint32_t vb = f->vertex_count * sizeof(lq_vertex), ib = f->index_count * sizeof(uint32_t);
     if (!FrameBuffer(g, &g->frame_vertices, &g->frame_vertex_bytes, vb, SDL_GPU_BUFFERUSAGE_VERTEX) ||
@@ -1000,7 +1021,11 @@ static void RenderShadows(lq_gpu *g, SDL_GPUCommandBuffer *command, const lq_vie
             present |= faces;
             if (g->frame_casters[i].moved) touched |= faces;
         }
-        uint8_t redraw = changed ? 0x3f : (uint8_t)(touched | g->shadow_dynamic_faces[slot]);
+        /* A light that lights nothing in view keeps its cube as it was: a new
+         * light's cube is built, and faces casters moved through are redrawn,
+         * once it lights something in view again. */
+        if (light->offscreen) { g->shadow_stale[slot] |= touched; continue; }
+        uint8_t redraw = changed ? 0x3f : (uint8_t)(touched | g->shadow_dynamic_faces[slot] | g->shadow_stale[slot]);
         if (!redraw) continue;
         lq_shadow_uniforms uniforms = {{0}};
         static const uint32_t sizes[] = LQ_SHADOW_ARRAY_SIZES;
@@ -1065,7 +1090,7 @@ static void RenderShadows(lq_gpu *g, SDL_GPUCommandBuffer *command, const lq_vie
         }
         memcpy(g->shadow_keys[slot], light->position_radius, sizeof(g->shadow_keys[slot]));
         g->shadow_sources[slot] = light->source_index; g->shadow_valid[slot] = 1;
-        g->shadow_brushes[slot] = brushes; g->shadow_dynamic_faces[slot] = touched;
+        g->shadow_brushes[slot] = brushes; g->shadow_dynamic_faces[slot] = touched; g->shadow_stale[slot] = 0;
         ++g->shadow_updates;
     }
 }
@@ -1376,7 +1401,7 @@ void LQ_GPUDestroy(lq_gpu *g)
         if (g->claimed) SDL_ReleaseWindowFromGPUDevice(g->device, g->window);
         SDL_DestroyGPUDevice(g->device);
     }
-    free(g->mip_palette); free(g->frame_draws); free(g->frame_casters); free(g->frame_bounds); free(g->rest_bounds); free(g);
+    free(g->mip_palette); free(g->frame_draws); free(g->frame_casters); free(g->frame_bounds); free(g->rest_bounds); free(g->rest_scratch); free(g);
 }
 
 /* ---- Luminous bounce rays (renderer/shaders/bounce.comp) ------------------- */

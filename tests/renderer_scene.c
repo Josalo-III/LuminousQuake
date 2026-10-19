@@ -245,18 +245,24 @@ static int InViewSelectionTest(void)
     int far_kept = 0;
     /* Without the view, the nearest fill every slot. */
     LQ_BuildRuntimeLightsVisible(&scene, styles, view.origin, draws, runtime, NEAR_LIGHTS);
-    for (uint32_t s = 0; s < NEAR_LIGHTS; ++s) far_kept += runtime[s].source_index >= NEAR_LIGHTS;
+    for (uint32_t s = 0; s < NEAR_LIGHTS; ++s) far_kept += runtime[s].position_radius[3] > 0 && runtime[s].source_index >= NEAR_LIGHTS;
     CHECK(far_kept == 0);
-    /* With it, every light on the facade keeps a slot, the sharpest ones. */
+    /* With it, every light on the facade keeps a slot, and the wall's lights,
+     * which light nothing on screen, fill the rest marked offscreen. */
     memset(runtime, 0, sizeof(runtime)); far_kept = 0;
     CHECK(LQ_BuildRuntimeLightsInView(&scene, styles, view.origin, draws, clip, runtime, NEAR_LIGHTS) == NEAR_LIGHTS);
-    for (uint32_t s = 0; s < NEAR_LIGHTS; ++s) far_kept += runtime[s].source_index >= NEAR_LIGHTS;
-    CHECK(far_kept == FAR_LIGHTS);
+    int offscreen_ok = 1;
+    for (uint32_t s = 0; s < NEAR_LIGHTS; ++s) {
+        if (runtime[s].position_radius[3] <= 0) continue;
+        int far = runtime[s].source_index >= NEAR_LIGHTS;
+        far_kept += far; offscreen_ok &= runtime[s].offscreen == !far;
+    }
+    CHECK(far_kept == FAR_LIGHTS); CHECK(offscreen_ok);
     /* Facing the other way, the wall's lights lead again. */
     view.angles[1] = 180; LQ_LightSelectionClip(&view, 4.0f / 3, clip);
     memset(runtime, 0, sizeof(runtime)); far_kept = 0;
     LQ_BuildRuntimeLightsInView(&scene, styles, view.origin, draws, clip, runtime, NEAR_LIGHTS);
-    for (uint32_t s = 0; s < NEAR_LIGHTS; ++s) far_kept += runtime[s].source_index >= NEAR_LIGHTS;
+    for (uint32_t s = 0; s < NEAR_LIGHTS; ++s) far_kept += runtime[s].position_radius[3] > 0 && runtime[s].source_index >= NEAR_LIGHTS;
     CHECK(far_kept == 0);
     /* The budget report, selecting as the game does, drops nothing in view. */
     lq_light_drop dropped[COUNT]; uint32_t drops = 0;
@@ -266,6 +272,57 @@ static int InViewSelectionTest(void)
     CHECK(LQ_LightBudgetInView(&scene, styles, view.origin, pvs, clip, exact, NEAR_LIGHTS, dropped, COUNT, &drops) == FAR_LIGHTS);
     CHECK(drops == 0);
     puts("PASS in-view light selection: lights on faces in view outrank nearer lights behind the camera");
+    return 0;
+}
+/* A room lit on all four walls, under the slot budget. Turning the camera
+ * changes which lights are offscreen but not which slot holds which light, so
+ * no shadow cube is rebuilt just for looking around. */
+static int TurningKeepsSlotsTest(void)
+{
+    enum { WALLS = 4, LIGHTS = 48 };
+    static const float dir[WALLS][2] = {{1,0},{-1,0},{0,1},{0,-1}};
+    lq_scene scene = {0};
+    lq_vertex vertices[WALLS * 4] = {0}; uint32_t indices[WALLS * 6]; lq_draw draws[WALLS] = {0};
+    for (int w = 0; w < WALLS; ++w) {
+        float tx = -dir[w][1], ty = dir[w][0], c[4][2] = {{-400,-200},{400,-200},{400,200},{-400,200}};
+        for (int i = 0; i < 4; ++i) {
+            lq_vertex *v = &vertices[w*4+i];
+            v->position[0] = dir[w][0]*400 + tx*c[i][0]; v->position[1] = dir[w][1]*400 + ty*c[i][0];
+            v->position[2] = c[i][1]; v->normal[0] = -dir[w][0]; v->normal[1] = -dir[w][1];
+        }
+        uint32_t b = (uint32_t)w*4, q[6] = {b,b+1,b+2,b,b+2,b+3}; memcpy(&indices[w*6], q, sizeof(q));
+        draws[w] = (lq_draw){(uint32_t)w*6, 6, 0, 0, {255,255,255,255}};
+    }
+    scene.vertices = vertices; scene.indices = indices; scene.draws = draws;
+    scene.vertex_count = WALLS*4; scene.index_count = WALLS*6; scene.draw_count = WALLS;
+    lq_light_source lights[LIGHTS] = {0};
+    for (int i = 0; i < LIGHTS; ++i) { /* twelve per wall, 40 units off it */
+        LQ_LightSourceDefaults(&lights[i]);
+        int w = i % WALLS; float along = (float)(i / WALLS) * 64 - 352;
+        lights[i].origin[0] = dir[w][0]*360 - dir[w][1]*along; lights[i].origin[1] = dir[w][1]*360 + dir[w][0]*along;
+        lights[i].intensity = 200; lights[i].entity_index = (uint32_t)i;
+    }
+    scene.light_sources = lights; scene.light_source_count = LIGHTS;
+    float styles[256];
+    for (int i = 0; i < 256; ++i) styles[i] = 1;
+    lq_runtime_light runtime[LQ_MAX_RUNTIME_LIGHTS] = {0};
+    uint32_t first[LQ_MAX_RUNTIME_LIGHTS];
+    int moved = 0, offscreen_seen = 1;
+    for (int yaw = 0; yaw <= 720; yaw += 10) {
+        lq_view view = {0}; view.horizontal_fov = 90; view.angles[1] = (float)yaw;
+        float clip[16]; LQ_LightSelectionClip(&view, 16.0f / 9, clip);
+        LQ_BuildRuntimeLightsInView(&scene, styles, view.origin, draws, clip, runtime,
+            LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS);
+        int offscreen = 0;
+        for (uint32_t s = 0; s < LQ_MAX_RUNTIME_LIGHTS; ++s) {
+            uint32_t source = runtime[s].position_radius[3] > 0 ? runtime[s].source_index : UINT32_MAX;
+            if (!yaw) first[s] = source; else moved += first[s] != source;
+            offscreen += source != UINT32_MAX && runtime[s].offscreen;
+        }
+        offscreen_seen &= offscreen > 0;
+    }
+    CHECK(moved == 0); CHECK(offscreen_seen);
+    puts("PASS turning keeps light slots: offscreen lights keep their slots and shadow cubes");
     return 0;
 }
 static int BounceRoomTest(void)
@@ -789,6 +846,7 @@ int main(void)
     puts("PASS deterministic bounded runtime-light selection, stable shadow slots and PVS reach");
     CHECK(LightBudgetTest() == 0);
     CHECK(InViewSelectionTest() == 0);
+    CHECK(TurningKeepsSlotsTest() == 0);
     CHECK(SurfaceLightTest() == 0);
     CHECK(BounceRoomTest() == 0);
     CHECK(EffectTest() == 0);
