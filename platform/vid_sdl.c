@@ -271,6 +271,7 @@ void VID_Init(unsigned char *palette)
         Cvar_RegisterVariable(&r_wateralpha); Cvar_RegisterVariable(&r_fluorescent);
         Cvar_RegisterVariable(&lq_particles);
         Cvar_RegisterVariable(&lq_gamma); Cvar_RegisterVariable(&lq_hdr); Cvar_RegisterVariable(&lq_hdr_peak);
+        LQ_RenderBridgeRegister();
         Cvar_RegisterVariable(&lq_hdr_test);
         Cvar_RegisterVariable(&r_lerpmodels); Cvar_RegisterVariable(&r_lerpmove);
         Cvar_RegisterVariable(&lq_shadow_faint); Cvar_RegisterVariable(&lq_shadow_dominance);

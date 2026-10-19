@@ -149,6 +149,7 @@ and only print `Unknown command`.
 | `lq_particles` | 0 | Solid particles in Luminous: droplets and smoke as shaded spheres |
 | `lq_torch_smoke` | 1 | Smoke rising from torches and flames (Luminous with `lq_particles 1`) |
 | `lq_shadow_faint`, `lq_shadow_dominance` | 4, 0.05 | When Luminous skips shadow filtering |
+| `lq_scene_cache_mb` | 0 | Memory for keeping the last two maps' built scenes, so a restart skips rebuilding; 0 is a quarter of free RAM, -1 turns it off |
 | `lq_workers` | −1 | Worker threads; −1 picks from the CPU |
 | `lq_clock_mode` | 0 | Tick-clock timing policy ([frame timing](FRAME_TIMING.md)) |
 | `in_nograb` | 0 | Replaces `_windowed_mouse`; 1 never captures the mouse |

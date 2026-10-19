@@ -12,6 +12,13 @@
 #include "effects.h"
 #include "fluorescent.h"
 #include "jobs.h"
+#ifdef __APPLE__
+#include <mach/mach.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 extern cvar_t r_waterwarp;
 extern mleaf_t *r_viewleaf;
 extern entity_t *currententity;
@@ -47,6 +54,134 @@ static uint32_t TubeCamera(void) { return (uint32_t)Cvar_VariableValue("r_fluore
 /* Follow the buzz while it is mixed; while it is not, run on from where it was.
  * The device takes the mix in chunks, so small errors are eased out and only a
  * jump (the loop restarting, or resuming after silence) is followed at once. */
+/* Recent maps stay loaded (AGENDA item 6): the built scenes of the last
+ * SCENE_CACHE_ENTRIES maps are kept, so restarting a map after a death, or
+ * returning to one, skips the BSP copy and Luminous's bounce (27 s on
+ * ad_tfuma). A scene is keyed by the game folder, the map's name, a hash of
+ * its geometry, entities and lightmaps, the renderer and the fluorescent
+ * camera, so an edited map or a changed setting builds afresh. The cache
+ * holds at most lq_scene_cache_mb; 0 means the agenda's default share, a
+ * quarter of the RAM free when it is first needed (half of free RAM is
+ * "available", split evenly with lighting), and -1 turns it off. */
+#define SCENE_CACHE_ENTRIES 2
+static cvar_t lq_scene_cache_mb = {"lq_scene_cache_mb", "0", true};
+static struct { uint64_t key; lq_scene scene; uint32_t tubes; size_t bytes; double used; } scene_cache[SCENE_CACHE_ENTRIES];
+static uint64_t map_key; /* the loaded map_scene's key, 0 when none */
+static qboolean list_lights;
+static void ListLights_f(void) { list_lights = true; }
+/* developer readout: one frame sampled every READOUT_SECONDS, nothing gathered in between */
+#define READOUT_SECONDS 1.0
+static double readout_since;
+static uint32_t probe_lights; static double probe_volume;
+static uint32_t map_tubes;
+static uint64_t Hash(uint64_t h, const void *data, size_t size)
+{
+    const uint8_t *p = data;
+    for (size_t i = 0; i < size; ++i) h = (h ^ p[i]) * 1099511628211ull;
+    return h;
+}
+static uint64_t SceneKey(void)
+{
+    model_t *m = cl.worldmodel;
+    uint64_t h = 14695981039346656037ull, settings[2] = {luminous, luminous ? LQ_FluorescentCast(TubeCamera()) : 0};
+    if (!m) return 0;
+    h = Hash(h, com_gamedir, strlen(com_gamedir) + 1); h = Hash(h, m->name, strlen(m->name) + 1);
+    h = Hash(h, settings, sizeof(settings));
+    if (m->vertexes) h = Hash(h, m->vertexes, (size_t)m->numvertexes * sizeof(*m->vertexes));
+    if (m->entities) h = Hash(h, m->entities, strlen(m->entities));
+    for (int i = 0; i < m->numsurfaces; ++i) { /* each face's lightmap, as baked */
+        msurface_t *f = &m->surfaces[i];
+        if (!f->samples) continue;
+        int size = ((f->extents[0] >> 4) + 1) * ((f->extents[1] >> 4) + 1), styles = 0;
+        while (styles < MAXLIGHTMAPS && f->styles[styles] != 255) ++styles;
+        h = Hash(h, f->samples, (size_t)size * styles);
+    }
+    return h ? h : 1;
+}
+static size_t ImageBytes(const lq_image *image)
+{ return image->pixels ? (size_t)image->width * image->height * (image->channels ? image->channels : 1) : 0; }
+static size_t SceneBytes(const lq_scene *s)
+{
+    size_t bytes = (size_t)s->vertex_count * sizeof(*s->vertices) + (size_t)s->index_count * sizeof(*s->indices) +
+        (size_t)s->draw_count * (sizeof(*s->draws) + (s->draw_bounds ? sizeof(*s->draw_bounds) : 0) +
+            (s->face_samples ? sizeof(*s->face_samples) : 0) + (size_t)s->light_visibility_words * 4) +
+        (size_t)s->material_count * sizeof(*s->materials) + ImageBytes(&s->colormap) + ImageBytes(&s->lightmap) +
+        ImageBytes(&s->bounce) + (size_t)s->light_source_count * (sizeof(*s->light_sources) + (size_t)s->leaf_words * 4) +
+        (size_t)s->bsp_node_count * sizeof(*s->bsp_nodes) + (size_t)s->leaf_count * ((size_t)s->leaf_words * 4 + 1) +
+        (size_t)s->sample_count * sizeof(*s->sample_positions);
+    size_t probes = (size_t)s->probe_size[0] * s->probe_size[1] * s->probe_size[2];
+    if (s->probe_static) bytes += probes * 4 * 6 * 4;
+    if (s->probe_valid) bytes += probes;
+    for (uint32_t i = 0; i < s->material_count; ++i) bytes += ImageBytes(&s->materials[i].indices);
+    return bytes;
+}
+static size_t FreeRAM(void)
+{
+#ifdef __APPLE__
+    vm_statistics64_data_t vm; mach_msg_type_number_t n = HOST_VM_INFO64_COUNT; vm_size_t page = 0;
+    if (host_page_size(mach_host_self(), &page) != KERN_SUCCESS ||
+        host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t)&vm, &n) != KERN_SUCCESS) return 0;
+    /* macOS reclaims inactive and purgeable pages on demand. */
+    return (size_t)(vm.free_count + vm.inactive_count + vm.purgeable_count) * page;
+#elif defined(_WIN32)
+    MEMORYSTATUSEX status = {sizeof(status)};
+    return GlobalMemoryStatusEx(&status) ? (size_t)status.ullAvailPhys : 0;
+#else
+    long pages = sysconf(_SC_AVPHYS_PAGES), page = sysconf(_SC_PAGESIZE);
+    return pages > 0 && page > 0 ? (size_t)pages * (size_t)page : 0;
+#endif
+}
+static size_t SceneCacheBudget(void)
+{
+    static size_t automatic;
+    if (lq_scene_cache_mb.value < 0) return 0;
+    if (lq_scene_cache_mb.value > 0) return (size_t)lq_scene_cache_mb.value << 20;
+    if (!automatic) { automatic = FreeRAM() / 4; if (!automatic) automatic = (size_t)512 << 20; }
+    return automatic;
+}
+static void SceneCacheFreeAll(void)
+{
+    for (int i = 0; i < SCENE_CACHE_ENTRIES; ++i) { LQ_SceneFree(&scene_cache[i].scene); scene_cache[i].key = 0; }
+}
+/* Keep map_scene (moved, not copied) if it fits; otherwise free it. */
+static void SceneCacheStore(void)
+{
+    size_t bytes = SceneBytes(&map_scene), budget = SceneCacheBudget(), held = 0;
+    if (!map_key || !map_scene.draw_count || bytes > budget) { LQ_SceneFree(&map_scene); map_key = 0; return; }
+    int slot = 0;
+    for (int i = 0; i < SCENE_CACHE_ENTRIES; ++i) if (scene_cache[i].key == map_key) { LQ_SceneFree(&scene_cache[i].scene); scene_cache[i].key = 0; }
+    for (int i = 0; i < SCENE_CACHE_ENTRIES; ++i) {
+        if (!scene_cache[i].key) { slot = i; break; }
+        if (scene_cache[i].used < scene_cache[slot].used) slot = i;
+    }
+    LQ_SceneFree(&scene_cache[slot].scene); scene_cache[slot].key = 0;
+    for (;;) { /* oldest out until the newcomer fits */
+        int oldest = -1; held = 0;
+        for (int i = 0; i < SCENE_CACHE_ENTRIES; ++i) if (scene_cache[i].key) {
+            held += scene_cache[i].bytes;
+            if (oldest < 0 || scene_cache[i].used < scene_cache[oldest].used) oldest = i;
+        }
+        if (held + bytes <= budget || oldest < 0) break;
+        LQ_SceneFree(&scene_cache[oldest].scene); scene_cache[oldest].key = 0;
+    }
+    scene_cache[slot].scene = map_scene; scene_cache[slot].key = map_key; scene_cache[slot].tubes = map_tubes;
+    scene_cache[slot].bytes = bytes; scene_cache[slot].used = realtime;
+    memset(&map_scene, 0, sizeof(map_scene)); map_key = 0;
+}
+void LQ_RenderBridgeRegister(void)
+{
+    Cvar_RegisterVariable(&lq_scene_cache_mb);
+    Cmd_AddCommand("lq_lights", ListLights_f);
+}
+static qboolean SceneCacheTake(uint64_t key)
+{
+    for (int i = 0; i < SCENE_CACHE_ENTRIES; ++i) if (key && scene_cache[i].key == key) {
+        map_scene = scene_cache[i].scene; map_tubes = scene_cache[i].tubes;
+        memset(&scene_cache[i].scene, 0, sizeof(scene_cache[i].scene)); scene_cache[i].key = 0;
+        return true;
+    }
+    return false;
+}
 static const lq_tube_track *TubeTrack(void)
 {
     double position; qboolean audible;
@@ -99,7 +234,7 @@ void LQ_RenderAfterCommands(void) { LQ_ApplyRenderer(); }
 
 void LQ_RenderBridgeShutdown(void)
 {
-    LQ_EntitiesReset(); LQ_SceneFree(&map_scene); free(world_draws); world_draws = NULL;
+    LQ_EntitiesReset(); LQ_SceneFree(&map_scene); map_key = 0; SceneCacheFreeAll(); free(world_draws); world_draws = NULL;
     free(interaction_draws); interaction_draws = NULL; memset(runtime_lights, 0, sizeof(runtime_lights));
     free(dynamic_probes); dynamic_probes = NULL;
     memset(spark_lights, 0, sizeof(spark_lights)); next_spark = 0;
@@ -111,7 +246,7 @@ void LQ_RenderBridgeShutdown(void)
 void LQ_RenderMapChanged(void) {
     loaded = false; captured_scene = direct_frame = false;
     memset(spark_lights, 0, sizeof(spark_lights)); next_spark = 0;
-    LQ_EntitiesReset(); LQ_SceneFree(&map_scene); free(world_draws); world_draws = NULL;
+    LQ_EntitiesReset(); SceneCacheStore(); free(world_draws); world_draws = NULL;
     free(interaction_draws); interaction_draws = NULL; memset(runtime_lights, 0, sizeof(runtime_lights));
     free(dynamic_probes); dynamic_probes = NULL;
 }
@@ -144,17 +279,28 @@ void LQ_RenderBegin(void)
     if (loaded && luminous && LQ_FluorescentCast(TubeCamera()) != LQ_FluorescentCast(tinted_camera)) LQ_RenderMapChanged();
     if (!loaded && cls.state == ca_connected && cl.worldmodel && !con_forcedup) {
         luminous = Cvar_VariableValue("lq_renderer") == 2;
-        if (!LQ_QuakeSceneFromWorld(&map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }
+        uint64_t key = SceneKey();
+        qboolean cached = SceneCacheTake(key);
+        if (cached) Con_Printf("%s: reused the scene built when this map was last loaded.\n",
+            luminous ? "Luminous" : "Classic GPU");
+        else if (!LQ_QuakeSceneFromWorld(&map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }
+        map_key = key;
         if (luminous) {
             /* Before bounce, so each failing tube's bounce follows it. */
-            uint32_t tubes = LQ_SceneAssignFluorescentStyles(&map_scene);
-            tinted_camera = TubeCamera(); LQ_SceneTintFluorescents(&map_scene, tinted_camera);
+            if (!cached) {
+                map_tubes = LQ_SceneAssignFluorescentStyles(&map_scene);
+                LQ_SceneTintFluorescents(&map_scene, TubeCamera());
+            }
+            uint32_t tubes = map_tubes;
+            tinted_camera = TubeCamera();
             const void *samples; int width, length, rate;
             tube_track.count = 0; tube_offset = 0;
             if (tubes && LQ_SoundSamples(TUBE_SOUND, &samples, &width, &length, &rate))
                 LQ_TubeTrackFromSound(&tube_track, samples, width, (uint32_t)length, (uint32_t)rate);
             if (tubes) Con_DPrintf("Luminous fluorescents: %u failing tubes on private styles, %s.\n", tubes,
                 tube_track.count ? "sputtering with " TUBE_SOUND : "on their own timelines");
+        }
+        if (luminous && !cached) {
             double started = Sys_FloatTime();
             lq_bounce_tracer tracer = LQ_GPUBounceTracer(gpu);
             if (LQ_SceneComputeBounceTraced(&map_scene, 64, LQ_JobsRunRange, &tracer, error, sizeof(error)))
@@ -165,7 +311,7 @@ void LQ_RenderBegin(void)
             else Con_Printf("Luminous bounce unavailable: %s\n", error);
         }
         if (!LQ_GPUUpload(gpu, &map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }
-        if (luminous && !LQ_SceneDrawBounds(&map_scene)) { LQ_FallbackRenderer("Cannot allocate draw bounds"); return; }
+        if (luminous && !map_scene.draw_bounds && !LQ_SceneDrawBounds(&map_scene)) { LQ_FallbackRenderer("Cannot allocate draw bounds"); return; }
         world_draws = malloc(map_scene.draw_count*sizeof(*world_draws));
         interaction_draws = luminous ? malloc(map_scene.draw_count*sizeof(*interaction_draws)) : NULL;
         if (!world_draws || (luminous && !interaction_draws)) { LQ_FallbackRenderer("Cannot allocate world visibility"); return; }
@@ -173,7 +319,7 @@ void LQ_RenderBegin(void)
         free(dynamic_probes); dynamic_probes = NULL;
         if (luminous && LQ_GPUDynamicProbeBytes(gpu)) dynamic_probes = malloc(LQ_GPUDynamicProbeBytes(gpu));
         loaded = true; palette_valid = false;
-        Con_Printf("%s: copied live BSP world; map resources replaced.\n", luminous ? "Luminous (experimental)" : "Classic GPU");
+        if (!cached) Con_Printf("%s: copied live BSP world; map resources replaced.\n", luminous ? "Luminous (experimental)" : "Classic GPU");
     }
 }
 int LQ_RenderGPUView(void)
@@ -374,6 +520,30 @@ static void LuminousLights(void)
     for (uint32_t i = 0; i < map_scene.draw_count; ++i)
         if (world_draws[i].index_count)
             memcpy(world_draws[i].light_bits, interaction_draws[i].light_bits, sizeof(world_draws[i].light_bits));
+    if (list_lights) { /* lq_lights: what each kept light touches */
+        float exact[16]; LQ_ViewMatrix(&view, view.viewport[3] ? (float)view.viewport[2] / view.viewport[3] : 4.0f / 3, exact);
+        uint32_t touched[LQ_MAX_RUNTIME_LIGHTS] = {0}, shown[LQ_MAX_RUNTIME_LIGHTS] = {0}, surfaces = 0, total = 0, most = 0;
+        for (uint32_t i = 0; i < map_scene.draw_count; ++i) {
+            if (!world_draws[i].index_count) continue;
+            int on = map_scene.draw_bounds && LQ_BoundsInClip(exact, map_scene.draw_bounds[i]);
+            uint32_t n = 0;
+            for (uint32_t l = 0; l < LQ_MAX_RUNTIME_LIGHTS; ++l)
+                if (world_draws[i].light_bits[l >> 5] & (1u << (l & 31))) { ++touched[l]; shown[l] += on; ++n; }
+            if (on) { ++surfaces; total += n; if (n > most) most = n; }
+        }
+        Con_Printf("lq_lights: %u kept; on-screen surfaces %u, %.1f lights each on average, %u at most\n",
+            count, surfaces, surfaces ? (double)total / surfaces : 0, most);
+        for (uint32_t l = 0; l < count; ++l) {
+            const lq_runtime_light *r = &runtime_lights[l];
+            if (r->position_radius[3] <= 0) continue;
+            float d[3] = {r->position_radius[0] - view.origin[0], r->position_radius[1] - view.origin[1], r->position_radius[2] - view.origin[2]};
+            Con_Printf("  slot %3u entity %4u at %6.0f %6.0f %6.0f reach %5.0f, %5.0f away, strength %.2f: %u PVS surfaces, %u on screen\n",
+                l, r->source_index < map_scene.light_source_count ? map_scene.light_sources[r->source_index].entity_index : 0,
+                r->position_radius[0], r->position_radius[1], r->position_radius[2], r->position_radius[3],
+                sqrtf(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]), r->color_strength[3], touched[l], shown[l]);
+        }
+        list_lights = false;
+    }
 }
 static void CaptureView(void)
 {
@@ -401,6 +571,7 @@ qboolean LQ_RenderBridgePresent(void)
 {
     char error[256]; lq_gpu *gpu = LQ_PlayableGPU();
     if (!gpu || !owner || !rgba || !count) return false;
+    qboolean sample = developer.value && luminous && direct_frame && realtime - readout_since >= READOUT_SECONDS;
     /* Console drawing already marks its own coverage. Making the entire
      * overlay opaque hides the live world beneath a half-height console. */
     qboolean opaque = !captured_scene;
@@ -437,6 +608,7 @@ qboolean LQ_RenderBridgePresent(void)
         const lq_runtime_light *lights[LQ_MAX_DYNAMIC_LIGHTS]; uint32_t box_min[3], box_size[3];
         uint32_t count = LQ_SceneDynamicProbeLights(&map_scene, view.runtime_lights, view.runtime_light_count,
             lights, box_min, box_size);
+        if (sample) { probe_lights = count; probe_volume = count ? (double)box_size[0] * box_size[1] * box_size[2] : 0; }
         if (!count || !LQ_GPUTraceDynamicProbes(gpu, lights, count, box_min, box_size, 16)) {
             int active = count && LQ_SceneDynamicProbes(&map_scene, view.runtime_lights, view.runtime_light_count, 16,
                 LQ_JobsRunRange, dynamic_probes);
@@ -459,6 +631,19 @@ qboolean LQ_RenderBridgePresent(void)
     if (!LQ_GPUFrame(gpu, direct_frame ? LQ_EntitiesFrame() : &empty, error, sizeof(error)) ||
         !LQ_GPUOverlay(gpu, &image, error, sizeof(error)) ||
         !LQ_GPURender(gpu, &view, vid.width, vid.height, error, sizeof(error))) goto failed;
+    if (sample) {
+        /* The GPU work of this one frame that doesn't scale with resolution,
+         * and the frame rate since the last sample. */
+        static int frames_at;
+        const lq_frame *f = LQ_EntitiesFrame();
+        uint32_t world = 0;
+        for (uint32_t i = 0; i < map_scene.draw_count; ++i) world += world_draws[i].index_count != 0;
+        if (readout_since > 0)
+            Con_DPrintf("Luminous frame work: %.0f fps; this frame %u lights, %u shadow faces redrawn, %u entity draws, %u of %u world draws, %u lights in view; probe trace %u lights, %.0f probes\n",
+                (host_framecount - frames_at) / (realtime - readout_since), LQ_GPUShadowUpdates(gpu), LQ_GPUShadowFaceUpdates(gpu),
+                f ? f->draw_count : 0, world, map_scene.draw_count, view.runtime_light_count, probe_lights, probe_volume);
+        readout_since = realtime; frames_at = host_framecount;
+    }
     return true;
 failed:
     LQ_FallbackRenderer(error); return false;

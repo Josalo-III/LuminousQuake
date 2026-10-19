@@ -5,6 +5,8 @@ void LQ_RenderBegin(void);
 void LQ_RenderAfterCommands(void);
 int LQ_RenderBridgeActive(void);
 void LQ_RenderMapChanged(void);
+/* Registers the bridge's settings (lq_scene_cache_mb). */
+void LQ_RenderBridgeRegister(void);
 int LQ_RenderGPUView(void);
 /* Particle kinds for LQ_RenderGPUParticle. For smoke, scale is the puff's
  * growth (1 when emitted) and erode the fraction its surface has worn away.

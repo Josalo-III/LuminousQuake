@@ -11,6 +11,7 @@ void LQ_RenderBegin(void) {}
 void LQ_RenderAfterCommands(void) {}
 int LQ_RenderBridgeActive(void) { return 0; }
 void LQ_RenderMapChanged(void) {}
+void LQ_RenderBridgeRegister(void) {}
 void LQ_UIBegin(void) {}
 void LQ_UIEnd(void) {}
 int LQ_UIScale(void) { return 1; }
