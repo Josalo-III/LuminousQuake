@@ -149,6 +149,9 @@ and only print `Unknown command`.
 | `lq_particles` | 0 | Solid particles in Luminous: droplets and smoke as shaded spheres |
 | `lq_torch_smoke` | 1 | Smoke rising from torches and flames (Luminous with `lq_particles 1`) |
 | `lq_shadow_faint`, `lq_shadow_dominance` | 4, 0.05 | When Luminous skips shadow filtering |
+| `lq_shadow_detail` | 64 | Brightness at which a light filters its shadow with all 16 samples; 8 from a quarter of it, 4 below (0: always 16) |
+| `lq_cull` | 1 | 0 draws every face in the PVS, including those behind the camera or off screen (for comparisons) |
+| `lq_shadows` | 1 | 0 lights Luminous without shadow cubes or shadow filtering (for comparisons) |
 | `lq_scene_cache_mb` | 0 | Memory for keeping the last two maps' built scenes, so a restart skips rebuilding; 0 is a quarter of free RAM, -1 turns it off |
 | `lq_workers` | −1 | Worker threads; −1 picks from the CPU |
 | `lq_clock_mode` | 0 | Tick-clock timing policy ([frame timing](FRAME_TIMING.md)) |

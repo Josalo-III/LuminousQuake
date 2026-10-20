@@ -65,6 +65,9 @@ static uint32_t TubeCamera(void) { return (uint32_t)Cvar_VariableValue("r_fluore
  * "available", split evenly with lighting), and -1 turns it off. */
 #define SCENE_CACHE_ENTRIES 2
 static cvar_t lq_scene_cache_mb = {"lq_scene_cache_mb", "0", true};
+/* Diagnostics for measurements: 0 submits every PVS face (lq_cull), or
+ * lights Luminous without shadow cubes or filtering (lq_shadows). */
+static cvar_t lq_cull = {"lq_cull", "1"}, lq_shadows = {"lq_shadows", "1"};
 static struct { uint64_t key; lq_scene scene; uint32_t tubes; size_t bytes; double used; } scene_cache[SCENE_CACHE_ENTRIES];
 static uint64_t map_key; /* the loaded map_scene's key, 0 when none */
 static qboolean list_lights;
@@ -170,7 +173,7 @@ static void SceneCacheStore(void)
 }
 void LQ_RenderBridgeRegister(void)
 {
-    Cvar_RegisterVariable(&lq_scene_cache_mb);
+    Cvar_RegisterVariable(&lq_scene_cache_mb); Cvar_RegisterVariable(&lq_cull); Cvar_RegisterVariable(&lq_shadows);
     Cmd_AddCommand("lq_lights", ListLights_f);
 }
 static qboolean SceneCacheTake(uint64_t key)
@@ -516,6 +519,8 @@ static void LuminousLights(void)
     float faint = Cvar_VariableValue("lq_shadow_faint"), dominance = Cvar_VariableValue("lq_shadow_dominance");
     view.shadow_faint = faint > 0 ? faint : -1;
     view.shadow_dominance = dominance > 0 ? dominance : -1;
+    float detail = Cvar_VariableValue("lq_shadow_detail");
+    view.shadow_detail = detail > 0 ? detail : -1;
     LQ_BuildVisibleLightInteractions(&map_scene, runtime_lights, count, world_draws, interaction_draws);
     for (uint32_t i = 0; i < map_scene.draw_count; ++i)
         if (world_draws[i].index_count)
@@ -563,6 +568,7 @@ static void CaptureView(void)
         view.dynamic_lights[i][3] = cl_dlights[i].radius;
     }
     view.water_alpha = WaterAlpha();
+    view.disable_culling = !lq_cull.value; view.disable_shadows = !lq_shadows.value;
     view.water_warp = direct_frame && r_waterwarp.value && r_viewleaf->contents <= CONTENTS_WATER;
     if (luminous && direct_frame && interaction_draws) LuminousLights();
     captured_scene = true;

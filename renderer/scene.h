@@ -210,6 +210,7 @@ void LQ_ShadowSlot(uint32_t slot, uint32_t *array, uint32_t *cube);
 #define LQ_EMISSION_GAIN 3.0f
 #define LQ_SHADOW_FAINT 4.0f /* brightness units; 128 is normal */
 #define LQ_SHADOW_DOMINANCE 0.05f
+#define LQ_SHADOW_DETAIL 64.0f /* a light this bright at a point filters its shadow fully */
 #define LQ_DYNAMIC_LIGHT_SOURCE 0x80000000u /* source_index tag for gameplay lights */
 typedef struct {
     float position_radius[4]; /* world xyz and falloff/shadow range */
@@ -234,6 +235,7 @@ typedef struct {
     uint32_t runtime_light_count;
     uint32_t luminous_lighting;
     uint32_t disable_shadows; /* Luminous diagnostic: falloff without occlusion */
+    uint32_t disable_culling; /* diagnostic: submit back-facing and off-screen faces too */
     /* Brush models cast from their compiled positions (the viewer); in game
      * they move and cast as frame geometry instead. */
     uint32_t static_brush_shadows;
@@ -244,6 +246,10 @@ typedef struct {
      * shadow_dominance of the brightest light at a point; zero means the
      * LQ_SHADOW_ defaults, negative turns the test off. */
     float shadow_faint, shadow_dominance;
+    /* Brightness from which a light's shadow takes all 16 filter samples
+     * (8 from a quarter of it, 4 below); zero means LQ_SHADOW_DETAIL,
+     * negative means always 16. */
+    float shadow_detail;
     float bounce_gain; /* Luminous artistic bounce multiplier; zero means 1 */
     float water_warp;
     float water_alpha; /* liquid opacity; zero or one draws liquids opaque */

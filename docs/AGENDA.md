@@ -171,6 +171,49 @@ them. Principles, decided October 17, 2026:
   spotlights are culled to their cones, unbounded falloffs stop at their fade
   level or `_gate`, and faint or overwhelmed lights skip shadow filtering.
   E1M3: 76 → about 110 fps uncapped.
+- **Done October 19: camera culling** (`renderer/gpu_sdl.c`, `LQ_GPURender`).
+  The main pass skips world faces whose plane faces away from the camera or
+  whose bounds lie outside the view, and frame geometry (actors, brush models,
+  particles, sprites) outside the view; the view weapon is always drawn.
+  Shadow passes are unchanged, so off-screen casters still cast. In the viewer
+  (no PVS, 5176 faces), E1M3 views drew 23 and 86 faces with images identical
+  but for 2–6 edge pixels; `lq_cull 0` and the viewer's `--no-cull` turn it
+  off. Measured gain: 0.05–0.13 ms a frame (table below).
+- **Measured October 19: where Luminous frame time goes.** `timedemo` of the
+  rerelease's demo1 (E1M3) and demo2, `build-profile` (RelWithDebInfo), Luminous,
+  1920×1080 window, VSync off, HDR display, M1 Max. Medians of 3–6 interleaved
+  runs; run-to-run spread under 1% except shadows off (up to 3%):
+
+  | Setting | demo1 fps (ms) | demo2 fps (ms) |
+  | --- | ---: | ---: |
+  | Normal | 93.0 (10.75) | 112.2 (8.91) |
+  | `lq_cull 0` | 92.6 (10.80) | 110.6 (9.04) |
+  | Cubes drawn, no filtering (`lq_shadow_faint 1000000`, `lq_shadow_dominance 0`) | 160.0 (6.25) | 167.3 (5.98) |
+  | `lq_shadows 0` | 205.8 (4.86) | 217.3 (4.60) |
+
+  Shadow filtering costs 4.5 ms (demo1) and 2.9 ms (demo2) a frame, 42% and
+  33% of the frame; shadow cubes about 1.4 ms in both; everything else about
+  4.7 ms. Filtering is the first target (review item 1).
+- **Done October 19: shadow filtering follows brightness**
+  (`renderer/shaders/world.frag`, `shadowFactor`). A light whose unshadowed
+  contribution at a point reaches `lq_shadow_detail` (64; 128 is normal
+  brightness) takes all 16 blocker and 16 comparison samples, from a quarter
+  of that 8, below it 4. Bright and medium lights also stop after their four
+  rim samples when all four are occluded: inside a thick shadow. Lit or mixed
+  rims always take the full set, so thin shadows survive; a thin gap of light
+  inside a thick shadow is the case given up. Same benchmark as above:
+
+  | Setting | demo1 fps (ms) | demo2 fps (ms) |
+  | --- | ---: | ---: |
+  | Before (table above) | 93.0 (10.75) | 112.2 (8.91) |
+  | Thick-shadow exit only (`lq_shadow_detail 0`) | 96.7 (10.34) | 112.7 (8.87) |
+  | Brightness-scaled sampling (default) | 123.4 (8.10) | 140.8 (7.10) |
+
+  Filtering now costs about 1.9 ms (demo1) and 1.1 ms (demo2), down from 4.5
+  and 2.9. Viewer shots of five map starts against the old shader: 4–20% of
+  pixels change, nearly all by under 8 of 255 levels; visible only zoomed, as
+  slightly grainier dim penumbrae and a few lit specks where a dim light took
+  4 samples. Before rows ran earlier the same day, not interleaved.
 - **Overheating, October 18.** Idle monsters' blended poses shift their bounds
   a little every frame, and the shadow cache counted that as movement: on
   E1M3, about 45 lights redrew 109 cube faces every frame with the player

@@ -45,6 +45,7 @@ layout(set=3,binding=1,std140) uniform Lights {
     vec4 shadow_sizes; // cube face size per shadow array
     vec4 color_space; // x: exponent from summed brightness to linear light; w: fullbright emission (Luminous)
                       // y: faint level, z: dominance ratio below which lights cast no shadow (0 off)
+    vec4 shadow_filter; // x: a light's brightness at which its shadow takes all 16 samples (0: always)
     vec4 limit[128]; // x: most brightness the light adds to a surface; 0 none (torch accents)
 } lights;
 const float SHADOW_NEAR = 2.0;
@@ -227,51 +228,85 @@ float planeReference(vec3 tap, vec3 origin, vec3 normal, vec3 point) {
     if (toward >= -1e-4) return -1.0;
     return SHADOW_NEAR / majorAxis(tap * (dot(normal, point - origin) / toward));
 }
+// Sample order: the first four lie on the disc's rim, one per quadrant; the
+// first eight cover it evenly. Fewer samples take a prefix of this order.
+const int TAP_ORDER[16] = int[](0,1,7,13, 2,11,12,15, 3,4,5,6,8,9,10,14);
+// The cube's view of the receiver: tap directions around `ray`, and the
+// receiving plane each tap is compared against.
+struct ShadowFrame { uint tier; float cube; vec3 origin, normal, point, ray, side, up; mat2 rotation; };
+vec3 shadowTap(ShadowFrame f, int i, float radius) {
+    vec2 offset = f.rotation * DISK[TAP_ORDER[i]] * radius;
+    return f.ray + f.side * offset.x + f.up * offset.y;
+}
+// Lit samples among taps [first, last) of a disc of the given radius.
+float litTaps(ShadowFrame f, int first, int last, float radius) {
+    float sum = 0.0;
+    for (int i = first; i < last; ++i) {
+        vec3 tap = shadowTap(f, i, radius);
+        float reference = planeReference(tap, f.origin, f.normal, f.point);
+        // A grazing tap that cannot reach the receiver is not an unoccluded
+        // light sample: counting it as lit opens bright seams at sealed joins.
+        sum += reference < 0.0 ? 0.0 : compareTap(f.tier, tap, f.cube, reference * 1.0005);
+    }
+    return sum;
+}
+// Blocker search over taps [first, last): sums SHADOW_NEAR / depth and count.
+void blockerTaps(ShadowFrame f, int first, int last, float radius, inout float blockers, inout float count) {
+    for (int i = first; i < last; ++i) {
+        vec3 tap = shadowTap(f, i, radius);
+        float reference = planeReference(tap, f.origin, f.normal, f.point);
+        if (reference < 0.0) continue;
+        float stored = depthTap(f.tier, tap, f.cube);
+        if (stored > reference * 1.0005) { blockers += SHADOW_NEAR / stored; count += 1.0; }
+    }
+}
+float penumbra(float radius, float major, float blocker, float texel, float search) {
+    return clamp(radius * max(major - blocker, 0.0) / max(blocker, SHADOW_NEAR), texel, search);
+}
 // Reversed-depth cube shadows from an emitter of the given radius (PCSS): the
 // mean depth of blockers found inside the largest possible penumbra sets the
 // filter width radius * (receiver - blocker) / blocker, so contact shadows stay
 // sharp and distant occluders soften. Comparisons are hardware filtered.
-float shadowFactor(uint slot, vec3 origin, vec3 normal, float radius) {
+float shadowFactor(uint slot, vec3 origin, vec3 normal, float radius, float brightness) {
     if (lights.parameters.w == 0u) return 1.0;
-    uint shadow = uint(lights.shape[slot].w + 0.5), tier = shadow / 1024u;
-    float cube = float(shadow % 1024u);
-    float texel = 2.0 * majorAxis(world_position - origin) / lights.shadow_sizes[tier];
-    vec3 point = world_position + normal * texel;
-    vec3 ray = point - origin;
-    float distance = length(ray), major = majorAxis(ray);
+    uint shadow = uint(lights.shape[slot].w + 0.5);
+    ShadowFrame f;
+    f.tier = shadow / 1024u; f.cube = float(shadow % 1024u); f.origin = origin; f.normal = normal;
+    float texel = 2.0 * majorAxis(world_position - origin) / lights.shadow_sizes[f.tier];
+    f.point = world_position + normal * texel;
+    f.ray = f.point - origin;
+    float distance = length(f.ray), major = majorAxis(f.ray);
     // Spark particles can coincide with their collection's source. The cube
     // cannot contain a blocker inside its near plane; avoid a zero ray basis.
     if (distance < SHADOW_NEAR) return 1.0;
-    vec3 side = normalize(cross(ray, abs(ray.z) < 0.9 * distance ? vec3(0,0,1) : vec3(1,0,0)));
-    vec3 up = normalize(cross(ray, side));
+    f.side = normalize(cross(f.ray, abs(f.ray.z) < 0.9 * distance ? vec3(0,0,1) : vec3(1,0,0)));
+    f.up = normalize(cross(f.ray, f.side));
     // A world-anchored rotation turns sampling bands into stable fine grain.
     float angle = fract(sin(dot(floor(world_position), vec3(12.9898,78.233,37.719))) * 43758.5453) * 6.2831853;
-    mat2 rotation = mat2(cos(angle), sin(angle), -sin(angle), cos(angle));
+    f.rotation = mat2(cos(angle), sin(angle), -sin(angle), cos(angle));
+    // Samples follow this light's brightness here, since an error in a dim
+    // light's shadow is a small error in the image: all 16 from
+    // shadow_filter.x (0: always), 8 from a quarter of it, 4 below.
+    float full = lights.shadow_filter.x;
+    int taps = full <= 0.0 || brightness >= full ? 16 : brightness >= full * 0.25 ? 8 : 4;
     float search = max(min(radius * 3.0, distance * 0.5), texel), width = texel;
+    // With every rim sample occluded the point is taken to be inside a thick
+    // shadow and its rim test decides. Lit or mixed rims always take the full
+    // set, so thin shadows survive; a thin gap of light inside a thick shadow
+    // is the case given up.
     if (radius > 0.0) {
         float blockers = 0.0, count = 0.0;
-        for (int i = 0; i < 16; ++i) {
-            vec2 offset = rotation * DISK[i] * search;
-            vec3 tap = ray + side * offset.x + up * offset.y;
-            float reference = planeReference(tap, origin, normal, point);
-            if (reference < 0.0) continue;
-            float stored = depthTap(tier, tap, cube);
-            if (stored > reference * 1.0005) { blockers += SHADOW_NEAR / stored; count += 1.0; }
-        }
+        blockerTaps(f, 0, 4, search, blockers, count);
+        if (taps > 4 && count == 4.0 &&
+            litTaps(f, 0, 4, penumbra(radius, major, blockers / count, texel, search)) == 0.0) return 0.0;
+        blockerTaps(f, 4, taps, search, blockers, count);
         if (count == 0.0) return 1.0;
-        float blocker = blockers / count;
-        width = clamp(radius * max(major - blocker, 0.0) / max(blocker, SHADOW_NEAR), texel, search);
+        width = penumbra(radius, major, blockers / count, texel, search);
+        return litTaps(f, 0, taps, width) / float(taps);
     }
-    float sum = 0.0;
-    for (int i = 0; i < 16; ++i) {
-        vec2 offset = rotation * DISK[i] * width;
-        vec3 tap = ray + side * offset.x + up * offset.y;
-        float reference = planeReference(tap, origin, normal, point);
-        // A grazing tap that cannot reach the receiver is not an unoccluded
-        // light sample: counting it as lit opens bright seams at sealed joins.
-        sum += reference < 0.0 ? 0.0 : compareTap(tier, tap, cube, reference * 1.0005);
-    }
-    return sum / 16.0;
+    float rim = litTaps(f, 0, 4, width);
+    if (taps > 4 && rim == 0.0) return 0.0;
+    return (rim + litTaps(f, 4, taps, width)) / float(taps);
 }
 // Unshadowed light from slot i at this point, in Quake brightness units (its
 // strength included, colour not), and the direction toward it.
@@ -424,7 +459,7 @@ void main() {
                     }
                     if (lead != 0xffffffffu) {
                         lightReach(lead, normal, diffuse_effect, liquid, opacity, submerged, toward);
-                        brightest_shadow = shadowFactor(lead,lights.position_range[lead].xyz,diffuse_effect ? toward : normal,lights.shape[lead].y);
+                        brightest_shadow = shadowFactor(lead,lights.position_range[lead].xyz,diffuse_effect ? toward : normal,lights.shape[lead].y,brightest);
                         strongest = brightest * brightest_shadow;
                     }
                 }
@@ -440,7 +475,7 @@ void main() {
                     float needed = max(lights.color_space.y, strongest * lights.color_space.z);
                     float weight = needed > 0.0 ? clamp(value / needed - 1.0, 0.0, 1.0) : 1.0;
                     if (weight > 0.0)
-                        direct *= mix(1.0, shadowFactor(i,lights.position_range[i].xyz,diffuse_effect ? toward : normal,lights.shape[i].y), weight);
+                        direct *= mix(1.0, shadowFactor(i,lights.position_range[i].xyz,diffuse_effect ? toward : normal,lights.shape[i].y,value), weight);
                     illumination += c * direct;
                 }
                 // Static-world bounce from those lights, driven by live styles.

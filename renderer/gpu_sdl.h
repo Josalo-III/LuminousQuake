@@ -28,6 +28,7 @@ int LQ_GPUReadDynamicProbes(lq_gpu *gpu, uint8_t *pixels);
 /* Shadow cube slots redrawn by the most recent render; unchanged slots reuse
  * their cached static-world shadows. */
 uint32_t LQ_GPUShadowUpdates(const lq_gpu *gpu);
+uint32_t LQ_GPUSubmittedFaces(const lq_gpu *gpu);
 /* Cube faces redrawn by the most recent render (moving casters redraw only the
  * faces they touch). */
 uint32_t LQ_GPUShadowFaceUpdates(const lq_gpu *gpu);

@@ -238,6 +238,9 @@ comes from each light's falloff and from occlusion.
   surfaces do not shadow themselves. A point source (radius 0) gives the hard
   geometric shadows that motivated this. Grazing taps that cannot reach the
   receiver contribute no light; treating them as unoccluded opens bright seams.
+  The sample count follows the light's unshadowed brightness at the point
+  (`lq_shadow_detail`: 16 from 64, 8 from 16, otherwise 4), and a point whose
+  four rim samples are all occluded is treated as inside a thick shadow.
 
 Commands (standalone viewer; the playable client uses `lq_renderer 2`):
 

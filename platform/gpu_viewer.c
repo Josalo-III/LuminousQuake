@@ -702,6 +702,7 @@ int LQ_GPUViewer(int argc, char **argv)
     float seconds = 0;
     lq_view view = {0}; view.horizontal_fov = 90;
     view.disable_shadows = Has(argc, argv, "--no-shadows");
+    view.disable_culling = Has(argc, argv, "--no-cull");
     view.static_brush_shadows = 1; /* no gameplay: brush models stay where compiled */
     view.disable_bounce = Has(argc, argv, "--no-bounce");
     const char *exposure = Argument(argc, argv, "--exposure"), *bounce_rays = Argument(argc, argv, "--bounce-rays");
@@ -719,6 +720,14 @@ int LQ_GPUViewer(int argc, char **argv)
             fprintf(stderr, "%s needs a value >= 0 (0 turns it off)\n", k ? "--shadow-dominance" : "--shadow-faint"); return 1;
         }
         *(k ? &view.shadow_dominance : &view.shadow_faint) = value > 0 ? value : -1;
+    }
+    const char *shadow_detail = Argument(argc, argv, "--shadow-detail");
+    if (shadow_detail) {
+        char *end; float value = strtof(shadow_detail, &end);
+        if (!*shadow_detail || *end || !isfinite(value) || value < 0) {
+            fprintf(stderr, "--shadow-detail needs a value >= 0 (0 always takes every sample)\n"); return 1;
+        }
+        view.shadow_detail = value > 0 ? value : -1;
     }
     const char *light_gamma = Argument(argc, argv, "--light-gamma");
     if (light_gamma) {
@@ -998,6 +1007,8 @@ int LQ_GPUViewer(int argc, char **argv)
         } else SDL_Delay(10);
     }
     if (capture && !SaveFrame(capture, error, sizeof(error))) goto done;
+    printf("World faces submitted in the last frame: %u%s\n", LQ_GPUSubmittedFaces(gpu),
+        view.disable_culling ? " (culling disabled)" : "");
     if (luminous) {
         uint32_t active_lights = 0;
         for (uint32_t i = 0; i < view.runtime_light_count; ++i) active_lights += view.runtime_lights[i].position_radius[3] > 0;

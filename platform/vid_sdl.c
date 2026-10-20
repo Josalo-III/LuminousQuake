@@ -60,6 +60,9 @@ static cvar_t r_lerpmove = {"r_lerpmove", "1", true};
  * (0 turns either test off). */
 static cvar_t lq_shadow_faint = {"lq_shadow_faint", "4", true};
 static cvar_t lq_shadow_dominance = {"lq_shadow_dominance", "0.05", true};
+/* A light at least this bright at a point filters its shadow with all 16
+ * samples, from a quarter of it 8, below that 4 (0: always 16). */
+static cvar_t lq_shadow_detail = {"lq_shadow_detail", "64", true};
 void M_Print(int x, int y, char *text);
 void M_DrawCharacter(int x, int y, int character);
 void M_Menu_Options_f(void);
@@ -275,6 +278,7 @@ void VID_Init(unsigned char *palette)
         Cvar_RegisterVariable(&lq_hdr_test);
         Cvar_RegisterVariable(&r_lerpmodels); Cvar_RegisterVariable(&r_lerpmove);
         Cvar_RegisterVariable(&lq_shadow_faint); Cvar_RegisterVariable(&lq_shadow_dominance);
+        Cvar_RegisterVariable(&lq_shadow_detail);
         Cmd_AddCommand("vid_restart", Restart);
         Cmd_AddCommand("vid_togglefullscreen", ToggleFullscreen);
         vid_menudrawfn = VideoMenuDraw;

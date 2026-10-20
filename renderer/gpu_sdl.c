@@ -30,7 +30,8 @@ struct lq_gpu {
     SDL_GPUTexture *multisample_color;
     int smooth, samples, mipmaps, anisotropy;
     uint8_t *submerged; /* per scene draw: the face lies inside a liquid volume */
-    float (*liquid_planes)[4]; /* per scene draw: liquid face normal and distance; zero otherwise */
+    float (*planes)[4]; /* per scene draw: face normal and distance; zero for an empty draw */
+    float (*draw_bounds)[6]; /* per scene draw: min xyz, max xyz */
     lq_mip_palette *mip_palette;
     SDL_GPUSampler *repeat, *point, *linear;
     SDL_GPUBuffer *vertices, *indices;
@@ -66,6 +67,7 @@ struct lq_gpu {
     SDL_GPUSampler *shadow_sampler, *depth_sampler;
     SDL_GPUBuffer *casters; /* static world casters, then brush models at compiled positions */
     uint32_t caster_count, caster_world_count, shadow_updates, shadow_face_updates;
+    uint32_t submitted_faces; /* world faces the last main pass drew */
     /* The static casters by surface, with bounds: a cube face draws only those
      * in the light's range and its frustum, never the whole map. */
     struct lq_caster_range { float min[3], max[3]; uint32_t first, count; } *caster_ranges;
@@ -118,6 +120,7 @@ typedef struct {
     float sun_light[4]; /* rgb: sunlight at normal incidence and full visibility; zero without a sun */
     float shadow_sizes[4]; /* cube face size per shadow array */
     float color_space[4]; /* x: exponent from summed brightness to linear light (Luminous) */
+    float shadow_filter[4]; /* x: a light's brightness at which its shadow takes every sample; 0 always */
     float limit[LQ_MAX_RUNTIME_LIGHTS][4]; /* x: most brightness the light adds to a surface; 0 none */
 } lq_light_uniforms;
 typedef struct { float face_projection[16]; } lq_shadow_uniforms;
@@ -531,8 +534,9 @@ static void ReleaseScene(lq_gpu *g)
     if (g->probe_scene) SDL_ReleaseGPUBuffer(g->device, g->probe_scene);
     g->probe_scene = NULL; g->probe_storage = g->probe_pending = 0;
     memset(g->probe_written_size, 0, sizeof(g->probe_written_size));
-    free(g->textures); free(g->draws); free(g->submerged); free(g->liquid_planes);
-    g->textures = NULL; g->draws = NULL; g->submerged = NULL; g->liquid_planes = NULL; g->vertices = g->indices = NULL;
+    free(g->textures); free(g->draws); free(g->submerged); free(g->planes); free(g->draw_bounds);
+    g->textures = NULL; g->draws = NULL; g->submerged = NULL; g->planes = NULL; g->draw_bounds = NULL;
+    g->vertices = g->indices = NULL;
     g->colormap = g->lightmap = NULL; g->texture_count = g->draw_count = 0;
 }
 static int FrameBuffer(lq_gpu *g, SDL_GPUBuffer **buffer, uint32_t *capacity,
@@ -685,14 +689,25 @@ int LQ_GPUUpload(lq_gpu *g, const lq_scene *s, char *error, size_t size)
     /* A point just in front of each lit face tells whether it lies under a liquid. */
     g->submerged = calloc(s->draw_count ? s->draw_count : 1, 1);
     if (!g->submerged) { SDL_SetError("out of memory"); goto failed; }
-    /* Liquid faces come in coplanar front/back pairs; only the side facing the
-     * camera is drawn, as in Quake, or blending picks one per face at random. */
-    g->liquid_planes = calloc(s->draw_count ? s->draw_count : 1, sizeof(*g->liquid_planes));
-    if (!g->liquid_planes) { SDL_SetError("out of memory"); goto failed; }
-    for (uint32_t i = 0; i < s->draw_count; ++i) if (s->draws[i].flags & LQ_SURFACE_WATER) {
-        const lq_vertex *v = &s->vertices[s->indices[s->draws[i].first_index]];
-        memcpy(g->liquid_planes[i], v->normal, sizeof(v->normal));
-        g->liquid_planes[i][3] = v->normal[0]*v->position[0] + v->normal[1]*v->position[1] + v->normal[2]*v->position[2];
+    /* Each world draw is one planar BSP face. Its plane rejects it when the
+     * camera is behind it, as Quake does; liquid faces come in coplanar
+     * front/back pairs, so this also keeps blending from picking one per face
+     * at random. Its bounds reject it when it lies outside the view. */
+    g->planes = calloc(s->draw_count ? s->draw_count : 1, sizeof(*g->planes));
+    g->draw_bounds = calloc(s->draw_count ? s->draw_count : 1, sizeof(*g->draw_bounds));
+    if (!g->planes || !g->draw_bounds) { SDL_SetError("out of memory"); goto failed; }
+    for (uint32_t i = 0; i < s->draw_count; ++i) {
+        const lq_draw *d = &s->draws[i];
+        if (!d->index_count) continue;
+        const lq_vertex *v = &s->vertices[s->indices[d->first_index]];
+        memcpy(g->planes[i], v->normal, sizeof(v->normal));
+        g->planes[i][3] = v->normal[0]*v->position[0] + v->normal[1]*v->position[1] + v->normal[2]*v->position[2];
+        float *bounds = g->draw_bounds[i];
+        for (int k = 0; k < 3; ++k) { bounds[k] = INFINITY; bounds[k+3] = -INFINITY; }
+        for (uint32_t j = 0; j < d->index_count; ++j) {
+            const float *p = s->vertices[s->indices[d->first_index + j]].position;
+            for (int k = 0; k < 3; ++k) { bounds[k] = fminf(bounds[k], p[k]); bounds[k+3] = fmaxf(bounds[k+3], p[k]); }
+        }
     }
     for (uint32_t i = 0; i < s->draw_count && s->leaf_contents; ++i) {
         const lq_draw *d = &s->draws[i];
@@ -897,6 +912,7 @@ static void LightUniforms(lq_light_uniforms *uniforms, const lq_gpu *g, const lq
     uniforms->color_space[1] = view->shadow_faint < 0 ? 0 : view->shadow_faint > 0 ? view->shadow_faint : LQ_SHADOW_FAINT;
     uniforms->color_space[2] = view->shadow_dominance < 0 ? 0 : view->shadow_dominance > 0 ? view->shadow_dominance : LQ_SHADOW_DOMINANCE;
     uniforms->color_space[3] = LQ_EMISSION_GAIN;
+    uniforms->shadow_filter[0] = view->shadow_detail < 0 ? 0 : view->shadow_detail > 0 ? view->shadow_detail : LQ_SHADOW_DETAIL;
     uniforms->tuning[1] = g->bounce_ratio;
     uniforms->tuning[2] = view->luminous_lighting && g->bounce_ratio > 0 && !view->disable_bounce;
     uniforms->tuning[3] = view->bounce_gain > 0 ? view->bounce_gain : 1;
@@ -1095,6 +1111,7 @@ static void RenderShadows(lq_gpu *g, SDL_GPUCommandBuffer *command, const lq_vie
     }
 }
 uint32_t LQ_GPUShadowUpdates(const lq_gpu *g) { return g ? g->shadow_updates : 0; }
+uint32_t LQ_GPUSubmittedFaces(const lq_gpu *g) { return g ? g->submitted_faces : 0; }
 uint32_t LQ_GPUShadowFaceUpdates(const lq_gpu *g) { return g ? g->shadow_face_updates : 0; }
 size_t LQ_GPUDynamicProbeBytes(const lq_gpu *g) { return g ? g->probe_dynamic_bytes : 0; }
 int LQ_GPUDynamicProbes(lq_gpu *g, const uint8_t *pixels, char *error, size_t size)
@@ -1192,6 +1209,11 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
     if (v->water_warp) { camera.horizontal_fov *= 1+sinf(v->time*1.5f)*0.01f; aspect *= 1+cosf(v->time*1.7f)*0.01f; }
     LQ_ViewMatrix(&camera, aspect, matrix);
     SDL_PushGPUVertexUniformData(command, 0, matrix, sizeof(matrix));
+    /* Camera culling: faces behind the eye or outside the view are not
+     * submitted. It applies to this pass only; shadow casters are chosen
+     * per light, since geometry off screen still casts on screen. */
+    int cull = !v->disable_culling;
+    g->submitted_faces = 0;
     /* Opaque surfaces first; with translucent liquids, water goes last over them. */
     int liquid = v->water_alpha > 0 && v->water_alpha < 1;
     for (int translucent = 0; translucent <= liquid; ++translucent) {
@@ -1206,10 +1228,11 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
             const lq_draw *d = v->world_draws && v->world_draw_count == g->draw_count ? &v->world_draws[i] : &g->draws[i];
             if (!d->index_count || d->material >= g->texture_count) continue;
             if (liquid && translucent != ((d->flags & LQ_SURFACE_WATER) != 0)) continue;
-            if (translucent && g->liquid_planes) {
-                const float *p = g->liquid_planes[i];
-                if (p[0]*v->origin[0] + p[1]*v->origin[1] + p[2]*v->origin[2] < p[3]) continue;
-            }
+            const float *p = g->planes[i];
+            float side = p[0]*v->origin[0] + p[1]*v->origin[1] + p[2]*v->origin[2] - p[3];
+            if (translucent && side < 0) continue;
+            if (cull && (side < -0.01f || !LQ_BoundsInClip(matrix, g->draw_bounds[i]))) continue;
+            ++g->submitted_faces;
             DrawSurface(g, command, pass, v, d, g->submerged && g->submerged[i] ? LQ_SHADER_SUBMERGED : 0,
                 g->textures[d->material], shadows);
         }
@@ -1223,6 +1246,7 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
             if (liquid && translucent != ((d->flags & LQ_SURFACE_WATER) != 0)) continue;
             if ((d->flags & LQ_SURFACE_ERODE) || ((d->flags & LQ_SURFACE_SPRITE) && v->luminous_lighting))
                 continue; /* smoke, and Luminous's feathered sprites: blended last */
+            if (cull && !(d->flags & LQ_SURFACE_WEAPON) && !LQ_BoundsInClip(matrix, g->frame_bounds[i])) continue;
             viewport.max_depth = d->flags & LQ_SURFACE_WEAPON ? 0.3f : 1.0f;
             SDL_SetGPUViewport(pass, &viewport);
             DrawSurface(g, command, pass, v, d, 0, g->frame_textures[d->material], shadows);
@@ -1235,6 +1259,7 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
         for (uint32_t i = 0; smoke && i < g->frame_draw_count; ++i) {
             const lq_draw *d = &g->frame_draws[i];
             if (!(d->flags & LQ_SURFACE_ERODE) && !((d->flags & LQ_SURFACE_SPRITE) && v->luminous_lighting)) continue;
+            if (cull && !LQ_BoundsInClip(matrix, g->frame_bounds[i])) continue;
             if (!bound) {
                 SDL_BindGPUGraphicsPipeline(pass, smoke);
                 viewport.max_depth = 1; SDL_SetGPUViewport(pass, &viewport);
