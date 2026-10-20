@@ -80,6 +80,10 @@ cvar_t ambient_level = {"ambient_level", "0.3"};
 cvar_t ambient_fade = {"ambient_fade", "100"};
 cvar_t snd_noextraupdate = {"snd_noextraupdate", "0"};
 cvar_t snd_show = {"snd_show", "0"};
+/* LuminousQuake: snd_trace 1 logs every sound start (volume, path through
+   open air), every sound cut short by another, and every sound that ended or
+   was cut without ever having been audible. A diagnostic; off by default. */
+cvar_t snd_trace = {"snd_trace", "0"};
 cvar_t _snd_mixahead = {"_snd_mixahead", "0.1", true};
 
 
@@ -193,6 +197,7 @@ void S_Init (void)
 	Cvar_RegisterVariable(&ambient_fade);
 	Cvar_RegisterVariable(&snd_noextraupdate);
 	Cvar_RegisterVariable(&snd_show);
+	Cvar_RegisterVariable(&snd_trace);
 	Cvar_RegisterVariable(&_snd_mixahead);
 
 	if (host_parms.memsize < 0x800000)
@@ -355,6 +360,17 @@ sfx_t *S_PrecacheSound (char *name)
 SND_PickChannel
 =================
 */
+// snd_trace: a channel's sound is going away; say so if it was never heard
+static void SND_TraceUnheard (channel_t *ch, const char *why)
+{
+	if (!snd_trace.value || !ch->sfx || ch->heard)
+		return;
+	Con_Printf ("SND %.2f SILENT %s ent %i chan %i %s; from %.0f %.0f %.0f, listener %.0f %.0f %.0f\n", cl.time,
+		ch->sfx->name, ch->entnum, ch->entchannel, why, ch->origin[0], ch->origin[1], ch->origin[2],
+		listener_origin[0], listener_origin[1], listener_origin[2]);
+	ch->heard = -1;
+}
+
 channel_t *SND_PickChannel(int entnum, int entchannel)
 {
     int ch_idx;
@@ -389,7 +405,15 @@ channel_t *SND_PickChannel(int entnum, int entchannel)
 		return NULL;
 
 	if (channels[first_to_die].sfx)
+	{
+		channel_t *old = &channels[first_to_die];
+		if (snd_trace.value && old->end > paintedtime)
+			Con_Printf ("SND %.2f CUT %s ent %i chan %i, %.2f s left, by ent %i chan %i%s\n", cl.time, old->sfx->name,
+				old->entnum, old->entchannel, (old->end - paintedtime) / (float)shm->speed, entnum, entchannel,
+				old->entnum == entnum ? "" : " (stolen)");
+		SND_TraceUnheard (old, "cut");
 		channels[first_to_die].sfx = NULL;
+	}
 
     return &channels[first_to_die];    
 }       
@@ -428,6 +452,7 @@ void SND_Spatialize(channel_t *ch)
     vec_t lscale, rscale, scale;
     vec3_t source_vec;
 
+	snd_shut = false;
 // anything coming from the view entity will allways be full volume
 	if (ch->entnum == cl.viewentity)
 	{
@@ -442,11 +467,10 @@ void SND_Spatialize(channel_t *ch)
 	
 	dist = VectorNormalize(source_vec);
 	gain = SND_DistanceGain(dist, ch->dist_mult);
-	snd_shut = false;
 	if (gain > 0 && ch->dist_mult > 0)
 	{
 		vec_t travelled, open;
-		int path = LQ_SoundPathDistance(ch->origin, dist, &travelled, &open);
+		int path = LQ_SoundPathDistance(ch->entnum, ch->origin, dist, &travelled, &open);
 
 		if (path < 0)
 		{
@@ -523,6 +547,26 @@ void S_StartSound(int entnum, int entchannel, sfx_t *sfx, vec3_t origin, float f
 	target_chan->entnum = entnum;
 	target_chan->entchannel = entchannel;
 	SND_Spatialize(target_chan);
+	target_chan->heard = target_chan->leftvol || target_chan->rightvol;
+	if (snd_trace.value)
+	{
+		vec3_t		d;
+		vec_t		straight, travelled = 0, open = 1;
+		int			path = 0;
+		qboolean	view = entnum == cl.viewentity;
+
+		VectorSubtract (origin, listener_origin, d);
+		straight = Length (d);
+		if (!view && target_chan->dist_mult > 0)
+			path = LQ_SoundPathDistance (entnum, origin, straight, &travelled, &open);
+		Con_Printf ("SND %.2f START %s ent %i chan %i%s vol %i attn %.2f: L %i R %i, %.0f units, path %s",
+			cl.time, sfx->name, entnum, entchannel, view ? " (you)" : "", vol, attenuation,
+			target_chan->leftvol, target_chan->rightvol, straight,
+			view ? "-" : path < 0 ? "shut" : path > 0 ? "open" : "none");
+		if (path > 0)
+			Con_Printf (" %.0f units, open %.2f", travelled, open);
+		Con_Printf ("%s\n", !target_chan->heard && !snd_shut && !view ? " (dropped)" : "");
+	}
 
 	if (!target_chan->leftvol && !target_chan->rightvol && !snd_shut)
 		return;		// not audible at all; a shut-off sound plays on silently
@@ -568,6 +612,7 @@ void S_StopSound(int entnum, int entchannel)
 		if (channels[i].entnum == entnum
 			&& channels[i].entchannel == entchannel)
 		{
+			SND_TraceUnheard (&channels[i], "stopped");
 			channels[i].end = 0;
 			channels[i].sfx = NULL;
 			return;
@@ -858,6 +903,10 @@ void S_Update(vec3_t origin, vec3_t forward, vec3_t right, vec3_t up)
 		if (!ch->sfx)
 			continue;
 		SND_Spatialize(ch);         // respatialize channel
+		if (ch->leftvol || ch->rightvol)
+			ch->heard = 1;
+		else if (!ch->heard && ch->end <= paintedtime && i < NUM_AMBIENTS + MAX_DYNAMIC_CHANNELS)
+			SND_TraceUnheard (ch, "ended");
 		if (!ch->leftvol && !ch->rightvol)
 			continue;
 
@@ -1152,7 +1201,7 @@ static void S_SoundPaths_f(void)
 		straight = Length (delta);
 		if (SND_DistanceGain (straight, ch->dist_mult) <= 0)
 			continue;
-		path = LQ_SoundPathDistance (ch->origin, straight, &travelled, &open);
+		path = LQ_SoundPathDistance (ch->entnum, ch->origin, straight, &travelled, &open);
 		Con_Printf ("%-24s %5.0f straight, %s %3i/%3i open %.2f\n", ch->sfx->name, straight,
 			path < 0 ? "  shut off" : path > 0 ? va("%5.0f path", travelled) : "  no paths",
 			ch->leftvol, ch->rightvol, open);

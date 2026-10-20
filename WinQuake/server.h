@@ -247,7 +247,7 @@ int SV_MaxModels (void);
 int SV_MaxSounds (void);
 void SV_SignonCut (void);
 byte SV_EntityAlpha (edict_t *ent);
-void SV_SendSignonChunk (client_t *client);
+int SV_SendSignonChunk (client_t *client);	// 0 if the client was dropped
 
 void SV_SetIdealPitch (void);
 

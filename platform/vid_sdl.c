@@ -433,6 +433,7 @@ static int video_cursor, video_choice, video_fullscreen, video_vsync;
 static int video_filter, video_msaa, video_mipmaps, video_anisotropy, video_water, video_tubes, video_particles;
 static int video_lerp;
 static int video_hdr, video_peak; /* lq_hdr; index into peak_levels */
+static float video_peak_custom; /* a lq_hdr_peak set from the console that no preset matches; kept until changed here */
 static const float peak_levels[] = {0, 1.5f, 2, 3, 4, 6, 10};
 static const char *tube_cameras[] = {"eye", "film 24p", "NTSC 1/60", "NTSC 1/250", "PAL 25p"};
 static const float water_levels[] = {1, 0.8f, 0.6f, 0.4f};
@@ -457,8 +458,9 @@ static void VideoMenuInit(void)
     video_particles = lq_particles.value != 0;
     video_lerp = r_lerpmodels.value != 0 || r_lerpmove.value != 0;
     video_hdr = lq_hdr.value != 0;
-    video_peak = 0;
+    video_peak = 0; video_peak_custom = 0;
     for (int i = 1; i < 7; ++i) if (fabsf(lq_hdr_peak.value - peak_levels[i]) < 0.01f) video_peak = i;
+    if (!video_peak && isfinite(lq_hdr_peak.value) && lq_hdr_peak.value >= 1) video_peak_custom = lq_hdr_peak.value;
     video_msaa = gpu_msaa.value == 4 ? 2 : gpu_msaa.value == 2 ? 1 : 0;
     video_fov = Cvar_VariableValue("fov");
     if (!isfinite(video_fov) || video_fov < 10 || video_fov > 170) video_fov = 90;
@@ -482,7 +484,8 @@ static void VideoMenuDraw(void)
     M_Print(32, 120, "3D particles"); M_Print(168, 120, video_particles ? "on" : "off");
     M_Print(32, 130, "Smooth animation"); M_Print(168, 130, video_lerp ? "on" : "off");
     M_Print(32, 140, "HDR"); M_Print(168, 140, video_hdr ? "auto" : "off");
-    M_Print(32, 150, "HDR peak"); M_Print(168, 150, video_peak ? va("%gx white", peak_levels[video_peak]) : "as reported");
+    M_Print(32, 150, "HDR peak"); M_Print(168, 150, video_peak ? va("%gx white", peak_levels[video_peak]) :
+        video_peak_custom ? va("%gx white", video_peak_custom) : "as reported");
     M_Print(32, 160, "Apply changes");
     M_DrawCharacter(16, 20 + video_cursor * 10, 12 + ((int)(realtime * 4) & 1));
     M_Print(32, 174, va("Current: %u x %u", vid.width* (LQ_UIActive() ? LQ_UIScale() : 1), vid.height* (LQ_UIActive() ? LQ_UIScale() : 1)));
@@ -530,7 +533,7 @@ static void VideoMenuKey(int key)
     else if (video_cursor == 10) video_particles = !video_particles;
     else if (video_cursor == 11) video_lerp = !video_lerp;
     else if (video_cursor == 12) video_hdr = !video_hdr;
-    else if (video_cursor == 13) video_peak = (video_peak + (key == K_LEFTARROW ? 6 : 1)) % 7;
+    else if (video_cursor == 13) { video_peak = (video_peak + (key == K_LEFTARROW ? 6 : 1)) % 7; video_peak_custom = 0; }
     else if (key == K_ENTER) {
         Cvar_SetValue("vid_width", resolutions[video_choice][0]);
         Cvar_SetValue("vid_height", resolutions[video_choice][1]);
@@ -542,7 +545,7 @@ static void VideoMenuKey(int key)
         Cvar_SetValue("r_fluorescent", video_tubes);
         Cvar_SetValue("lq_particles", video_particles);
         Cvar_SetValue("r_lerpmodels", video_lerp); Cvar_SetValue("r_lerpmove", video_lerp);
-        Cvar_SetValue("lq_hdr", video_hdr); Cvar_SetValue("lq_hdr_peak", peak_levels[video_peak]);
+        Cvar_SetValue("lq_hdr", video_hdr); Cvar_SetValue("lq_hdr_peak", video_peak_custom ? video_peak_custom : peak_levels[video_peak]);
         Cbuf_AddText("vid_restart\n");
         video_menu_active = false; video_applied = true;
     }

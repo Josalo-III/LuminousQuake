@@ -1329,7 +1329,8 @@ void Host_PreSpawn_f (void)
 	// LuminousQuake: a large signon goes out in pieces (SV_SendSignonChunk);
 	// the last piece ends with svc_signonnum 2
 	host_client->signon_sent = 0;
-	SV_SendSignonChunk (host_client);
+	if (!SV_SendSignonChunk (host_client))
+		return;	// dropped
 	host_client->sendsignon = true;
 }
 

@@ -366,7 +366,7 @@ int main(int argc, char **argv)
     if (i && i + 1 < com_argc) {
         long kb = atol(com_argv[i + 1]);
         if (kb < 16 * 1024) Sys_Error("-heapsize needs at least 16384 KB");
-        if (kb > 4L * 1024 * 1024 - 1) Sys_Error("-heapsize is limited to 4 GB");
+        if (kb > INT_MAX / 1024) Sys_Error("-heapsize is limited to 2 GB (2097151 KB)");
         parms.memsize = (int)(kb * 1024);
     }
     parms.membase = malloc(parms.memsize);

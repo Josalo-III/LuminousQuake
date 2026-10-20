@@ -974,7 +974,8 @@ void SV_SendClientMessages (void)
 			// LuminousQuake: continue a signon too large for one message
 			if (host_client->signon_sent >= 0 && !host_client->message.cursize)
 			{
-				SV_SendSignonChunk (host_client);
+				if (!SV_SendSignonChunk (host_client))
+					continue;	// dropped: its signon cannot be sent
 				host_client->sendsignon = true;
 			}
 			if (!host_client->sendsignon)
@@ -1074,13 +1075,13 @@ void SV_SignonCut (void)
 	sv.signon_cuts[sv.num_signon_cuts++] = at;
 }
 
-void SV_SendSignonChunk (client_t *client)
+int SV_SendSignonChunk (client_t *client)
 {
 	int	start = client->signon_sent, end = sv.signon.cursize;
 	int	limit, room, lo, hi;
 
 	if (start < 0)
-		return;
+		return 1;
 	if (!start)
 		Con_DPrintf ("Signon: %i bytes, %i message starts\n", sv.signon.cursize, sv.num_signon_cuts);
 	limit = sv.protocol == PROTOCOL_NETQUAKE ? NQ_SIGNON_CHUNK : MAX_MSGLEN - 1024;
@@ -1101,6 +1102,17 @@ void SV_SendSignonChunk (client_t *client)
 		else if (lo < sv.num_signon_cuts)
 			end = sv.signon_cuts[lo];
 	}
+	// No cut leaves a piece the message can hold (too few cuts were recorded,
+	// or one engine message is larger than the buffer): drop the client rather
+	// than overflow its message.
+	if (end - start + 2 > client->message.maxsize - client->message.cursize)
+	{
+		Con_Printf ("Signon too large for %s: %i bytes from %i, %i fit; dropping client\n",
+			client->name, end - start, start, client->message.maxsize - client->message.cursize - 2);
+		client->signon_sent = -1;
+		SV_DropClient (false);
+		return 0;
+	}
 	SZ_Write (&client->message, sv.signon.data + start, end - start);
 	if (end >= sv.signon.cursize)
 	{
@@ -1110,6 +1122,7 @@ void SV_SendSignonChunk (client_t *client)
 	}
 	else
 		client->signon_sent = end;
+	return 1;
 }
 
 /*

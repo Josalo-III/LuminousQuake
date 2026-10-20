@@ -10,6 +10,12 @@ beside it. World edges are traced once per cell and cached; doors, lifts and
 other brush entities move, so steps crossing one are traced against it during
 every search.
 
+A brush entity's sound comes from the centre of its bounds, which is often
+inside the mover itself or inside the wall it slides into (a lift at the
+bottom of its shaft, a bar or secret door in its slot). When no open cell
+beside that centre reaches it, the sound is reached from the open cells
+touching the mover's bounds instead, through clear air to its surface.
+
 Doors muffle rather than shut. A second search ignores doors, lifts and other
 brush entities; a sound reached only that way plays at SND_MUFFLE, as through a
 closed door. The change fades: a door's seal rises from 0 to 1 over the last
@@ -81,6 +87,15 @@ static qboolean	searched;
 static snd_mover_t	movers[SND_MAX_MOVERS];
 static int		mover_count;
 static snd_motion_t	motion[MAX_EDICTS];
+
+// a brush entity's sound reached at its surface, per search and pass
+typedef struct
+{
+	unsigned short	generation;
+	unsigned char	found;
+	vec_t			distance;
+} snd_surface_t;
+static snd_surface_t	surface_cache[2][MAX_EDICTS];
 
 static void SND_Tables (void)
 {
@@ -403,6 +418,7 @@ static void SND_Search (vec3_t listener)
 	if (!++generation)
 	{
 		memset (stamps, 0, sizeof(stamps));
+		memset (surface_cache, 0, sizeof(surface_cache));
 		generation = 1;
 	}
 	SND_FindMovers ();
@@ -449,7 +465,88 @@ void LQ_SoundPathsUpdate (vec3_t listener)
 	searched_at = realtime;
 }
 
-static int SND_PassDistance (vec3_t source, vec_t *distance)
+// From the open cells touching a brush entity's bounds, the shortest way to
+// its surface; 0 when none reaches it. The answer holds until the next
+// search, so it is kept per entity and pass rather than traced every frame.
+
+static int SND_MoverSurfaceSearch (int entnum, vec_t *distance);
+
+static int SND_MoverSurfaceDistance (int entnum, vec_t *distance)
+{
+	snd_surface_t	*c;
+
+	if (entnum <= 0 || entnum >= MAX_EDICTS)
+		return 0;
+	c = &surface_cache[pass][entnum];
+	if (c->generation != generation)
+	{
+		c->generation = generation;
+		c->found = SND_MoverSurfaceSearch (entnum, &c->distance);
+	}
+	if (c->found)
+		*distance = c->distance;
+	return c->found;
+}
+
+static int SND_MoverSurfaceSearch (int entnum, vec_t *distance)
+{
+	entity_t	*ent;
+	int			lo[3], hi[3], x, y, z, k, index, found = 0;
+	snd_cell_t	*cell;
+	vec3_t		mins, maxs, a, p, delta;
+	vec_t		length, through, best = 0;
+
+	if (entnum <= 0 || entnum >= cl.num_entities)
+		return 0;
+	ent = &cl_entities[entnum];
+	if (!ent->model || ent->model->type != mod_brush || ent->model->name[0] != '*')
+		return 0;
+	VectorAdd (ent->origin, ent->model->mins, mins);
+	VectorAdd (ent->origin, ent->model->maxs, maxs);
+	for (k=0 ; k<3 ; k++)
+	{
+		vec3_t	edge;
+
+		edge[0] = edge[1] = edge[2] = 0;
+		edge[k] = mins[k] - SND_CELL;
+		lo[k] = (int)floor(edge[k] / SND_CELL);
+		edge[k] = maxs[k] + SND_CELL;
+		hi[k] = (int)floor(edge[k] / SND_CELL);
+		if (lo[k] < origin_cell[k] - SND_REACH)
+			lo[k] = origin_cell[k] - SND_REACH;
+		if (hi[k] > origin_cell[k] + SND_REACH)
+			hi[k] = origin_cell[k] + SND_REACH;
+	}
+	for (x=lo[0] ; x<=hi[0] ; x++)
+		for (y=lo[1] ; y<=hi[1] ; y++)
+			for (z=lo[2] ; z<=hi[2] ; z++)
+			{
+				index = SND_Index (x, y, z);
+				cell = &cells[index];
+				if (stamp[index] != generation || cell->x != x || cell->y != y || cell->z != z)
+					continue;
+				SND_Centre (x, y, z, a);
+				for (k=0 ; k<3 ; k++)	// the nearest point of the mover's bounds
+					p[k] = a[k] < mins[k] ? mins[k] : a[k] > maxs[k] ? maxs[k] : a[k];
+				VectorSubtract (p, a, delta);
+				length = Length (delta);
+				if (length > SND_CELL * 1.75)	// not touching the bounds
+					continue;
+				through = cost[index] + length;
+				if (found && through >= best)
+					continue;
+				if (length > 0 && (SND_Reach (cached_world->hulls, a, p, length) < length - 1
+					|| SND_MoverReach (a, p, length, p) < length - 1))
+					continue;
+				best = through;
+				found = 1;
+			}
+	if (found)
+		*distance = best;
+	return found;
+}
+
+static int SND_PassDistance (int entnum, vec3_t source, vec_t *distance)
 {
 	int			s[3], x, y, z, index, found = 0;
 	snd_cell_t	*cell;
@@ -481,7 +578,7 @@ static int SND_PassDistance (vec3_t source, vec_t *distance)
 				found = 1;
 			}
 	if (!found)
-		return -1;
+		return SND_MoverSurfaceDistance (entnum, distance) ? 1 : -1;
 	*distance = best;
 	return 1;
 }
@@ -491,7 +588,7 @@ static int SND_PassDistance (vec3_t source, vec_t *distance)
    *open scales the sound when it is reached only through doors: SND_MUFFLE
    through a shut one, fading with the most sealed door's seal now, so the fade
    ends exactly as a door shuts. */
-int LQ_SoundPathDistance (vec3_t source, vec_t straight, vec_t *distance, vec_t *open)
+int LQ_SoundPathDistance (int entnum, vec3_t source, vec_t straight, vec_t *distance, vec_t *open)
 {
 	int		i, found;
 	float	seal, most, partial = 0;
@@ -499,11 +596,11 @@ int LQ_SoundPathDistance (vec3_t source, vec_t straight, vec_t *distance, vec_t 
 	*open = 1;
 	if (!searched || straight > SND_PATH_RANGE)
 		return 0;
-	found = SND_PassDistance (source, distance);
+	found = SND_PassDistance (entnum, source, distance);
 	if (found > 0 || !leaky)
 		return found;
 	SND_UsePass (1);
-	found = SND_PassDistance (source, distance);
+	found = SND_PassDistance (entnum, source, distance);
 	SND_UsePass (0);
 	if (found < 0)
 		return -1;

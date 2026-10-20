@@ -422,6 +422,14 @@ int	Datagram_GetMessage (qsocket_t *sock)
 
 			length -= NET_HEADERSIZE;
 
+			if (sock->receiveMessageLength + length > NET_MAXMESSAGE)
+			{	// LuminousQuake: never write past the reassembly buffer; the
+				// stream is out of step, so the connection is closed
+				Con_Printf ("Datagram_GetMessage: reliable message too long\n");
+				sock->receiveMessageLength = 0;
+				return -1;
+			}
+
 			if (flags & NETFLAG_EOM)
 			{
 				SZ_Clear(&net_message);
@@ -433,12 +441,6 @@ int	Datagram_GetMessage (qsocket_t *sock)
 				break;
 			}
 
-			if (sock->receiveMessageLength + length > NET_MAXMESSAGE)
-			{	// LuminousQuake: never write past the reassembly buffer
-				Con_Printf ("Datagram_GetMessage: reliable message too long\n");
-				sock->receiveMessageLength = 0;
-				continue;
-			}
 			Q_memcpy(sock->receiveMessage + sock->receiveMessageLength, packetBuffer.data, length);
 			sock->receiveMessageLength += length;
 			continue;

@@ -77,6 +77,7 @@ typedef struct
 	vec3_t	origin;			// origin of sound effect
 	vec_t	dist_mult;		// distance multiplier (attenuation/clipK)
 	int		master_vol;		// 0-255 master volume
+	int		heard;			// LuminousQuake: audible at some point (snd_trace); -1 once reported unheard
 } channel_t;
 
 typedef struct
@@ -190,4 +191,5 @@ qboolean LQ_SoundSamples(const char *name, const void **data, int *width, int *c
 qboolean LQ_StaticSoundClock(const char *name, double *position, qboolean *audible);
 /* LuminousQuake: sound travel through open air (snd_path.c). */
 void LQ_SoundPathsUpdate(vec3_t listener);
-int LQ_SoundPathDistance(vec3_t source, vec_t straight, vec_t *distance, vec_t *open);
+// entnum: the sound's entity; a brush entity's sound is also reached at its surface
+int LQ_SoundPathDistance(int entnum, vec3_t source, vec_t straight, vec_t *distance, vec_t *open);

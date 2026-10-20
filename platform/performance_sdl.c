@@ -113,7 +113,7 @@ static int MonitorMain(void *unused)
         if (!valid) { next = LQ_PERF_UNKNOWN; hot = cool = 0; }
         else if (busy >= 0.85) {
             cool = 0;
-            if (++hot >= 2) { next = LQ_PERF_CONSTRAINED; hot = 2; }
+            if (++hot >= 1) { next = LQ_PERF_CONSTRAINED; hot = 1; }
         } else if (busy <= 0.65) {
             hot = 0;
             if (++cool >= 4) { next = LQ_PERF_HEADROOM; cool = 4; }
