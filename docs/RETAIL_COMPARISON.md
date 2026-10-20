@@ -115,6 +115,6 @@ directly.
 
 ```sh
 innoextract -d quake-retail setup_quake_the_offering_2.0.0.6.exe
-python3 tests/retail_smoke.py ./build/luminousquake "$PWD/quake-retail/app"
-./build/luminousquake-gpu -basedir "$PWD/quake-retail/app" -map e2m3 --luminous --bounce-scale 1
+python3 tests/retail_smoke.py ./build/luminousquake "$PWD/quake-retail"
+./build/luminousquake-gpu -basedir "$PWD/quake-retail" -map e2m3 --luminous --bounce-scale 1
 ```

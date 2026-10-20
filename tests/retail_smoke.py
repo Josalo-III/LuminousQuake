@@ -77,7 +77,9 @@ with tempfile.TemporaryDirectory(prefix='lqr-') as directory:
             all(f.stat().st_size > 100 for ext in ('dem', 'sav') for f in user.glob('*/id1/lq_smoke.' + ext)) and
             (root / 'frame.bmp').stat().st_size > 1000)
     if classic:
-        good = (good and log.count('Classic GPU: copied live BSP world;') >= 4 and
+        # Reloading a recent map reuses its cached scene instead of copying it.
+        loads = log.count('Classic GPU: copied live BSP world;') + log.count('Classic GPU: reused the scene')
+        good = (good and loads >= 4 and
                 'Software renderer fallback: Software selected' in log)
     good = good and before == {p.name: p.read_bytes() for p in game.iterdir() if not p.is_symlink()}
     if not good:
