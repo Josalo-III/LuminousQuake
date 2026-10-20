@@ -1007,8 +1007,8 @@ int LQ_GPUViewer(int argc, char **argv)
         } else SDL_Delay(10);
     }
     if (capture && !SaveFrame(capture, error, sizeof(error))) goto done;
-    printf("World faces submitted in the last frame: %u%s\n", LQ_GPUSubmittedFaces(gpu),
-        view.disable_culling ? " (culling disabled)" : "");
+    printf("World faces submitted in the last frame: %u%s; brightest light known on %u\n", LQ_GPUSubmittedFaces(gpu),
+        view.disable_culling ? " (culling disabled)" : "", LQ_GPUKnownLeadFaces(gpu));
     if (luminous) {
         uint32_t active_lights = 0;
         for (uint32_t i = 0; i < view.runtime_light_count; ++i) active_lights += view.runtime_lights[i].position_radius[3] > 0;

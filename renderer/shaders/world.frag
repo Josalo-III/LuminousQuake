@@ -25,6 +25,7 @@ layout(set=3,binding=0,std140) uniform Surface {
     vec4 dynamic_lights[32];
     uvec4 light_bits; // Luminous: runtime-light slots reaching the face; Classic: dlights in x
     vec4 bounce_weights; // live style value per bounce layer
+    vec4 face_light; // x: 1 + the slot brightest everywhere on this face (found on the CPU); 0 unknown
 } surface;
 // Luminous runtime lights, pushed once per frame. Each slot owns a shadow cube.
 layout(set=3,binding=1,std140) uniform Lights {
@@ -329,8 +330,9 @@ float lightReach(uint i, vec3 normal, bool diffuse_effect, bool liquid, float op
         direct *= taper * taper;
     }
     vec4 cone = lights.spot[i];
+    float spot = 1.0;
     if (cone.w >= -1.0) { // see LQ_SpotFactor: world-space blur across the cone edge
-        float along = dot(-direction,cone.xyz), spot = 1.0, inner = lights.shape[i].x;
+        float along = dot(-direction,cone.xyz), inner = lights.shape[i].x;
         if (cone.w > 0.01) {
             float edge = distance * sqrt(max(1.0 - along*along, 0.0)) -
                 distance * along * sqrt(max(1.0 - cone.w*cone.w, 0.0)) / cone.w;
@@ -339,10 +341,12 @@ float lightReach(uint i, vec3 normal, bool diffuse_effect, bool liquid, float op
         } else if (along <= cone.w) return 0.0;
         if (inner > cone.w) spot *= smoothstep(cone.w,inner,along);
         if (spot <= 0.0) return 0.0;
-        direct *= spot;
     }
     direct *= lights.color_strength[i].w;
+    // The cap bounds the light before its cone shapes it, so a torch accent's
+    // penumbra still tapers from the cap to zero instead of being clipped flat.
     if (lights.limit[i].x > 0.0) direct = min(direct, lights.limit[i].x);
+    direct *= spot;
     if (!liquid && opacity > 0.0 && submerged != (lights.shape[i].z > 0.5)) direct *= 1.0 - opacity;
     return direct;
 }
@@ -448,7 +452,16 @@ void main() {
                 float strongest = 0.0, brightest = 0.0, brightest_shadow = 1.0;
                 uint lead = 0xffffffffu;
                 vec3 toward;
-                if (lights.color_space.z > 0.0) {
+                // A face whose brightest light is the same everywhere names it
+                // (see KnownLead in gpu_sdl.c), and the search is skipped.
+                uint known = uint(surface.face_light.x + 0.5);
+                if (lights.color_space.z > 0.0 && known != 0u && !actor) {
+                    lead = known - 1u;
+                    vec3 c = lights.color_strength[lead].rgb;
+                    brightest = lightReach(lead, normal, diffuse_effect, liquid, opacity, submerged, toward) * max(c.r, max(c.g, c.b));
+                    brightest_shadow = shadowFactor(lead,lights.position_range[lead].xyz,diffuse_effect ? toward : normal,lights.shape[lead].y,brightest);
+                    strongest = brightest * brightest_shadow;
+                } else if (lights.color_space.z > 0.0) {
                     for (uint word = 0u; word < 4u; ++word)
                     for (uint bits = surface.light_bits[word]; bits != 0u; bits &= bits - 1u) {
                         uint i = word * 32u + uint(findLSB(bits));

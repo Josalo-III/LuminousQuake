@@ -98,7 +98,9 @@ comes from each light's falloff and from occlusion.
   core's half-angle has tan = √0.2 × tan(outer), and the other 80% tapers to
   the blurred edge. An authored tighter `_softangle` is kept. Each adds at
   most 32 brightness units (`LQ_TORCH_ACCENT_LIMIT`; 128 is normal) to any
-  surface, applied per light in the shader (`limit`). The accent is light on
+  surface, applied per light in the shader (`limit`). The cap applies before
+  the cone, so the penumbra tapers from it to zero; applied after the cone
+  (October 18–20), it clipped the taper flat into hard discs. The accent is light on
   the wall, never a highlight: once the frame went floating point with an 8×
   ceiling, uncapped accents bloomed into HDR highlights around every torch. On E1M3 that is
   49 lights. The broad flat patch on the wall behind each torch becomes a glow

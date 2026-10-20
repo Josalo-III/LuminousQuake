@@ -12,6 +12,7 @@
 #include "effects.h"
 #include "fluorescent.h"
 #include "jobs.h"
+#include "background.h"
 #ifdef __APPLE__
 #include <mach/mach.h>
 #elif defined(_WIN32)
@@ -233,10 +234,39 @@ static lq_view view;
 static unsigned palette_cache[256];
 static qboolean palette_valid;
 int LQ_RenderBridgeActive(void) { return owner != NULL; }
-void LQ_RenderAfterCommands(void) { LQ_ApplyRenderer(); }
+void LQ_RenderAfterCommands(void) { LQ_BackgroundPoll(); LQ_ApplyRenderer(); }
+
+/* Background work on the loaded map's scene is tagged with scene_tasks and
+ * cancelled before that scene is moved to the cache or freed. */
+static uint32_t scene_tasks;
+static void CancelSceneTasks(void) { if (scene_tasks) LQ_BackgroundCancel(scene_tasks); }
+typedef struct {
+    lq_scene scene; /* a shallow copy: its arrays stay alive until cancelled */
+    lq_shadow_free_count count;
+    double seconds;
+    int done;
+} shadow_free_task;
+static void ShadowFreeRun(void *context, const volatile int *cancel)
+{
+    shadow_free_task *task = context;
+    Uint64 started = SDL_GetTicksNS();
+    task->done = LQ_SceneCountShadowFree(&task->scene, cancel, &task->count);
+    task->seconds = (double)(SDL_GetTicksNS() - started) / 1e9;
+}
+static void ShadowFreeFinish(void *context, int cancelled)
+{
+    shadow_free_task *task = context;
+    if (!cancelled && task->done && task->count.pairs)
+        Con_Printf("Luminous: %llu of %llu light-face pairs (%.0f%%; %.0f%% of their face area) need no shadow lookup, "
+            "proved in %.1f s in the background.\n", (unsigned long long)task->count.clear,
+            (unsigned long long)task->count.pairs, 100.0 * task->count.clear / task->count.pairs,
+            task->count.area > 0 ? 100.0 * task->count.clear_area / task->count.area : 0, task->seconds);
+    free(task);
+}
 
 void LQ_RenderBridgeShutdown(void)
 {
+    CancelSceneTasks();
     LQ_EntitiesReset(); LQ_SceneFree(&map_scene); map_key = 0; SceneCacheFreeAll(); free(world_draws); world_draws = NULL;
     free(interaction_draws); interaction_draws = NULL; memset(runtime_lights, 0, sizeof(runtime_lights));
     free(dynamic_probes); dynamic_probes = NULL;
@@ -247,6 +277,7 @@ void LQ_RenderBridgeShutdown(void)
     owner = NULL; loaded = captured_scene = palette_valid = false;
 }
 void LQ_RenderMapChanged(void) {
+    CancelSceneTasks();
     loaded = false; captured_scene = direct_frame = false;
     memset(spark_lights, 0, sizeof(spark_lights)); next_spark = 0;
     LQ_EntitiesReset(); SceneCacheStore(); free(world_draws); world_draws = NULL;
@@ -322,6 +353,11 @@ void LQ_RenderBegin(void)
         free(dynamic_probes); dynamic_probes = NULL;
         if (luminous && LQ_GPUDynamicProbeBytes(gpu)) dynamic_probes = malloc(LQ_GPUDynamicProbeBytes(gpu));
         loaded = true; palette_valid = false;
+        if (luminous) {
+            shadow_free_task *task = calloc(1, sizeof(*task));
+            if (!++scene_tasks) scene_tasks = 1;
+            if (task) { task->scene = map_scene; LQ_BackgroundSubmit(scene_tasks, ShadowFreeRun, ShadowFreeFinish, task); }
+        }
         if (!cached) Con_Printf("%s: copied live BSP world; map resources replaced.\n", luminous ? "Luminous (experimental)" : "Classic GPU");
     }
 }
@@ -645,9 +681,10 @@ qboolean LQ_RenderBridgePresent(void)
         uint32_t world = 0;
         for (uint32_t i = 0; i < map_scene.draw_count; ++i) world += world_draws[i].index_count != 0;
         if (readout_since > 0)
-            Con_DPrintf("Luminous frame work: %.0f fps; this frame %u lights, %u shadow faces redrawn, %u entity draws, %u of %u world draws, %u lights in view; probe trace %u lights, %.0f probes\n",
+            Con_DPrintf("Luminous frame work: %.0f fps; this frame %u lights, %u shadow faces redrawn, %u entity draws, %u of %u world draws (%u drawn, brightest light known on %u), %u lights in view; probe trace %u lights, %.0f probes\n",
                 (host_framecount - frames_at) / (realtime - readout_since), LQ_GPUShadowUpdates(gpu), LQ_GPUShadowFaceUpdates(gpu),
-                f ? f->draw_count : 0, world, map_scene.draw_count, view.runtime_light_count, probe_lights, probe_volume);
+                f ? f->draw_count : 0, world, map_scene.draw_count, LQ_GPUSubmittedFaces(gpu), LQ_GPUKnownLeadFaces(gpu),
+                view.runtime_light_count, probe_lights, probe_volume);
         readout_since = realtime; frames_at = host_framecount;
     }
     return true;

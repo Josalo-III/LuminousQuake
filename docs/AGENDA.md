@@ -256,6 +256,32 @@ them. Principles, decided October 17, 2026:
   or keep emitters unshadowed (the rerelease's lighting is otherwise kept as
   authored, item 1a). A lead to check: the pre-HDR build measured higher in
   interleaved runs (32 against 11-24 fps).
+- **Done October 20: CPU-side review fixes and finer light lists.** Review
+  items 3, 5 and 8 ([performance review](PERFORMANCE_REVIEW.md)): the overlay
+  texture is reused, the swapchain is waited for after recording, cube
+  rebuilds classify static casters once, and caster rest matching is linear.
+  Each world face drawn now gets the light that is brightest everywhere on it
+  when one is (`KnownLead` in `renderer/gpu_sdl.c`, from conservative bounds
+  of every light over the face), and the shader skips its search for the
+  brightest light there; the image is unchanged. The `developer 1` readout
+  shows how many faces this covers. The user reported play "seems better";
+  not yet measured.
+- **Background queue, October 20** (`platform/background_sdl.c`). One
+  low-priority thread for work that may finish frames later. Results return
+  on the main thread once a frame; a map change or video restart cancels the
+  map's tasks before its scene is cached or freed. First task: after each
+  Luminous map load, count the light-face pairs whose shadow lookup provably
+  finds nothing (`LQ_SceneCountShadowFree`), printed to the console. Next:
+  if that share is large, skip those lookups in the shader, with a runtime
+  test against moving casters.
+- **CPU or GPU, October 20.** What suits each: per-pixel and per-texel work
+  stays on the GPU; per-light, per-face and per-entity work with branches
+  suits the CPU; work that may arrive frames late suits idle cores. Large
+  per-frame uploads cost more on discrete GPUs than on shared memory. Runtime
+  balancing mostly adjusts rates (refreshes per frame, workers) rather than
+  moving tasks; gameplay-light probes are the first task with both paths.
+  It needs a GPU load signal: SDL 3.4 has no GPU timers, but the swapchain
+  wait now measures GPU backlog.
 - **Recent maps stay loaded.** Decided October 17: keep the built scenes of
   the last two maps in memory, under a size limit. A map restart after a
   death, frequent on Nightmare, then reuses them instead of rebuilding. The

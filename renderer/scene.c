@@ -235,6 +235,130 @@ static int LightsDraw(const lq_scene *scene, uint32_t d, const lq_light_source *
     return !source->spotlight ||
         LQ_SpotReachesBox(origin, source->spot_direction, source->spot_outer, LQ_SPOT_EDGE_BLUR + source->source_radius, bounds);
 }
+/* Whether static world solid (or sky) may meet a convex hull of points. A
+ * node the hull straddles is searched on both sides with the whole hull, so
+ * the answer errs towards yes. */
+static int HullMeetsSolid(const lq_scene *s, int32_t node, const float (*points)[3], int count, int depth)
+{
+    while (node >= 0) {
+        if ((uint32_t)node >= s->bsp_node_count || depth > 1024) return 1;
+        const lq_bsp_node *n = &s->bsp_nodes[node];
+        int front = 0, back = 0;
+        for (int i = 0; i < count; ++i) {
+            float side = n->normal[0]*points[i][0] + n->normal[1]*points[i][1] + n->normal[2]*points[i][2] - n->dist;
+            if (side >= -0.01f) front = 1;
+            if (side < 0.01f) back = 1;
+        }
+        if (front && back && HullMeetsSolid(s, n->children[0], points, count, depth + 1)) return 1;
+        node = n->children[front && !back ? 0 : 1];
+        ++depth;
+    }
+    uint32_t leaf = (uint32_t)(-(node + 1));
+    return leaf >= s->leaf_count || s->leaf_contents[leaf] == LQ_LEAF_SOLID || s->leaf_contents[leaf] == LQ_LEAF_SKY;
+}
+/* A shadow lookup (shadowFactor in world.frag) compares cube depths along
+ * rays from the light to points within the filter's search radius of the
+ * receiving point, against the receiving plane raised by a texel. Over a face
+ * those rays fill the pyramid from the light to the face's rectangle in its
+ * plane, widened by the search radius (more at oblique angles) and a texel,
+ * and raised half a unit off the wall. Nothing solid in that pyramid means
+ * every lookup on the face finds no blocker. The search radius is bounded
+ * with the face's farthest point and the coarsest (128) cube. */
+int LQ_SceneCountShadowFree(const lq_scene *s, const volatile int *cancel, lq_shadow_free_count *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (!s || !s->bsp_nodes || !s->leaf_contents || !s->light_visibility || !s->light_source_count) return 0;
+    uint32_t begin = s->world_draw_end ? s->world_draw_begin : 0, end = s->world_draw_end ? s->world_draw_end : s->draw_count;
+    float *range = malloc(s->light_source_count * sizeof(*range));
+    if (!range) return 0;
+    for (uint32_t i = 0; i < s->light_source_count; ++i) range[i] = LQ_LightSourceRange(&s->light_sources[i]);
+    /* Brush models cast from their compiled positions, and doors and lifts
+     * move: any whose bounds meet a pyramid spoil it. */
+    float (*brushes)[6] = malloc((s->draw_count ? s->draw_count : 1) * sizeof(*brushes));
+    uint32_t brush_count = 0;
+    if (!brushes) { free(range); return 0; }
+    for (uint32_t m = 0; m < s->draw_count; ++m) {
+        const lq_draw *brush = &s->draws[m];
+        if ((m >= begin && m < end) || brush->flags & (LQ_SURFACE_SKY|LQ_SURFACE_WATER) || brush->index_count < 3) continue;
+        if (s->draw_bounds) memcpy(brushes[brush_count], s->draw_bounds[m], sizeof(brushes[0]));
+        else DrawBounds(s, brush, brushes[brush_count]);
+        ++brush_count;
+    }
+    for (uint32_t d = begin; d < end; ++d) {
+        if (*cancel) { free(range); free(brushes); return 0; }
+        const lq_draw *draw = &s->draws[d];
+        if (draw->flags & (LQ_SURFACE_SKY|LQ_SURFACE_WATER) || draw->index_count < 3) continue;
+        float computed[6];
+        const float *bounds = s->draw_bounds ? s->draw_bounds[d] : computed;
+        if (!s->draw_bounds) DrawBounds(s, draw, computed);
+        const lq_vertex *first = &s->vertices[s->indices[draw->first_index]];
+        const float *n = first->normal;
+        float dist = n[0]*first->position[0] + n[1]*first->position[1] + n[2]*first->position[2];
+        float u[3], w[3], axis[3] = {0, 0, 0};
+        axis[fabsf(n[2]) < 0.9f ? 2 : 0] = 1;
+        u[0] = n[1]*axis[2] - n[2]*axis[1]; u[1] = n[2]*axis[0] - n[0]*axis[2]; u[2] = n[0]*axis[1] - n[1]*axis[0];
+        float length = sqrtf(u[0]*u[0] + u[1]*u[1] + u[2]*u[2]);
+        if (length < 1e-6f) continue;
+        for (int k = 0; k < 3; ++k) u[k] /= length;
+        w[0] = n[1]*u[2] - n[2]*u[1]; w[1] = n[2]*u[0] - n[0]*u[2]; w[2] = n[0]*u[1] - n[1]*u[0];
+        float umin = INFINITY, umax = -INFINITY, wmin = INFINITY, wmax = -INFINITY, area = 0;
+        for (uint32_t j = 0; j < draw->index_count; ++j) {
+            const float *p = s->vertices[s->indices[draw->first_index + j]].position;
+            float a = p[0]*u[0] + p[1]*u[1] + p[2]*u[2], b = p[0]*w[0] + p[1]*w[1] + p[2]*w[2];
+            umin = fminf(umin, a); umax = fmaxf(umax, a); wmin = fminf(wmin, b); wmax = fmaxf(wmax, b);
+        }
+        for (uint32_t j = 0; j + 2 < draw->index_count; j += 3) {
+            const float *a = s->vertices[s->indices[draw->first_index + j]].position;
+            const float *b = s->vertices[s->indices[draw->first_index + j + 1]].position;
+            const float *c = s->vertices[s->indices[draw->first_index + j + 2]].position;
+            float e[3] = {b[0]-a[0], b[1]-a[1], b[2]-a[2]}, f[3] = {c[0]-a[0], c[1]-a[1], c[2]-a[2]};
+            float x = e[1]*f[2]-e[2]*f[1], y = e[2]*f[0]-e[0]*f[2], z = e[0]*f[1]-e[1]*f[0];
+            area += 0.5f * sqrtf(x*x + y*y + z*z);
+        }
+        const uint32_t *bits = s->light_visibility + (size_t)d * s->light_visibility_words;
+        for (uint32_t word = 0; word < s->light_visibility_words; ++word)
+            for (uint32_t b = bits[word]; b; b &= b - 1) {
+                uint32_t i = word * 32 + (uint32_t)__builtin_ctz(b);
+                if (i >= s->light_source_count || range[i] <= 0) continue;
+                const lq_light_source *source = &s->light_sources[i];
+                if (!LightsDraw(s, d, source, range[i])) continue;
+                const float *o = source->origin;
+                float h = n[0]*o[0] + n[1]*o[1] + n[2]*o[2] - dist, far2 = 0;
+                if (h <= 0) continue;
+                ++out->pairs; out->area += area;
+                for (int k = 0; k < 3; ++k) {
+                    float f = fmaxf(fabsf(o[k] - bounds[k]), fabsf(o[k] - bounds[k+3]));
+                    far2 += f * f;
+                }
+                float farthest = sqrtf(far2), incidence = h / farthest;
+                if (incidence < 0.25f) continue; /* oblique: the widened pyramid would be unbounded */
+                float texel = 2 * farthest / 128;
+                float search = fmaxf(fminf(3 * source->source_radius, farthest * 0.5f), texel);
+                float margin = search / incidence + texel + 1, raised = dist + 0.5f;
+                float hull[5][3];
+                memcpy(hull[0], o, sizeof(hull[0]));
+                for (int corner = 0; corner < 4; ++corner) {
+                    float a = corner & 1 ? umax + margin : umin - margin, c = corner & 2 ? wmax + margin : wmin - margin;
+                    for (int k = 0; k < 3; ++k) hull[corner + 1][k] = u[k] * a + w[k] * c + n[k] * raised;
+                }
+                if (HullMeetsSolid(s, 0, (const float (*)[3])hull, 5, 0)) continue;
+                float box[6] = {INFINITY, INFINITY, INFINITY, -INFINITY, -INFINITY, -INFINITY};
+                for (int p = 0; p < 5; ++p) for (int k = 0; k < 3; ++k) {
+                    box[k] = fminf(box[k], hull[p][k]); box[k+3] = fmaxf(box[k+3], hull[p][k]);
+                }
+                int blocked = 0;
+                for (uint32_t m = 0; m < brush_count && !blocked; ++m) {
+                    const float *mb = brushes[m];
+                    blocked = mb[0] <= box[3] && mb[3] >= box[0] && mb[1] <= box[4] && mb[4] >= box[1] &&
+                        mb[2] <= box[5] && mb[5] >= box[2];
+                }
+                if (blocked) continue;
+                ++out->clear; out->clear_area += area;
+            }
+    }
+    free(range); free(brushes);
+    return 1;
+}
 /* For each source with range[i] > 0, whether it can light a visible draw:
  * reach[i] is 2 when one is on screen (`shown`, if given), 1 when it lights
  * only draws elsewhere in the PVS, 0 when it lights none. With precomputed

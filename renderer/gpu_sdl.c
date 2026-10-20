@@ -36,6 +36,11 @@ struct lq_gpu {
     SDL_GPUSampler *repeat, *point, *linear;
     SDL_GPUBuffer *vertices, *indices;
     SDL_GPUTexture **textures, *colormap, *lightmap, *bounce, *color, *depth, *overlay;
+    /* The overlay texture and its staging buffer persist and are rewritten
+     * each frame; the copy is recorded in the frame's own command buffer. */
+    SDL_GPUTransferBuffer *overlay_transfer;
+    uint32_t overlay_width, overlay_height, overlay_transfer_bytes;
+    int overlay_pending;
     float bounce_ratio; /* lightmap rows per bounce layer row */
     float sky_light[3]; /* sky brightness at full visibility (bounce layer 0 alpha) */
     float sun_direction[4], sun_light[4]; /* travel direction, angle scale; light at full visibility (layer 1 alpha) */
@@ -68,10 +73,12 @@ struct lq_gpu {
     SDL_GPUBuffer *casters; /* static world casters, then brush models at compiled positions */
     uint32_t caster_count, caster_world_count, shadow_updates, shadow_face_updates;
     uint32_t submitted_faces; /* world faces the last main pass drew */
+    uint32_t known_lead_faces; /* of those, faces whose brightest light was known in advance */
     /* The static casters by surface, with bounds: a cube face draws only those
      * in the light's range and its frustum, never the whole map. */
     struct lq_caster_range { float min[3], max[3]; uint32_t first, count; } *caster_ranges;
     uint32_t caster_range_count, caster_range_world_count;
+    uint8_t *caster_range_faces; /* per range: cube faces it reaches for the light being rebuilt */
     /* Moving casters this frame (actors, brush models): bounds of frame draws. */
     struct lq_caster { float min[3], max[3]; uint32_t draw, rest; uint8_t moved; } *frame_casters;
     uint32_t frame_caster_count, frame_caster_capacity;
@@ -104,6 +111,7 @@ typedef struct {
     float lights[4], parameters[4], camera[4], dynamic[32][4];
     uint32_t bits[4];
     float bounce[4]; /* live style value per bounce layer */
+    float face_light[4]; /* x: 1 + the slot that is brightest everywhere on the face; 0 unknown */
 } lq_surface_uniforms;
 typedef struct {
     float position_range[LQ_MAX_RUNTIME_LIGHTS][4], color_strength[LQ_MAX_RUNTIME_LIGHTS][4];
@@ -481,19 +489,49 @@ static SDL_GPUBuffer *UploadBuffer(lq_gpu *g, const void *data, uint32_t bytes, 
     if (transfer) SDL_ReleaseGPUTransferBuffer(g->device, transfer);
     return buffer;
 }
+/* The overlay is staged here and copied at the start of the next render.
+ * Mapping and uploading both cycle, so a frame still in flight keeps the
+ * pixels it was given. */
 int LQ_GPUOverlay(lq_gpu *g, const lq_image *image, char *error, size_t size)
 {
-    SDL_GPUTexture *next = NULL;
-    if (image) {
-        if (image->channels != 4 || !image->pixels || !image->width || !image->height ||
-            image->width > 8192 || image->height > 8192) {
-            SDL_SetError("invalid overlay image"); return Error(error, size, "GPU overlay");
-        }
-        next = UploadImage(g, image);
-        if (!next) return Error(error, size, "GPU overlay upload");
+    g->overlay_pending = 0;
+    if (!image) {
+        if (g->overlay) SDL_ReleaseGPUTexture(g->device, g->overlay);
+        g->overlay = NULL; g->overlay_width = g->overlay_height = 0; return 1;
     }
-    if (g->overlay) SDL_ReleaseGPUTexture(g->device, g->overlay);
-    g->overlay = next; return 1;
+    if (image->channels != 4 || !image->pixels || !image->width || !image->height ||
+        image->width > 8192 || image->height > 8192) {
+        SDL_SetError("invalid overlay image"); return Error(error, size, "GPU overlay");
+    }
+    if (!g->overlay || g->overlay_width != image->width || g->overlay_height != image->height) {
+        SDL_GPUTexture *next = Texture(g, image->width, image->height, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+            SDL_GPU_TEXTUREUSAGE_SAMPLER);
+        if (!next) return Error(error, size, "GPU overlay texture");
+        if (g->overlay) SDL_ReleaseGPUTexture(g->device, g->overlay);
+        g->overlay = next; g->overlay_width = image->width; g->overlay_height = image->height;
+    }
+    uint32_t bytes = image->width * image->height * 4;
+    if (g->overlay_transfer_bytes < bytes) {
+        SDL_GPUTransferBuffer *next = Transfer(g, bytes, SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, NULL);
+        if (!next) return Error(error, size, "GPU overlay transfer");
+        if (g->overlay_transfer) SDL_ReleaseGPUTransferBuffer(g->device, g->overlay_transfer);
+        g->overlay_transfer = next; g->overlay_transfer_bytes = bytes;
+    }
+    void *mapped = SDL_MapGPUTransferBuffer(g->device, g->overlay_transfer, true);
+    if (!mapped) return Error(error, size, "GPU overlay map");
+    memcpy(mapped, image->pixels, bytes);
+    SDL_UnmapGPUTransferBuffer(g->device, g->overlay_transfer);
+    g->overlay_pending = 1; return 1;
+}
+static void OverlayCopy(lq_gpu *g, SDL_GPUCommandBuffer *command)
+{
+    if (!g->overlay_pending || !g->overlay) return;
+    SDL_GPUCopyPass *pass = SDL_BeginGPUCopyPass(command);
+    SDL_GPUTextureTransferInfo source = {g->overlay_transfer, 0, g->overlay_width, g->overlay_height};
+    SDL_GPUTextureRegion dest = {0};
+    dest.texture = g->overlay; dest.w = g->overlay_width; dest.h = g->overlay_height; dest.d = 1;
+    SDL_UploadToGPUTexture(pass, &source, &dest, true); SDL_EndGPUCopyPass(pass);
+    g->overlay_pending = 0;
 }
 int LQ_GPUColormap(lq_gpu *g, const lq_image *image, char *error, size_t size)
 {
@@ -517,6 +555,7 @@ static void ReleaseScene(lq_gpu *g)
     if (g->casters) SDL_ReleaseGPUBuffer(g->device, g->casters);
     g->casters = NULL; g->caster_count = g->caster_world_count = 0;
     free(g->caster_ranges); g->caster_ranges = NULL; g->caster_range_count = g->caster_range_world_count = 0;
+    free(g->caster_range_faces); g->caster_range_faces = NULL;
     memset(g->shadow_dynamic_faces, 0, sizeof(g->shadow_dynamic_faces));
     memset(g->shadow_valid, 0, sizeof(g->shadow_valid));
     for (uint32_t i = 0; i < g->texture_count; ++i)
@@ -598,6 +637,7 @@ int LQ_GPUFrame(lq_gpu *g, const lq_frame *f, char *error, size_t size)
         g->frame_bounds = bounds; g->frame_caster_capacity = f->draw_count;
     }
     g->frame_caster_count = 0;
+    uint32_t rest_shift = 0; /* last frame's index minus this frame's, at the last match */
     for (uint32_t i = 0; i < f->draw_count; ++i) {
         lq_draw d = f->draws[i];
         if (d.flags & ~(LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_MODEL|LQ_SURFACE_MASKED|LQ_SURFACE_WEAPON|LQ_SURFACE_ACTOR|LQ_SURFACE_DIFFUSE_EFFECT|LQ_SURFACE_SOLID_EFFECT|LQ_SURFACE_NOSHADOW|LQ_SURFACE_ERODE|LQ_SURFACE_SPRITE|
@@ -621,8 +661,15 @@ int LQ_GPUFrame(lq_gpu *g, const lq_frame *f, char *error, size_t size)
             c->draw = i;
             memcpy(c->min, g->frame_bounds[i], sizeof(c->min)); memcpy(c->max, g->frame_bounds[i] + 3, sizeof(c->max));
             c->moved = 1; c->rest = UINT32_MAX;
-            for (uint32_t j = 0; j < g->rest_count; ++j)
-                if (NearBounds(g->rest_bounds[j], g->frame_bounds[i])) { c->moved = 0; c->rest = j; break; }
+            /* Casters arrive in much the same order each frame: try the entry
+             * that follows the last match first, and search only when it fails. */
+            uint32_t n = g->frame_caster_count - 1, guess = n + rest_shift;
+            if (guess < g->rest_count && NearBounds(g->rest_bounds[guess], g->frame_bounds[i])) {
+                c->moved = 0; c->rest = guess;
+            } else for (uint32_t j = 0; j < g->rest_count; ++j)
+                if (NearBounds(g->rest_bounds[j], g->frame_bounds[i])) {
+                    c->moved = 0; c->rest = j; rest_shift = j - n; break;
+                }
         }
     }
     /* Remember where each caster's shadow was last drawn for the next frame's
@@ -752,7 +799,8 @@ int LQ_GPUUpload(lq_gpu *g, const lq_scene *s, char *error, size_t size)
      * space blocks a ray, sky and liquid faces do not. */
     uint32_t *casters = malloc((size_t)s->index_count * sizeof(*casters));
     g->caster_ranges = malloc((size_t)(s->draw_count ? s->draw_count : 1) * sizeof(*g->caster_ranges));
-    if (!casters || !g->caster_ranges) { free(casters); SDL_SetError("out of memory"); goto failed; }
+    g->caster_range_faces = malloc(s->draw_count ? s->draw_count : 1);
+    if (!casters || !g->caster_ranges || !g->caster_range_faces) { free(casters); SDL_SetError("out of memory"); goto failed; }
     for (int brushes = 0; brushes < 2; ++brushes) {
         for (uint32_t i = 0; i < s->draw_count; ++i) {
             int world = !s->world_draw_end || (i >= s->world_draw_begin && i < s->world_draw_end);
@@ -855,8 +903,84 @@ static int Targets(lq_gpu *g, uint32_t width, uint32_t height)
     g->multisample_color = multisample; g->scene = scene;
     g->color = color; g->depth = depth; g->width = width; g->height = height; return 1;
 }
+/* lightValue and the range taper in world.frag's lightReach. */
+static float FaceFalloff(const lq_runtime_light *light, float distance)
+{
+    const float *f = light->falloff;
+    float scaled = f[1] * distance, value, range = light->position_radius[3];
+    int formula = (int)(f[3] + 0.5f);
+    if (formula == 0) value = fmaxf(f[0] - scaled, 0);
+    else if (formula == 1) value = f[0] * 128 / fmaxf(scaled, 1);
+    else if (formula == 2) value = f[0] * 16384 / fmaxf(scaled * scaled, 1);
+    else if (formula == 3) value = f[0];
+    else if (formula == 5) value = f[0] * 16384 / ((scaled + 128) * (scaled + 128));
+    else return 0;
+    if (formula == 1 || formula == 2 || formula == 5) {
+        float taper = fminf(fmaxf((range - distance) / (LQ_LIGHT_TAPER * range), 0), 1);
+        value *= taper * taper;
+    }
+    return value;
+}
+/* The least and most a light's unshadowed value (lightReach times its
+ * brightest colour channel) can be anywhere on a world face. The face lies in
+ * its bounds, so its distance from the light lies between the box's nearest
+ * and farthest points, and every distance term falls with distance. A
+ * spotlight's cone may be anything from 0 to 1 over the face. */
+static void FaceLightRange(const lq_runtime_light *light, const float plane[4], const float bounds[6],
+    float opacity, float *low, float *high)
+{
+    const float *p = light->position_radius;
+    *low = *high = 0;
+    if (p[3] <= 0) return;
+    float h = plane[0]*p[0] + plane[1]*p[1] + plane[2]*p[2] - plane[3];
+    if (h <= 0) return; /* behind the face: lightReach gives nothing */
+    float near2 = 0, far2 = 0;
+    for (int k = 0; k < 3; ++k) {
+        float lo = bounds[k] - 1, hi = bounds[k+3] + 1;
+        float d = p[k] < lo ? lo - p[k] : p[k] > hi ? p[k] - hi : 0, f = fmaxf(fabsf(p[k] - lo), fabsf(p[k] - hi));
+        near2 += d * d; far2 += f * f;
+    }
+    float nearest = fmaxf(sqrtf(near2), h), farthest = sqrtf(far2);
+    if (nearest >= p[3]) return;
+    float color = fmaxf(light->color_strength[0], fmaxf(light->color_strength[1], light->color_strength[2]));
+    float strength = light->color_strength[3], z = light->falloff[2];
+    /* Incidence (1 - z) + z * facing, with facing from h / farthest to 1. */
+    float most = FaceFalloff(light, nearest) * fmaxf(1, 1 - z) * strength;
+    if (light->limit > 0) most = fminf(most, light->limit);
+    *high = most * color;
+    if (farthest >= p[3] || light->spot[3] >= -1) return;
+    float least = FaceFalloff(light, farthest) * fminf(1, (1 - z) + z * h / farthest) * strength;
+    if (light->limit > 0) least = fminf(least, light->limit);
+    if (opacity > 0) least *= 1 - opacity;
+    *low = least * color;
+}
+/* The slot that is brightest at every point of a world face, if one is: its
+ * least value there beats every other light's most. The shader then skips
+ * its search for the brightest light. 1 + the slot, or 0. */
+static uint32_t KnownLead(const lq_view *v, const lq_draw *d, const float plane[4], const float bounds[6])
+{
+    if (!v->luminous_lighting || v->shadow_dominance < 0 || (d->flags & (LQ_SURFACE_SKY|LQ_SURFACE_WATER))) return 0;
+    uint32_t count = v->runtime_light_count > LQ_MAX_RUNTIME_LIGHTS ? LQ_MAX_RUNTIME_LIGHTS : v->runtime_light_count;
+    float opacity = v->water_alpha > 0 && v->water_alpha < 1 ? v->water_alpha : 0;
+    uint32_t lead = UINT32_MAX, top = UINT32_MAX;
+    float lead_low = 0, top_high = 0, second_high = 0;
+    for (uint32_t word = 0; word < LQ_LIGHT_WORDS; ++word)
+        for (uint32_t bits = d->light_bits[word]; bits; bits &= bits - 1) {
+            uint32_t i = word * 32 + (uint32_t)__builtin_ctz(bits);
+            if (i >= count) break;
+            float low, high;
+            FaceLightRange(&v->runtime_lights[i], plane, bounds, opacity, &low, &high);
+            if (low > lead_low) { lead_low = low; lead = i; }
+            if (high > top_high) { second_high = top_high; top_high = high; top = i; }
+            else if (high > second_high) second_high = high;
+        }
+    if (lead == UINT32_MAX) return 0;
+    float rival = top == lead ? second_high : top_high;
+    /* A margin for interpolated positions and normals in the shader. */
+    return lead_low * 0.98f > rival * 1.02f + 0.01f ? lead + 1 : 0;
+}
 static void SurfaceUniforms(lq_surface_uniforms *uniforms, const lq_gpu *g,
-    const lq_view *view, const lq_draw *draw)
+    const lq_view *view, const lq_draw *draw, uint32_t lead)
 {
     memset(uniforms,0,sizeof(*uniforms));
     memcpy(uniforms->dynamic,view->dynamic_lights,sizeof(uniforms->dynamic));
@@ -877,6 +1001,7 @@ static void SurfaceUniforms(lq_surface_uniforms *uniforms, const lq_gpu *g,
             if (light[3] > 0 && outside < light[3] * light[3]) uniforms->bits[i / 32] |= 1u << (i % 32);
         }
     }
+    uniforms->face_light[0] = (float)lead;
     uniforms->parameters[0] = view->time; uniforms->parameters[1] = (float)draw->flags;
     uniforms->parameters[2] = (float)g->smooth; uniforms->parameters[3] = (float)g->mipmaps;
     memcpy(uniforms->camera,view->origin,sizeof(view->origin)); uniforms->camera[3] = (float)g->anisotropy;
@@ -1045,6 +1170,8 @@ static void RenderShadows(lq_gpu *g, SDL_GPUCommandBuffer *command, const lq_vie
         if (!redraw) continue;
         lq_shadow_uniforms uniforms = {{0}};
         static const uint32_t sizes[] = LQ_SHADOW_ARRAY_SIZES;
+        uint32_t ranges = brushes ? g->caster_range_count : g->caster_range_world_count;
+        int classified = 0; /* static caster ranges' faces, found once per rebuild */
         uint32_t array, cube; LQ_ShadowSlot(slot, &array, &cube);
         for (int face = 0; face < 6; ++face) {
             if (!(redraw & (1 << face))) continue;
@@ -1070,11 +1197,18 @@ static void RenderShadows(lq_gpu *g, SDL_GPUCommandBuffer *command, const lq_vie
                 SDL_PushGPUVertexUniformData(command, 0, &uniforms, sizeof(uniforms));
                 /* Only surfaces this face can see within range; neighbours in
                  * the buffer merge into one draw. */
-                uint32_t ranges = brushes ? g->caster_range_count : g->caster_range_world_count, first = 0, count = 0;
+                if (!classified) {
+                    for (uint32_t r = 0; r < ranges; ++r) {
+                        const struct lq_caster_range *range = &g->caster_ranges[r];
+                        struct lq_caster box; memcpy(box.min, range->min, sizeof(box.min)); memcpy(box.max, range->max, sizeof(box.max));
+                        g->caster_range_faces[r] = CasterFaces(&box, light->position_radius);
+                    }
+                    classified = 1;
+                }
+                uint32_t first = 0, count = 0;
                 for (uint32_t r = 0; r < ranges; ++r) {
                     const struct lq_caster_range *range = &g->caster_ranges[r];
-                    struct lq_caster box; memcpy(box.min, range->min, sizeof(box.min)); memcpy(box.max, range->max, sizeof(box.max));
-                    if (!(CasterFaces(&box, light->position_radius) & (1 << face))) continue;
+                    if (!(g->caster_range_faces[r] & (1 << face))) continue;
                     if (count && first + count == range->first) { count += range->count; continue; }
                     if (count) SDL_DrawGPUIndexedPrimitives(pass, count, 1, first, 0, 0);
                     first = range->first; count = range->count;
@@ -1112,6 +1246,7 @@ static void RenderShadows(lq_gpu *g, SDL_GPUCommandBuffer *command, const lq_vie
 }
 uint32_t LQ_GPUShadowUpdates(const lq_gpu *g) { return g ? g->shadow_updates : 0; }
 uint32_t LQ_GPUSubmittedFaces(const lq_gpu *g) { return g ? g->submitted_faces : 0; }
+uint32_t LQ_GPUKnownLeadFaces(const lq_gpu *g) { return g ? g->known_lead_faces : 0; }
 uint32_t LQ_GPUShadowFaceUpdates(const lq_gpu *g) { return g ? g->shadow_face_updates : 0; }
 size_t LQ_GPUDynamicProbeBytes(const lq_gpu *g) { return g ? g->probe_dynamic_bytes : 0; }
 int LQ_GPUDynamicProbes(lq_gpu *g, const uint8_t *pixels, char *error, size_t size)
@@ -1140,10 +1275,10 @@ int LQ_GPUDynamicProbes(lq_gpu *g, const uint8_t *pixels, char *error, size_t si
 }
 #define LQ_SHADER_SUBMERGED LQ_SURFACE_SUBMERGED /* face lies inside a liquid */
 static void DrawSurface(lq_gpu *g, SDL_GPUCommandBuffer *command, SDL_GPURenderPass *pass, const lq_view *v,
-    const lq_draw *d, uint32_t extra_flags, SDL_GPUTexture *texture, SDL_GPUTexture *const *shadows)
+    const lq_draw *d, uint32_t extra_flags, SDL_GPUTexture *texture, SDL_GPUTexture *const *shadows, uint32_t lead)
 {
     lq_surface_uniforms uniforms;
-    SurfaceUniforms(&uniforms,g,v,d);
+    SurfaceUniforms(&uniforms,g,v,d,lead);
     uniforms.parameters[1] = (float)(d->flags | extra_flags);
     SDL_GPUTextureSamplerBinding samplers[] = {
         {texture, g->repeat}, {g->colormap, g->point}, {g->lightmap, g->linear},
@@ -1171,9 +1306,9 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
         return Error(error, size, "GPU shadow maps");
     command = SDL_AcquireGPUCommandBuffer(g->device);
     if (!command) return Error(error, size, "GPU command buffer");
-    if (!SDL_WaitAndAcquireGPUSwapchainTexture(command, g->window, &swapchain, &swap_width, &swap_height)) {
-        SDL_CancelGPUCommandBuffer(command); return Error(error, size, "GPU swapchain");
-    }
+    /* The swapchain image is waited for only once the frame is recorded, so
+     * recording overlaps the wait for the display rather than following it. */
+    OverlayCopy(g, command);
     g->shadow_updates = 0;
     if (g->probe_pending) ProbeCompute(g, command);
     if (v->luminous_lighting && g->shadow_maps[0] && !v->disable_shadows) RenderShadows(g, command, v);
@@ -1213,7 +1348,7 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
      * submitted. It applies to this pass only; shadow casters are chosen
      * per light, since geometry off screen still casts on screen. */
     int cull = !v->disable_culling;
-    g->submitted_faces = 0;
+    g->submitted_faces = g->known_lead_faces = 0;
     /* Opaque surfaces first; with translucent liquids, water goes last over them. */
     int liquid = v->water_alpha > 0 && v->water_alpha < 1;
     for (int translucent = 0; translucent <= liquid; ++translucent) {
@@ -1233,8 +1368,10 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
             if (translucent && side < 0) continue;
             if (cull && (side < -0.01f || !LQ_BoundsInClip(matrix, g->draw_bounds[i]))) continue;
             ++g->submitted_faces;
+            uint32_t lead = KnownLead(v, d, p, g->draw_bounds[i]);
+            g->known_lead_faces += lead != 0;
             DrawSurface(g, command, pass, v, d, g->submerged && g->submerged[i] ? LQ_SHADER_SUBMERGED : 0,
-                g->textures[d->material], shadows);
+                g->textures[d->material], shadows, lead);
         }
         if (!g->frame_draw_count) continue;
         vertex = (SDL_GPUBufferBinding){g->frame_vertices, 0};
@@ -1249,7 +1386,7 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
             if (cull && !(d->flags & LQ_SURFACE_WEAPON) && !LQ_BoundsInClip(matrix, g->frame_bounds[i])) continue;
             viewport.max_depth = d->flags & LQ_SURFACE_WEAPON ? 0.3f : 1.0f;
             SDL_SetGPUViewport(pass, &viewport);
-            DrawSurface(g, command, pass, v, d, 0, g->frame_textures[d->material], shadows);
+            DrawSurface(g, command, pass, v, d, 0, g->frame_textures[d->material], shadows, 0);
         }
     }
     {   /* Smoke and Luminous sprites last, blended by their alpha over
@@ -1269,7 +1406,7 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
                 SDL_BindGPUIndexBuffer(pass, &index, SDL_GPU_INDEXELEMENTSIZE_32BIT);
                 bound = 1;
             }
-            DrawSurface(g, command, pass, v, d, 0, g->frame_textures[d->material], shadows);
+            DrawSurface(g, command, pass, v, d, 0, g->frame_textures[d->material], shadows, 0);
         }
     }
     SDL_EndGPURenderPass(pass);
@@ -1299,6 +1436,9 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
         SDL_BindGPUFragmentSamplers(pass, 0, &sampler, 1);
         SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
         SDL_EndGPURenderPass(pass);
+    }
+    if (!SDL_WaitAndAcquireGPUSwapchainTexture(command, g->window, &swapchain, &swap_width, &swap_height)) {
+        SDL_CancelGPUCommandBuffer(command); return Error(error, size, "GPU swapchain");
     }
     if (swapchain && g->hdr_active &&
             SDL_GetGPUSwapchainTextureFormat(g->device, g->window) == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT) {
@@ -1410,6 +1550,7 @@ void LQ_GPUDestroy(lq_gpu *g)
             if (g->tonemap_pipelines[f]) SDL_ReleaseGPUGraphicsPipeline(g->device, g->tonemap_pipelines[f]);
         }
         if (g->overlay) SDL_ReleaseGPUTexture(g->device, g->overlay);
+        if (g->overlay_transfer) SDL_ReleaseGPUTransferBuffer(g->device, g->overlay_transfer);
         for (int t = 0; t < LQ_SHADOW_ARRAYS; ++t) {
             if (g->shadow_maps[t]) SDL_ReleaseGPUTexture(g->device, g->shadow_maps[t]);
             if (g->shadow_static[t]) SDL_ReleaseGPUTexture(g->device, g->shadow_static[t]);

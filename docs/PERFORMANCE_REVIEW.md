@@ -56,6 +56,11 @@ offscreen geometry can still cast visible shadows.
 
 ## 3. Overlay allocates GPU resources every frame
 
+**Done October 20, 2026:** the overlay texture and its staging buffer persist,
+rebuilt only when the size changes; both cycle, so frames in flight keep their
+pixels, and the copy is recorded in the frame's own command buffer. The main
+pass also waits for its swapchain image only after recording. Not measured.
+
 **Location:** `renderer/gpu_sdl.c`, `LQ_GPUOverlay`, `UploadImage`, and `Transfer`.
 
 `LQ_GPUOverlay` creates a replacement texture every frame. Its upload helper
@@ -81,6 +86,10 @@ ordering, per-particle appearance, and lighting; batching must retain adequate
 light coverage for every particle in the batch.
 
 ## 5. Shadow-caster rest detection is quadratic
+
+**Done October 20, 2026:** each caster first tries the entry after the last
+match, searching the whole list only when that fails, so the usual case is
+linear. Not measured.
 
 **Location:** `renderer/gpu_sdl.c`, the rest-bounds search in `LQ_GPUFrame`.
 
@@ -123,6 +132,9 @@ is accumulating bounds during construction and avoiding redundant identity-index
 generation/upload. Retain validation at appropriate input boundaries.
 
 ## 8. Shadow refresh repeats expensive caster classification
+
+**Done October 20, 2026:** a rebuild classifies each static caster range
+once, not once per cube face. Not measured.
 
 **Location:** `renderer/gpu_sdl.c`, the static caster-range loop in
 `RenderShadows` and `CasterFaces`.

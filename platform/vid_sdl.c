@@ -6,6 +6,7 @@
 #include "gpu_sdl.h"
 #include "render_bridge.h"
 #include "jobs.h"
+#include "background.h"
 
 viddef_t vid;
 unsigned short d_8to16table[256];
@@ -378,6 +379,7 @@ void VID_Shutdown(void)
     LQ_RenderBridgeShutdown(); LQ_GPUDestroy(gpu); gpu = NULL;
     LQ_UIShutdown();
     LQ_JobsShutdown();
+    LQ_BackgroundShutdown();
     backend_applied = false;
     startup_video_applied = false;
     IN_ClearStates();

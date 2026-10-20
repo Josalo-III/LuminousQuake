@@ -337,6 +337,13 @@ uint32_t LQ_BuildLightInteractions(const lq_scene *scene,
 int LQ_SpotReachesBox(const float origin[3], const float axis[3], float outer, float blur, const float bounds[6]);
 uint32_t LQ_BuildVisibleLightInteractions(const lq_scene *scene, const lq_runtime_light *lights,
     uint32_t light_count, const lq_draw *visible, lq_draw *output);
+/* Light-face pairs whose shadow lookup provably finds nothing: no static
+ * world geometry or brush model lies between the light and the face,
+ * including the margin the soft-shadow filter samples around each point.
+ * Static map lights on world faces only; moving actors are not considered.
+ * Reads the scene only. Returns 0 if cancelled or the scene lacks a BSP. */
+typedef struct { uint64_t pairs, clear; double area, clear_area; } lq_shadow_free_count;
+int LQ_SceneCountShadowFree(const lq_scene *scene, const volatile int *cancel, lq_shadow_free_count *out);
 /* ericw-tools surface-light placement: split a convex polygon on axis planes
  * at multiples of `subdivide`, as GLQuake subdivides warped faces, and write
  * each piece's vertex centroid. Returns the number of pieces (only the first
