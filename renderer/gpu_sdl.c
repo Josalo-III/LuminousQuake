@@ -9,6 +9,11 @@
 #include <string.h>
 #include <stddef.h>
 #include <math.h>
+/* Tone mapping (tonemap.frag): Luminous light below the shoulder is shown as
+ * is; above it, highlights roll off to the ceiling, reached at the white point.
+ * These are the defaults; lq_tone_shoulder and lq_tone_white set them live. */
+#define LQ_TONE_SHOULDER 0.8f
+#define LQ_TONE_WHITE 6.0f
 struct lq_gpu {
     SDL_Window *window;
     SDL_GPUDevice *device;
@@ -22,6 +27,9 @@ struct lq_gpu {
     float gamma, headroom; /* lq_gamma; HDR headroom above SDR white (1 on SDR) */
     float peak; /* lq_hdr_peak: highest light the display really shows; 0 trusts macOS */
     int test_pattern; /* lq_hdr_test: bands at known light levels instead of the scene */
+    /* Luminous tone and emission (lq_tone_shoulder, lq_tone_white,
+     * lq_emission, lq_sprite_emission; see LQ_GPUTone). */
+    float tone_shoulder, tone_white, emission, sprite_emission;
     int hdr_request, hdr_active;
     SDL_GPUPresentMode present_mode;
     SDL_GPUGraphicsPipeline *multisample[2];
@@ -85,6 +93,9 @@ struct lq_gpu {
     /* Last frame's caster bounds: a caster found there unchanged is at rest. */
     float (*rest_bounds)[6], (*rest_scratch)[6];
     uint32_t rest_count, rest_capacity;
+    /* Slots a moving caster this frame lies within reach of: their
+     * shadow-free faces (LQ_SceneFindShadowFree) look their shadow up after all. */
+    uint32_t movers[LQ_LIGHT_WORDS];
     uint8_t shadow_dynamic_faces[LQ_MAX_RUNTIME_LIGHTS]; /* faces last drawn with moving casters */
     uint8_t shadow_stale[LQ_MAX_RUNTIME_LIGHTS]; /* faces moving casters touched while the light was offscreen */
     uint8_t shadow_brushes[LQ_MAX_RUNTIME_LIGHTS]; /* static_brush_shadows used for the cached cube */
@@ -112,6 +123,7 @@ typedef struct {
     uint32_t bits[4];
     float bounce[4]; /* live style value per bounce layer */
     float face_light[4]; /* x: 1 + the slot that is brightest everywhere on the face; 0 unknown */
+    uint32_t shadow_free[4]; /* slots whose shadow lookup on this face cannot find a blocker */
 } lq_surface_uniforms;
 typedef struct {
     float position_range[LQ_MAX_RUNTIME_LIGHTS][4], color_strength[LQ_MAX_RUNTIME_LIGHTS][4];
@@ -130,6 +142,7 @@ typedef struct {
     float color_space[4]; /* x: exponent from summed brightness to linear light (Luminous) */
     float shadow_filter[4]; /* x: a light's brightness at which its shadow takes every sample; 0 always */
     float limit[LQ_MAX_RUNTIME_LIGHTS][4]; /* x: most brightness the light adds to a surface; 0 none */
+    float effects[4]; /* x: sprite fullbright emission */
 } lq_light_uniforms;
 typedef struct { float face_projection[16]; } lq_shadow_uniforms;
 #define LQ_SHADOW_NEAR 2.0f
@@ -243,6 +256,8 @@ lq_gpu *LQ_GPUCreate(SDL_Window *window, int debug, char *error, size_t size)
     g->claimed = 1;
     if (!SDL_SetGPUSwapchainParameters(g->device, window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, SDL_GPU_PRESENTMODE_VSYNC)) goto failed;
     g->present_mode = SDL_GPU_PRESENTMODE_VSYNC; g->gamma = 2.2f; g->headroom = 1; g->hdr_request = 1;
+    g->tone_shoulder = LQ_TONE_SHOULDER; g->tone_white = LQ_TONE_WHITE;
+    g->emission = g->sprite_emission = LQ_EMISSION_GAIN;
     SDL_Log("LuminousQuake GPU driver: %s", SDL_GetGPUDeviceDriver(g->device));
     vertex = Shader(g, 0, 0); fragment = Shader(g, 1, 0);
     if (!vertex || !fragment) goto failed;
@@ -805,6 +820,10 @@ int LQ_GPUUpload(lq_gpu *g, const lq_scene *s, char *error, size_t size)
         for (uint32_t i = 0; i < s->draw_count; ++i) {
             int world = !s->world_draw_end || (i >= s->world_draw_begin && i < s->world_draw_end);
             if ((s->draws[i].flags & (LQ_SURFACE_SKY|LQ_SURFACE_WATER)) || world == brushes || !s->draws[i].index_count) continue;
+            /* Brush models cast from where they were compiled (the viewer), but
+             * triggers are invisible in the game and cast nothing there. */
+            if (brushes && s->draws[i].material < s->material_count &&
+                !SDL_strcasecmp(s->materials[s->draws[i].material].name, "trigger")) continue;
             struct lq_caster_range *range = &g->caster_ranges[g->caster_range_count++];
             range->first = g->caster_count; range->count = s->draws[i].index_count;
             for (int k = 0; k < 3; ++k) { range->min[k] = INFINITY; range->max[k] = -INFINITY; }
@@ -828,10 +847,6 @@ int LQ_GPUUpload(lq_gpu *g, const lq_scene *s, char *error, size_t size)
 failed:
     Error(error, size, "GPU scene upload"); ReleaseScene(g); return 0;
 }
-/* Tone mapping (tonemap.frag): Luminous light below the shoulder is shown as
- * is; above it, highlights roll off to the ceiling, reached at the white point. */
-#define LQ_TONE_SHOULDER 0.8f
-#define LQ_TONE_WHITE 6.0f
 /* HDR output follows the window's display: extended-range linear light when
  * macOS reports the display in HDR (and lq_hdr allows it), SDR otherwise.
  * Checked every frame, so moving the window between displays switches it. */
@@ -861,6 +876,14 @@ static void DisplayMode(lq_gpu *g)
     }
 }
 void LQ_GPUTestPattern(lq_gpu *g, int on) { g->test_pattern = on != 0; }
+void LQ_GPUTone(lq_gpu *g, float shoulder, float white, float emission, float sprite_emission)
+{
+    g->tone_shoulder = isfinite(shoulder) && shoulder >= 0.1f && shoulder <= 0.95f ? shoulder : LQ_TONE_SHOULDER;
+    g->tone_white = isfinite(white) && white >= 1.5f && white <= 64 ? white : LQ_TONE_WHITE;
+    g->emission = isfinite(emission) && emission >= 1 && emission <= 16 ? emission : LQ_EMISSION_GAIN;
+    g->sprite_emission = isfinite(sprite_emission) && sprite_emission >= 1 && sprite_emission <= 16 ?
+        sprite_emission : LQ_EMISSION_GAIN;
+}
 void LQ_GPUDisplay(lq_gpu *g, float gamma, int hdr, float peak)
 {
     g->gamma = isfinite(gamma) && gamma >= 1 && gamma <= 3.5f ? gamma : 2.2f;
@@ -1001,6 +1024,8 @@ static void SurfaceUniforms(lq_surface_uniforms *uniforms, const lq_gpu *g,
             if (light[3] > 0 && outside < light[3] * light[3]) uniforms->bits[i / 32] |= 1u << (i % 32);
         }
     }
+    if (view->luminous_lighting && !bounds && !view->disable_shadow_free)
+        for (int w = 0; w < 4; ++w) uniforms->shadow_free[w] = draw->shadow_free_bits[w] & ~g->movers[w];
     uniforms->face_light[0] = (float)lead;
     uniforms->parameters[0] = view->time; uniforms->parameters[1] = (float)draw->flags;
     uniforms->parameters[2] = (float)g->smooth; uniforms->parameters[3] = (float)g->mipmaps;
@@ -1008,6 +1033,29 @@ static void SurfaceUniforms(lq_surface_uniforms *uniforms, const lq_gpu *g,
     for (int j = 0; j < 4; ++j) {
         uniforms->lights[j] = draw->styles[j] == 255 ? 0 : view->lightstyles[draw->styles[j]];
         uniforms->bounce[j] = draw->bounce_styles[j] == 255 ? 0 : view->lightstyles[draw->bounce_styles[j]];
+    }
+}
+/* A slot's shadow cube: drawn from its light, or for a panel group from the
+ * group's centre and reach, read by every member (LQ_ShareGroupShadows).
+ * Lights made without those fields use their own position and radius. */
+static const float *ShadowCentre(const lq_runtime_light *light)
+{ return light->shadow_origin_range[3] > 0 ? light->shadow_origin_range : light->position_radius; }
+static float ShadowRadius(const lq_runtime_light *light)
+{ return light->shadow_origin_range[3] > 0 ? light->shadow_radius : light->source_radius; }
+static uint32_t ShadowOwner(const lq_runtime_light *light, uint32_t slot, uint32_t count)
+{ return light->shadow_slot && light->shadow_slot - 1 < count && light->shadow_slot - 1 != slot ? light->shadow_slot - 1 : slot; }
+static uint8_t CasterFaces(const struct lq_caster *c, const float light[4]);
+/* Slots any caster of this frame (actor or moving brush, resting or not) could
+ * shadow for: its bounds meet the light's range. */
+static void MoverSlots(lq_gpu *g, const lq_view *v)
+{
+    memset(g->movers, 0, sizeof(g->movers));
+    uint32_t count = v->runtime_light_count > LQ_MAX_RUNTIME_LIGHTS ? LQ_MAX_RUNTIME_LIGHTS : v->runtime_light_count;
+    for (uint32_t i = 0; i < count; ++i) {
+        const float *light = v->runtime_lights[i].position_radius;
+        if (light[3] <= 0) continue;
+        for (uint32_t c = 0; c < g->frame_caster_count; ++c)
+            if (CasterFaces(&g->frame_casters[c], light)) { g->movers[i / 32] |= 1u << (i % 32); break; }
     }
 }
 static void LightUniforms(lq_light_uniforms *uniforms, const lq_gpu *g, const lq_view *view)
@@ -1020,10 +1068,13 @@ static void LightUniforms(lq_light_uniforms *uniforms, const lq_gpu *g, const lq
         memcpy(uniforms->color_strength[i],light->color_strength,4*sizeof(float));
         memcpy(uniforms->falloff[i],light->falloff,4*sizeof(float));
         memcpy(uniforms->spot[i],light->spot,4*sizeof(float));
-        uniforms->shape[i][0] = light->spot_inner; uniforms->shape[i][1] = light->source_radius;
+        /* Panel lights read their group's cube, drawn from the group's centre
+         * with the panel's emitter radius (LQ_ShareGroupShadows). */
+        uniforms->shape[i][0] = light->spot_inner; uniforms->shape[i][1] = ShadowRadius(light);
         uniforms->shape[i][2] = light->submerged;
         uniforms->limit[i][0] = light->limit;
-        uint32_t array, cube; LQ_ShadowSlot(i, &array, &cube);
+        memcpy(&uniforms->limit[i][1], ShadowCentre(light), 3 * sizeof(float));
+        uint32_t array, cube; LQ_ShadowSlot(ShadowOwner(light, i, count), &array, &cube);
         uniforms->shape[i][3] = (float)(array * 1024 + cube);
     }
     uniforms->parameters[0] = count;
@@ -1036,7 +1087,8 @@ static void LightUniforms(lq_light_uniforms *uniforms, const lq_gpu *g, const lq
     uniforms->color_space[0] = view->light_gamma > 0 ? view->light_gamma : LQ_LIGHT_GAMMA;
     uniforms->color_space[1] = view->shadow_faint < 0 ? 0 : view->shadow_faint > 0 ? view->shadow_faint : LQ_SHADOW_FAINT;
     uniforms->color_space[2] = view->shadow_dominance < 0 ? 0 : view->shadow_dominance > 0 ? view->shadow_dominance : LQ_SHADOW_DOMINANCE;
-    uniforms->color_space[3] = LQ_EMISSION_GAIN;
+    uniforms->color_space[3] = g->emission;
+    uniforms->effects[0] = g->sprite_emission;
     uniforms->shadow_filter[0] = view->shadow_detail < 0 ? 0 : view->shadow_detail > 0 ? view->shadow_detail : LQ_SHADOW_DETAIL;
     uniforms->tuning[1] = g->bounce_ratio;
     uniforms->tuning[2] = view->luminous_lighting && g->bounce_ratio > 0 && !view->disable_bounce;
@@ -1152,12 +1204,16 @@ static void RenderShadows(lq_gpu *g, SDL_GPUCommandBuffer *command, const lq_vie
     for (uint32_t slot = 0; slot < count; ++slot) {
         const lq_runtime_light *light = &v->runtime_lights[slot];
         if (light->position_radius[3] <= 0 || !g->casters) continue;
+        /* A panel group's members read the cube of its lowest slot; their own
+         * cubes go undrawn and must be rebuilt if they draw again. */
+        if (ShadowOwner(light, slot, count) != slot) { g->shadow_valid[slot] = 0; continue; }
+        const float *centre = ShadowCentre(light);
         int changed = !g->shadow_valid[slot] || g->shadow_sources[slot] != light->source_index ||
             g->shadow_brushes[slot] != brushes ||
-            memcmp(g->shadow_keys[slot], light->position_radius, sizeof(g->shadow_keys[slot]));
+            memcmp(g->shadow_keys[slot], centre, sizeof(g->shadow_keys[slot]));
         uint8_t beam = BeamFaces(light), touched = 0, present = 0, caster_faces[64];
         for (uint32_t i = 0; i < g->frame_caster_count; ++i) {
-            uint8_t faces = CasterFaces(&g->frame_casters[i], light->position_radius) & beam;
+            uint8_t faces = CasterFaces(&g->frame_casters[i], centre) & beam;
             if (i < 64) caster_faces[i] = faces;
             present |= faces;
             if (g->frame_casters[i].moved) touched |= faces;
@@ -1176,7 +1232,7 @@ static void RenderShadows(lq_gpu *g, SDL_GPUCommandBuffer *command, const lq_vie
         for (int face = 0; face < 6; ++face) {
             if (!(redraw & (1 << face))) continue;
             Uint8 layer = (Uint8)(cube * 6 + (uint32_t)face);
-            ShadowFace(face, light->position_radius, uniforms.face_projection);
+            ShadowFace(face, centre, uniforms.face_projection);
             SDL_GPUDepthStencilTargetInfo depth = {0};
             depth.clear_depth = 0; depth.store_op = SDL_GPU_STOREOP_STORE;
             depth.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE; depth.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
@@ -1201,7 +1257,7 @@ static void RenderShadows(lq_gpu *g, SDL_GPUCommandBuffer *command, const lq_vie
                     for (uint32_t r = 0; r < ranges; ++r) {
                         const struct lq_caster_range *range = &g->caster_ranges[r];
                         struct lq_caster box; memcpy(box.min, range->min, sizeof(box.min)); memcpy(box.max, range->max, sizeof(box.max));
-                        g->caster_range_faces[r] = CasterFaces(&box, light->position_radius);
+                        g->caster_range_faces[r] = CasterFaces(&box, centre);
                     }
                     classified = 1;
                 }
@@ -1238,7 +1294,7 @@ static void RenderShadows(lq_gpu *g, SDL_GPUCommandBuffer *command, const lq_vie
             }
             ++g->shadow_face_updates;
         }
-        memcpy(g->shadow_keys[slot], light->position_radius, sizeof(g->shadow_keys[slot]));
+        memcpy(g->shadow_keys[slot], centre, sizeof(g->shadow_keys[slot]));
         g->shadow_sources[slot] = light->source_index; g->shadow_valid[slot] = 1;
         g->shadow_brushes[slot] = brushes; g->shadow_dynamic_faces[slot] = touched; g->shadow_stale[slot] = 0;
         ++g->shadow_updates;
@@ -1312,6 +1368,7 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
     g->shadow_updates = 0;
     if (g->probe_pending) ProbeCompute(g, command);
     if (v->luminous_lighting && g->shadow_maps[0] && !v->disable_shadows) RenderShadows(g, command, v);
+    MoverSlots(g, v);
     lq_light_uniforms light_uniforms;
     LightUniforms(&light_uniforms, g, v);
     SDL_PushGPUFragmentUniformData(command, 1, &light_uniforms, sizeof(light_uniforms));
@@ -1413,8 +1470,8 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
     {   /* Tone mapping: the float frame to the display (see tonemap.frag). */
         struct { float tone[4], target[4]; } display = {
             {g->test_pattern ? 3.0f : v->luminous_lighting ? 1.0f : 0.0f, g->gamma / 2.2f, g->hdr_active ? g->headroom : 1.0f,
-             g->hdr_active ? fmaxf(LQ_TONE_WHITE, 2.0f * g->headroom) : LQ_TONE_WHITE},
-            {g->hdr_active ? 1.0f : 0.0f, g->gamma, LQ_TONE_SHOULDER, 0}};
+             g->hdr_active ? fmaxf(g->tone_white, 2.0f * g->headroom) : g->tone_white},
+            {g->hdr_active ? 1.0f : 0.0f, g->gamma, g->tone_shoulder, 0}};
         SDL_GPUColorTargetInfo target = {0};
         target.texture = g->color; target.load_op = SDL_GPU_LOADOP_DONT_CARE; target.store_op = SDL_GPU_STOREOP_STORE;
         pass = SDL_BeginGPURenderPass(command, &target, 1, NULL);

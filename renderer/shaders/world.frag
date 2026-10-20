@@ -26,6 +26,7 @@ layout(set=3,binding=0,std140) uniform Surface {
     uvec4 light_bits; // Luminous: runtime-light slots reaching the face; Classic: dlights in x
     vec4 bounce_weights; // live style value per bounce layer
     vec4 face_light; // x: 1 + the slot brightest everywhere on this face (found on the CPU); 0 unknown
+    uvec4 shadow_free; // slots whose shadow lookup here provably finds no blocker (LQ_SceneFindShadowFree)
 } surface;
 // Luminous runtime lights, pushed once per frame. Each slot owns a shadow cube.
 layout(set=3,binding=1,std140) uniform Lights {
@@ -47,7 +48,8 @@ layout(set=3,binding=1,std140) uniform Lights {
     vec4 color_space; // x: exponent from summed brightness to linear light; w: fullbright emission (Luminous)
                       // y: faint level, z: dominance ratio below which lights cast no shadow (0 off)
     vec4 shadow_filter; // x: a light's brightness at which its shadow takes all 16 samples (0: always)
-    vec4 limit[128]; // x: most brightness the light adds to a surface; 0 none (torch accents)
+    vec4 limit[128]; // x: most brightness the light adds to a surface; 0 none (torch accents); yzw: shadow cube centre
+    vec4 effects; // x: sprite fullbright emission (lq_sprite_emission)
 } lights;
 const float SHADOW_NEAR = 2.0;
 layout(location=0) in vec2 uv;
@@ -74,6 +76,9 @@ vec3 displayEncode(vec3 c) { return pow(clamp(c, 0.0, 1.0), vec3(1.0 / DISPLAY_G
 // tone mapping rolls them back to about their colour on SDR, and HDR displays
 // show them brighter than white.
 float emission() { return lights.parameters.y != 0u && lights.color_space.w > 0.0 ? lights.color_space.w : 1.0; }
+// Sprites (explosions, s_light) emit by their own gain, so they can reach
+// further into HDR highlights than lava and lit panels.
+float spriteEmission() { return lights.parameters.y != 0u && lights.effects.x > 0.0 ? lights.effects.x : emission(); }
 vec4 litEntry(float entry) {
     vec4 c = texture(colormap, vec2((entry + 0.5) / 256.0, 32.5 / 64.0));
     c.rgb = displayDecode(c.rgb);
@@ -165,7 +170,7 @@ vec4 spriteSample(vec2 coord) {
         if (entry > 254.5) continue;
         float w = ((i & 1) != 0 ? weight.x : 1.0 - weight.x) * ((i >> 1) != 0 ? weight.y : 1.0 - weight.y);
         vec3 c = displayDecode(texture(colormap, vec2((entry + 0.5) / 256.0, 32.5 / 64.0)).rgb);
-        if (entry >= 224.0) c *= emission();
+        if (entry >= 224.0) c *= spriteEmission();
         sum += vec4(c, 1.0) * w;
     }
     return sum;
@@ -308,6 +313,27 @@ float shadowFactor(uint slot, vec3 origin, vec3 normal, float radius, float brig
     float rim = litTaps(f, 0, 4, width);
     if (taps > 4 && rim == 0.0) return 0.0;
     return (rim + litTaps(f, 4, taps, width)) / float(taps);
+}
+// A slot's shadow, from its cube's centre (limit.yzw) and emitter radius
+// (shape.y). Panel lights share one cube per group (LQ_ShareGroupShadows in
+// scene.c), so each pixel filters a cube once and its other members reuse the
+// result. Diffuse effects aim each light's test along their own direction and
+// are not cached.
+vec4 cached_cube[2] = vec4[](vec4(-1.0), vec4(-1.0));
+vec4 cached_shadow[2] = vec4[](vec4(1.0), vec4(1.0));
+int cached_next = 0;
+float lightShadow(uint i, vec3 normal, float brightness, bool diffuse_effect) {
+    if ((surface.shadow_free[i / 32u] & (1u << (i % 32u))) != 0u) return 1.0;
+    float cube = lights.shape[i].w;
+    if (!diffuse_effect)
+        for (int k = 0; k < 8; ++k) if (cached_cube[k >> 2][k & 3] == cube) return cached_shadow[k >> 2][k & 3];
+    float shadow = shadowFactor(i, lights.limit[i].yzw, normal, lights.shape[i].y, brightness);
+    if (!diffuse_effect) {
+        cached_cube[cached_next >> 2][cached_next & 3] = cube;
+        cached_shadow[cached_next >> 2][cached_next & 3] = shadow;
+        cached_next = (cached_next + 1) & 7;
+    }
+    return shadow;
 }
 // Unshadowed light from slot i at this point, in Quake brightness units (its
 // strength included, colour not), and the direction toward it.
@@ -459,7 +485,7 @@ void main() {
                     lead = known - 1u;
                     vec3 c = lights.color_strength[lead].rgb;
                     brightest = lightReach(lead, normal, diffuse_effect, liquid, opacity, submerged, toward) * max(c.r, max(c.g, c.b));
-                    brightest_shadow = shadowFactor(lead,lights.position_range[lead].xyz,diffuse_effect ? toward : normal,lights.shape[lead].y,brightest);
+                    brightest_shadow = lightShadow(lead,diffuse_effect ? toward : normal,brightest,diffuse_effect);
                     strongest = brightest * brightest_shadow;
                 } else if (lights.color_space.z > 0.0) {
                     for (uint word = 0u; word < 4u; ++word)
@@ -472,7 +498,7 @@ void main() {
                     }
                     if (lead != 0xffffffffu) {
                         lightReach(lead, normal, diffuse_effect, liquid, opacity, submerged, toward);
-                        brightest_shadow = shadowFactor(lead,lights.position_range[lead].xyz,diffuse_effect ? toward : normal,lights.shape[lead].y,brightest);
+                        brightest_shadow = lightShadow(lead,diffuse_effect ? toward : normal,brightest,diffuse_effect);
                         strongest = brightest * brightest_shadow;
                     }
                 }
@@ -488,7 +514,7 @@ void main() {
                     float needed = max(lights.color_space.y, strongest * lights.color_space.z);
                     float weight = needed > 0.0 ? clamp(value / needed - 1.0, 0.0, 1.0) : 1.0;
                     if (weight > 0.0)
-                        direct *= mix(1.0, shadowFactor(i,lights.position_range[i].xyz,diffuse_effect ? toward : normal,lights.shape[i].y,value), weight);
+                        direct *= mix(1.0, lightShadow(i,diffuse_effect ? toward : normal,value,diffuse_effect), weight);
                     illumination += c * direct;
                 }
                 // Static-world bounce from those lights, driven by live styles.

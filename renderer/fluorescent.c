@@ -266,6 +266,18 @@ static float Failure(uint32_t seed, double time, float tint[3])
     for (int k = 0; k < 3; ++k) tint[k] += (arc[k] - 1) * mix;
     return 1 + extra;
 }
+/* The intensity at which a falloff reaches `factor` times as far before
+ * falling below `cutoff`; 0 for falloffs without a reach. */
+static float Farther(uint32_t formula, float value, float cutoff, float factor)
+{
+    switch (formula) {
+    case LQ_LIGHT_LINEAR: return factor * (value - cutoff) + cutoff;
+    case LQ_LIGHT_INVERSE: return value * factor;
+    case LQ_LIGHT_INVERSE2: return value * factor * factor;
+    case LQ_LIGHT_INVERSE2A: { float root = factor * (sqrtf(value / cutoff) - 1) + 1; return cutoff * root * root; }
+    default: return 0;
+    }
+}
 int LQ_FluorescentReach(const lq_scene *scene, const lq_tube_track *track, lq_runtime_light *light)
 {
     if (!scene || !track || !track->count || !light || light->source_index >= scene->light_source_count) return 0;
@@ -273,19 +285,19 @@ int LQ_FluorescentReach(const lq_scene *scene, const lq_tube_track *track, lq_ru
     const lq_light_source *tube = Tube(scene, &source);
     if (!tube || LQ_LightFluorescent(tube) != 2 || tube->style < LQ_FLUORESCENT_STYLE_BASE || tube->style >= 255 ||
         Exposed(track) <= TRACK_FLASHING) return 0;
-    /* The intensity at which each falloff reaches twice as far. */
-    float cutoff = 0.5f / source.output_scale, value = source.intensity;
-    switch (source.formula) {
-    case LQ_LIGHT_LINEAR: value = 2 * value - cutoff; break;
-    case LQ_LIGHT_INVERSE: value *= 2; break;
-    case LQ_LIGHT_INVERSE2: value *= 4; break;
-    case LQ_LIGHT_INVERSE2A: { float root = 2 * sqrtf(value / cutoff) - 1; value = cutoff * root * root; } break;
-    default: return 0;
-    }
+    float value = Farther(source.formula, source.intensity, 0.5f / source.output_scale, 2);
     if (!(value > source.intensity)) return 0;
     source.intensity = value;
     light->falloff[0] = value; light->position_radius[3] = LQ_LightSourceRange(&source);
     return 1;
+}
+void LQ_FlashRuntimeLight(lq_runtime_light *light, float factor)
+{
+    if (!light || light->position_radius[3] <= 0 || !(light->color_strength[3] > 0) || !(factor > 1)) return;
+    float value = Farther((uint32_t)light->falloff[3], light->falloff[0], 0.5f / light->color_strength[3], factor);
+    if (!(value > light->falloff[0])) return;
+    light->falloff[0] = value; light->position_radius[3] *= factor;
+    light->color_strength[3] *= factor;
 }
 static float Output(const lq_tube_track *track, const lq_light_source *tube, double time, float tint[3])
 {

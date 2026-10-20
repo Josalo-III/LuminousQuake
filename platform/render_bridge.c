@@ -69,6 +69,16 @@ static cvar_t lq_scene_cache_mb = {"lq_scene_cache_mb", "0", true};
 /* Diagnostics for measurements: 0 submits every PVS face (lq_cull), or
  * lights Luminous without shadow cubes or filtering (lq_shadows). */
 static cvar_t lq_cull = {"lq_cull", "1"}, lq_shadows = {"lq_shadows", "1"};
+/* Luminous panel lights: neighbouring ericw-tools surface-light pieces share
+ * one shadow cube, drawn from their centre with the panel's size as the
+ * emitter (1), or each piece casts its own (0). Lighting is the same either way. */
+static cvar_t lq_panel_shadows = {"lq_panel_shadows", "1"};
+/* Luminous skips shadow lookups proved to find no blocker (1), or looks them
+ * all up (0, for comparisons). */
+static cvar_t lq_shadow_free = {"lq_shadow_free", "1"};
+/* Luminous tone mapping and emission, for tuning by eye (see LQ_GPUTone). */
+static cvar_t lq_tone_shoulder = {"lq_tone_shoulder", "0.8"}, lq_tone_white = {"lq_tone_white", "6"};
+static cvar_t lq_emission = {"lq_emission", "3"}, lq_sprite_emission = {"lq_sprite_emission", "3"};
 static struct { uint64_t key; lq_scene scene; uint32_t tubes; size_t bytes; double used; } scene_cache[SCENE_CACHE_ENTRIES];
 static uint64_t map_key; /* the loaded map_scene's key, 0 when none */
 static qboolean list_lights;
@@ -108,7 +118,7 @@ static size_t SceneBytes(const lq_scene *s)
 {
     size_t bytes = (size_t)s->vertex_count * sizeof(*s->vertices) + (size_t)s->index_count * sizeof(*s->indices) +
         (size_t)s->draw_count * (sizeof(*s->draws) + (s->draw_bounds ? sizeof(*s->draw_bounds) : 0) +
-            (s->face_samples ? sizeof(*s->face_samples) : 0) + (size_t)s->light_visibility_words * 4) +
+            (s->face_samples ? sizeof(*s->face_samples) : 0) + (size_t)s->light_visibility_words * 4 * (s->shadow_free ? 2 : 1)) +
         (size_t)s->material_count * sizeof(*s->materials) + ImageBytes(&s->colormap) + ImageBytes(&s->lightmap) +
         ImageBytes(&s->bounce) + (size_t)s->light_source_count * (sizeof(*s->light_sources) + (size_t)s->leaf_words * 4) +
         (size_t)s->bsp_node_count * sizeof(*s->bsp_nodes) + (size_t)s->leaf_count * ((size_t)s->leaf_words * 4 + 1) +
@@ -175,6 +185,9 @@ static void SceneCacheStore(void)
 void LQ_RenderBridgeRegister(void)
 {
     Cvar_RegisterVariable(&lq_scene_cache_mb); Cvar_RegisterVariable(&lq_cull); Cvar_RegisterVariable(&lq_shadows);
+    Cvar_RegisterVariable(&lq_panel_shadows); Cvar_RegisterVariable(&lq_shadow_free);
+    Cvar_RegisterVariable(&lq_tone_shoulder); Cvar_RegisterVariable(&lq_tone_white);
+    Cvar_RegisterVariable(&lq_emission); Cvar_RegisterVariable(&lq_sprite_emission);
     Cmd_AddCommand("lq_lights", ListLights_f);
 }
 static qboolean SceneCacheTake(uint64_t key)
@@ -243,6 +256,7 @@ static void CancelSceneTasks(void) { if (scene_tasks) LQ_BackgroundCancel(scene_
 typedef struct {
     lq_scene scene; /* a shallow copy: its arrays stay alive until cancelled */
     lq_shadow_free_count count;
+    uint32_t *bits; /* the clear pairs, handed to map_scene when done */
     double seconds;
     int done;
 } shadow_free_task;
@@ -250,18 +264,23 @@ static void ShadowFreeRun(void *context, const volatile int *cancel)
 {
     shadow_free_task *task = context;
     Uint64 started = SDL_GetTicksNS();
-    task->done = LQ_SceneCountShadowFree(&task->scene, cancel, &task->count);
+    size_t words = (size_t)task->scene.draw_count * task->scene.light_visibility_words;
+    task->bits = words ? malloc(words * sizeof(*task->bits)) : NULL;
+    task->done = task->bits && LQ_SceneFindShadowFree(&task->scene, cancel, &task->count, task->bits);
     task->seconds = (double)(SDL_GetTicksNS() - started) / 1e9;
 }
+/* Runs on the main thread, before the scene the task read can be cached or
+ * freed (scene tasks are cancelled first), so map_scene is still that scene. */
 static void ShadowFreeFinish(void *context, int cancelled)
 {
     shadow_free_task *task = context;
     if (!cancelled && task->done && task->count.pairs)
         Con_Printf("Luminous: %llu of %llu light-face pairs (%.0f%%; %.0f%% of their face area) need no shadow lookup, "
-            "proved in %.1f s in the background.\n", (unsigned long long)task->count.clear,
+            "proved in %.1f s in the background; their lookups are skipped.\n", (unsigned long long)task->count.clear,
             (unsigned long long)task->count.pairs, 100.0 * task->count.clear / task->count.pairs,
             task->count.area > 0 ? 100.0 * task->count.clear_area / task->count.area : 0, task->seconds);
-    free(task);
+    if (!cancelled && task->done && !map_scene.shadow_free) { map_scene.shadow_free = task->bits; task->bits = NULL; }
+    free(task->bits); free(task);
 }
 
 void LQ_RenderBridgeShutdown(void)
@@ -353,7 +372,7 @@ void LQ_RenderBegin(void)
         free(dynamic_probes); dynamic_probes = NULL;
         if (luminous && LQ_GPUDynamicProbeBytes(gpu)) dynamic_probes = malloc(LQ_GPUDynamicProbeBytes(gpu));
         loaded = true; palette_valid = false;
-        if (luminous) {
+        if (luminous && !map_scene.shadow_free) {
             shadow_free_task *task = calloc(1, sizeof(*task));
             if (!++scene_tasks) scene_tasks = 1;
             if (task) { task->scene = map_scene; LQ_BackgroundSubmit(scene_tasks, ShadowFreeRun, ShadowFreeFinish, task); }
@@ -455,6 +474,7 @@ static void ConvertOverlayRows(void *opaque_context, size_t begin, size_t end)
     }
 }
 /* Keep nearby effects within the eight dynamic shadow slots, weighted by range. */
+#define LQ_EXPLOSION_FLASH 1.5f /* explosion light: output and reach over Quake's dlight */
 static void SelectEffect(const lq_runtime_light *candidate, lq_runtime_light selected[LQ_MAX_DYNAMIC_LIGHTS],
     float scores[LQ_MAX_DYNAMIC_LIGHTS], uint32_t *count)
 {
@@ -510,6 +530,9 @@ static void LuminousLights(void)
         for (int k = 0; k < 3; ++k) light->color_strength[k] *= rgb[k];
         LQ_FluorescentReach(&map_scene, track, light);
     }
+    /* Neighbouring pieces of one lit panel share a shadow cube (lq_panel_shadows). */
+    LQ_ShareGroupShadows(&map_scene, runtime_lights, LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS,
+        lq_panel_shadows.value != 0);
     lq_runtime_light selected[LQ_MAX_DYNAMIC_LIGHTS], candidate;
     float scores[LQ_MAX_DYNAMIC_LIGHTS]; uint32_t dynamic = 0;
     for (int i = 0; i < MAX_DLIGHTS; ++i) {
@@ -519,6 +542,9 @@ static void LuminousLights(void)
         if (kind >= sizeof(colors)/sizeof(colors[0])) kind = LQ_DLIGHT_GENERIC;
         LQ_DynamicRuntimeLight(&candidate, light->origin, light->radius, colors[kind],
             kind == LQ_DLIGHT_EXPLOSION ? 12 : 4, (uint32_t)i);
+        /* An explosion flashes as a striking tube does, but half as hard:
+         * 1.5 times as bright and as far (2 was too much in play). */
+        if (kind == LQ_DLIGHT_EXPLOSION) LQ_FlashRuntimeLight(&candidate, LQ_EXPLOSION_FLASH);
         SelectEffect(&candidate, selected, scores, &dynamic);
     }
     for (uint32_t i = 0; i < MAX_BEAMS; ++i) {
@@ -557,6 +583,7 @@ static void LuminousLights(void)
     view.shadow_dominance = dominance > 0 ? dominance : -1;
     float detail = Cvar_VariableValue("lq_shadow_detail");
     view.shadow_detail = detail > 0 ? detail : -1;
+    view.disable_shadow_free = lq_shadow_free.value == 0;
     LQ_BuildVisibleLightInteractions(&map_scene, runtime_lights, count, world_draws, interaction_draws);
     for (uint32_t i = 0; i < map_scene.draw_count; ++i)
         if (world_draws[i].index_count)
@@ -660,6 +687,7 @@ qboolean LQ_RenderBridgePresent(void)
     LQ_GPUDisplay(gpu, Cvar_VariableValue("lq_gamma"), Cvar_VariableValue("lq_hdr") != 0,
         Cvar_VariableValue("lq_hdr_peak"));
     LQ_GPUTestPattern(gpu, Cvar_VariableValue("lq_hdr_test") != 0);
+    LQ_GPUTone(gpu, lq_tone_shoulder.value, lq_tone_white.value, lq_emission.value, lq_sprite_emission.value);
     {   /* Say in the console when output switches between SDR and HDR. */
         static int reported = -1; static float reported_headroom;
         float headroom; int hdr = LQ_GPUDisplayHDR(gpu, &headroom);

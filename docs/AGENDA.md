@@ -98,8 +98,11 @@ Luminous only. Classic GPU stays palette-exact.
   Light still sums in Quake's brightness units and becomes linear once,
   keeping Classic's composition. Evidence and choices:
   [Luminous colour](LUMINOUS_RENDERER.md#colour-linear-light-at-32-bits).
-- **Still open for this item:** translucent blending in linear light, which
-  needs the float target below.
+- **Translucent blending in linear light — done October 18, 2026**, with the
+  float frame below. Liquids, smoke and sprites blend there, before tone
+  mapping. Entity alpha is still not drawn (item 1). Screen tints stay a palette
+  wash, as in Software: kept October 20
+  ([blending and tints](LUMINOUS_RENDERER.md#colour-linear-light-at-32-bits)).
 - **HDR — first version October 18, 2026.** The GPU renderers draw into a
   16-bit float frame. Luminous writes linear light there with an eight-times
   ceiling, and a tone-mapping pass brings it to the display: unchanged below
@@ -108,7 +111,7 @@ Luminous only. Classic GPU stays palette-exact.
   window's display is in HDR mode (`lq_hdr`). A **Gamma** option for all three
   renderers sits after Brightness (`lq_gamma`). Measured on the user's Acer
   PM161W: 2.1× headroom (4.2× potential), over USB-C or HDMI. Still
-  to come: exposure, blending translucent surfaces in linear light, and tuning
+  to come: exposure and tuning
   the shoulder and white point by eye on HDR. Added the same day: Video
   Options → **HDR** and **HDR peak** (`lq_hdr_peak` caps highlights where a
   display is told more headroom than it shows, as mirrored displays are), an
@@ -123,7 +126,10 @@ Luminous only. Classic GPU stays palette-exact.
   showed no HDR at first). Its peak, found with `lq_hdr_test`, is 2×: the 3,
   4, 6 and 10× bands look the same. That matches the 2.09× headroom macOS
   reports, so the default cap ("as reported") is right and `lq_hdr_peak`
-  isn't needed. Next: tune the shoulder and white point by eye.
+  isn't needed. Next: tune the shoulder and white point by eye. **Started
+  October 20:** `lq_tone_shoulder` (0.8), `lq_tone_white` (6), `lq_emission`
+  (3) and a separate `lq_sprite_emission` (3) for explosions and other sprites
+  now set these live, for choosing new defaults on the Acer.
 - This comes before material packs, because specular and normal-mapped light
   look wrong when computed in gamma space.
 
@@ -256,6 +262,11 @@ them. Principles, decided October 17, 2026:
   or keep emitters unshadowed (the rerelease's lighting is otherwise kept as
   authored, item 1a). A lead to check: the pre-HDR build measured higher in
   interleaved runs (32 against 11-24 fps).
+  **Trying since October 20: panel shadows** (`lq_panel_shadows`). Pieces keep
+  their own light but share one shadow cube per group of up to four, drawn
+  from the group's centre ([panel shadows](LUMINOUS_RENDERER.md#classic-and-rerelease-data)).
+  On E1M1 that is 55 cubes for 148 pieces. Its look in game and its cost are
+  not yet judged or measured.
 - **Done October 20: CPU-side review fixes and finer light lists.** Review
   items 3, 5 and 8 ([performance review](PERFORMANCE_REVIEW.md)): the overlay
   texture is reused, the swapchain is waited for after recording, cube
@@ -271,9 +282,13 @@ them. Principles, decided October 17, 2026:
   on the main thread once a frame; a map change or video restart cancels the
   map's tasks before its scene is cached or freed. First task: after each
   Luminous map load, count the light-face pairs whose shadow lookup provably
-  finds nothing (`LQ_SceneCountShadowFree`), printed to the console. Next:
-  if that share is large, skip those lookups in the shader, with a runtime
-  test against moving casters.
+  finds nothing (`LQ_SceneCountShadowFree`), printed to the console.
+  **Done October 20: those lookups are skipped** (`lq_shadow_free`, default
+  1). The task keeps the clear pairs as bits per face and hands them to the
+  loaded scene. Each frame a slot's bits count only while its light stands at
+  its source (not a moved flame) and no actor or moving brush lies within its
+  reach. Not yet measured; the next performance round should compare
+  `lq_shadow_free 0` and `1`.
 - **CPU or GPU, October 20.** What suits each: per-pixel and per-texel work
   stays on the GPU; per-light, per-face and per-entity work with branches
   suits the CPU; work that may arrive frames late suits idle cores. Large
@@ -334,7 +349,10 @@ protocol for interoperability is decided when this starts.
   last-resort map-local composition patch described in the Luminous notes
   remains.
 - **Generated relief from the original 8-bit textures.** Painted shading is not
-  geometry. Relief comes only from material packs.
+  geometry. Relief comes only from material packs. An October 20 experiment,
+  [AI generated normals](AI_GENERATED_NORMALS.md), inferred relief and
+  lighting-free paint for one texture by hand-guided fitting. It is not in the
+  engine and doesn't change this decision.
 - **Quake 2, Quake 3 and Half-Life map formats, CSQC, and effects such as motion
   blur**, unless a specific mod we support needs one.
 

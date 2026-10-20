@@ -55,6 +55,10 @@ void LQ_FluorescentStyles(const lq_scene *scene, const lq_tube_track *track, dou
  * only as a flash begins and ends, so its shadow is redrawn only then.
  * Returns 1 while flashing. */
 int LQ_FluorescentReach(const lq_scene *scene, const lq_tube_track *track, lq_runtime_light *light);
+/* A flash, as a failing tube's strike: the light shines at `factor` times its
+ * output, and its falloff and range reach `factor` times as far. A strike
+ * peaks at 2 (twice the output; LQ_FluorescentReach doubles the reach). */
+void LQ_FlashRuntimeLight(lq_runtime_light *light, float factor);
 /* Per-channel gain on a tube's direct light: mains flicker through each
  * phosphor's persistence (and the instant mercury lines) as `camera` records
  * it, and a failing tube's colour while it glows or flashes. A plain light in

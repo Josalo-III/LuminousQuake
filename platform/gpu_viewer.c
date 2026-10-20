@@ -705,6 +705,7 @@ int LQ_GPUViewer(int argc, char **argv)
     view.disable_culling = Has(argc, argv, "--no-cull");
     view.static_brush_shadows = 1; /* no gameplay: brush models stay where compiled */
     view.disable_bounce = Has(argc, argv, "--no-bounce");
+    int panel_shadows = !Has(argc, argv, "--no-panel-shadows"); /* see lq_panel_shadows */
     const char *exposure = Argument(argc, argv, "--exposure"), *bounce_rays = Argument(argc, argv, "--bounce-rays");
     const char *bounce_gain = Argument(argc, argv, "--bounce-gain");
     if (exposure) {
@@ -928,6 +929,18 @@ int LQ_GPUViewer(int argc, char **argv)
         pvs = malloc(scene.draw_count); pvs_draws = malloc(scene.draw_count*sizeof(*pvs_draws));
         if (!pvs || !pvs_draws) { snprintf(error,sizeof(error),"cannot allocate light selection"); goto done; }
         view.world_draws = interaction_draws; view.world_draw_count = scene.draw_count;
+        /* As the game proves in the background: pairs whose shadow lookup
+         * cannot find a blocker skip it (unless --no-shadow-free). */
+        view.disable_shadow_free = Has(argc, argv, "--no-shadow-free");
+        size_t words = (size_t)scene.draw_count * scene.light_visibility_words;
+        if (!view.disable_shadow_free && words && !test && (scene.shadow_free = malloc(words * sizeof(uint32_t)))) {
+            static const volatile int never = 0;
+            lq_shadow_free_count found;
+            if (LQ_SceneFindShadowFree(&scene, &never, &found, scene.shadow_free) && found.pairs)
+                printf("Shadow-free pairs: %llu of %llu (%.0f%%) skip their shadow lookup\n",
+                    (unsigned long long)found.clear, (unsigned long long)found.pairs, 100.0 * found.clear / found.pairs);
+            else { free(scene.shadow_free); scene.shadow_free = NULL; }
+        }
     }
     if (test || !luminous) LQ_SceneFree(&scene); /* Ordinary upload must not depend on loader storage. */
     if (test) {
@@ -997,6 +1010,7 @@ int LQ_GPUViewer(int argc, char **argv)
             LQ_LightSelectionClip(&view, width > 0 && height > 0 ? (float)width / (float)height : 4.0f / 3, selection);
             view.runtime_light_count = LQ_BuildRuntimeLightsInView(&scene, view.lightstyles, view.origin, pvs_draws,
                 selection, view.runtime_lights, LQ_MAX_RUNTIME_LIGHTS - LQ_MAX_DYNAMIC_LIGHTS);
+            LQ_ShareGroupShadows(&scene, view.runtime_lights, view.runtime_light_count, panel_shadows);
             LQ_BuildLightInteractions(&scene,view.runtime_lights,view.runtime_light_count,interaction_draws);
             view.luminous_lighting = 1;
         }
@@ -1010,10 +1024,18 @@ int LQ_GPUViewer(int argc, char **argv)
     printf("World faces submitted in the last frame: %u%s; brightest light known on %u\n", LQ_GPUSubmittedFaces(gpu),
         view.disable_culling ? " (culling disabled)" : "", LQ_GPUKnownLeadFaces(gpu));
     if (luminous) {
-        uint32_t active_lights = 0;
-        for (uint32_t i = 0; i < view.runtime_light_count; ++i) active_lights += view.runtime_lights[i].position_radius[3] > 0;
+        uint32_t active_lights = 0, members = 0, owners = 0;
+        uint8_t owner[LQ_MAX_RUNTIME_LIGHTS] = {0};
+        for (uint32_t i = 0; i < view.runtime_light_count; ++i) {
+            const lq_runtime_light *light = &view.runtime_lights[i];
+            active_lights += light->position_radius[3] > 0;
+            if (light->shadow_slot && light->shadow_slot <= LQ_MAX_RUNTIME_LIGHTS) {
+                ++members; owners += !owner[light->shadow_slot - 1]; owner[light->shadow_slot - 1] = 1;
+            }
+        }
         printf("Luminous lights: %u active slots; %llu shadow cubes drawn over %llu frames%s\n", active_lights,
             (unsigned long long)shadow_updates, (unsigned long long)frames, view.disable_shadows ? " (shadows disabled)" : "");
+        printf("Panel shadows: %u slots read the cubes of %u others\n", members, owners);
     }
     result = 0;
 done:

@@ -936,3 +936,70 @@ int LQ_SceneComputeBounceTraced(lq_scene *s, uint32_t rays, lq_range_runner run,
     free(c.emit); free(c.gather); free(c.sky); free(c.sun); free(c.emit_styles); free(c.gather_styles);
     return 1;
 }
+/* Panel shadow groups (see scene.h). A group grows from its seed by taking
+ * the nearest remaining copy of the same template on the same plane while the
+ * new centre stays within max_extent of every member and sees each of them
+ * through the BSP; copies that fail are passed over for this group. */
+static int SamePanel(const lq_light_source *a, const lq_light_source *b)
+{
+    return a->entity_index == b->entity_index && !b->spotlight && Dot(a->surface_plane, b->surface_plane) > 0.999f &&
+        fabsf(a->surface_plane[3] - b->surface_plane[3]) < 1;
+}
+uint32_t LQ_SceneGroupSurfaceShadows(lq_scene *s, float max_extent, uint32_t max_members, float piece_radius)
+{
+    if (!s || !s->bsp_nodes || !s->light_source_count || max_members < 2) return 0;
+    uint32_t groups = 0, *members = malloc(max_members * sizeof(*members));
+    uint8_t *tried = calloc(s->light_source_count, 1);
+    if (!members || !tried) { free(members); free(tried); return 0; }
+    for (uint32_t i = 0; i < s->light_source_count; ++i) s->light_sources[i].shadow_group = 0;
+    for (uint32_t seed = 0; seed < s->light_source_count; ++seed) {
+        lq_light_source *first = &s->light_sources[seed];
+        if (first->shadow_group || first->spotlight || Dot(first->surface_plane, first->surface_plane) < 0.5f) continue;
+        uint32_t count = 1; members[0] = seed;
+        float centre[3]; memcpy(centre, first->origin, sizeof(centre));
+        memset(tried, 0, s->light_source_count);
+        while (count < max_members) {
+            uint32_t best = UINT32_MAX; float best_distance = 0;
+            for (uint32_t j = seed + 1; j < s->light_source_count; ++j) {
+                const lq_light_source *other = &s->light_sources[j];
+                if (tried[j] || other->shadow_group || !SamePanel(first, other)) continue;
+                float d[3] = {other->origin[0]-centre[0], other->origin[1]-centre[1], other->origin[2]-centre[2]};
+                float distance = Dot(d, d);
+                if (best == UINT32_MAX || distance < best_distance) { best = j; best_distance = distance; }
+            }
+            if (best == UINT32_MAX) break;
+            tried[best] = 1;
+            float next[3] = {0, 0, 0};
+            for (uint32_t m = 0; m < count; ++m)
+                for (int k = 0; k < 3; ++k) next[k] += s->light_sources[members[m]].origin[k];
+            for (int k = 0; k < 3; ++k) next[k] = (next[k] + s->light_sources[best].origin[k]) / (float)(count + 1);
+            int fits = 1;
+            for (uint32_t m = 0; m <= count && fits; ++m) {
+                const float *p = s->light_sources[m < count ? members[m] : best].origin;
+                float d[3] = {p[0]-next[0], p[1]-next[1], p[2]-next[2]};
+                fits = Dot(d, d) <= max_extent * max_extent && SegmentClear(s, 0, next, p, 0);
+            }
+            if (!fits) continue;
+            members[count++] = best; memcpy(centre, next, sizeof(centre));
+        }
+        if (count < 2) continue;
+        float extent = 0, reach = 0;
+        for (uint32_t m = 0; m < count; ++m) {
+            const lq_light_source *light = &s->light_sources[members[m]];
+            float d[3] = {light->origin[0]-centre[0], light->origin[1]-centre[1], light->origin[2]-centre[2]};
+            float distance = sqrtf(Dot(d, d));
+            extent = fmaxf(extent, distance);
+            reach = fmaxf(reach, distance + LQ_LightSourceRange(light));
+        }
+        for (uint32_t m = 0; m < count; ++m) {
+            lq_light_source *light = &s->light_sources[members[m]];
+            light->shadow_group = seed + 1;
+            memcpy(light->shadow_origin, centre, sizeof(centre));
+            light->shadow_reach = reach;
+            light->shadow_radius = fmaxf(light->source_radius, extent + piece_radius);
+        }
+        ++groups;
+    }
+    free(members); free(tried);
+    return groups;
+}

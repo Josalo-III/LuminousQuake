@@ -10,7 +10,7 @@ void LQ_SceneFree(lq_scene *s)
 {
     if (!s) return;
     for (uint32_t i = 0; i < s->material_count; ++i) free(s->materials[i].indices.pixels);
-    free(s->light_sources); free(s->light_visibility);
+    free(s->light_sources); free(s->light_visibility); free(s->shadow_free);
     free(s->bsp_nodes); free(s->leaf_pvs); free(s->light_leaves); free(s->leaf_contents);
     free(s->face_samples); free(s->sample_positions); free(s->bounce.pixels);
     free(s->probe_static); free(s->probe_valid); free(s->draw_bounds);
@@ -155,6 +155,8 @@ static void FillRuntimeLight(lq_runtime_light *light, const lq_light_source *sou
     } else light->spot[3] = light->spot_inner = -2;
     light->source_radius = source->source_radius;
     light->source_index = index;
+    memcpy(light->shadow_origin_range, light->position_radius, sizeof(light->shadow_origin_range));
+    light->shadow_radius = light->source_radius;
 }
 /* Select up to LQ_MAX_RUNTIME_LIGHTS sources whose potential reach meets the
  * camera's PVS, nearest (range-weighted) first. `output` is also the previous
@@ -177,6 +179,40 @@ void LQ_DynamicRuntimeLight(lq_runtime_light *light, const float origin[3], floa
     light->spot[3] = light->spot_inner = -2;
     light->source_radius = source_radius;
     light->source_index = LQ_DYNAMIC_LIGHT_SOURCE | key;
+    memcpy(light->shadow_origin_range, light->position_radius, sizeof(light->shadow_origin_range));
+    light->shadow_radius = source_radius;
+}
+void LQ_ShareGroupShadows(const lq_scene *scene, lq_runtime_light *lights, uint32_t count, int enabled)
+{
+    if (!lights) return;
+    if (count > LQ_MAX_RUNTIME_LIGHTS) count = LQ_MAX_RUNTIME_LIGHTS;
+    /* Each light first takes its own cube, from where it now stands (flames
+     * move after selection). */
+    for (uint32_t i = 0; i < count; ++i) {
+        lq_runtime_light *light = &lights[i];
+        memcpy(light->shadow_origin_range, light->position_radius, sizeof(light->shadow_origin_range));
+        light->shadow_radius = light->source_radius; light->shadow_slot = 0;
+    }
+    if (!enabled || !scene) return;
+    for (uint32_t i = 0; i < count; ++i) {
+        lq_runtime_light *owner = &lights[i];
+        if (owner->position_radius[3] <= 0 || owner->shadow_slot || owner->source_index >= scene->light_source_count) continue;
+        const lq_light_source *source = &scene->light_sources[owner->source_index];
+        if (!source->shadow_group) continue;
+        memcpy(owner->shadow_origin_range, source->shadow_origin, sizeof(source->shadow_origin));
+        owner->shadow_origin_range[3] = source->shadow_reach;
+        owner->shadow_radius = source->shadow_radius;
+        /* The cube waits only while no member lights anything in view. */
+        for (uint32_t j = i + 1; j < count; ++j) {
+            lq_runtime_light *member = &lights[j];
+            if (member->position_radius[3] <= 0 || member->source_index >= scene->light_source_count ||
+                scene->light_sources[member->source_index].shadow_group != source->shadow_group) continue;
+            memcpy(member->shadow_origin_range, owner->shadow_origin_range, sizeof(member->shadow_origin_range));
+            member->shadow_radius = owner->shadow_radius;
+            member->shadow_slot = i + 1;
+            owner->offscreen &= member->offscreen;
+        }
+    }
 }
 void LQ_ShadowSlot(uint32_t slot, uint32_t *array, uint32_t *cube)
 {
@@ -265,8 +301,11 @@ static int HullMeetsSolid(const lq_scene *s, int32_t node, const float (*points)
  * every lookup on the face finds no blocker. The search radius is bounded
  * with the face's farthest point and the coarsest (128) cube. */
 int LQ_SceneCountShadowFree(const lq_scene *s, const volatile int *cancel, lq_shadow_free_count *out)
+{ return LQ_SceneFindShadowFree(s, cancel, out, NULL); }
+int LQ_SceneFindShadowFree(const lq_scene *s, const volatile int *cancel, lq_shadow_free_count *out, uint32_t *bits_out)
 {
     memset(out, 0, sizeof(*out));
+    if (bits_out && s) memset(bits_out, 0, (size_t)s->draw_count * s->light_visibility_words * sizeof(*bits_out));
     if (!s || !s->bsp_nodes || !s->leaf_contents || !s->light_visibility || !s->light_source_count) return 0;
     uint32_t begin = s->world_draw_end ? s->world_draw_begin : 0, end = s->world_draw_end ? s->world_draw_end : s->draw_count;
     float *range = malloc(s->light_source_count * sizeof(*range));
@@ -354,6 +393,7 @@ int LQ_SceneCountShadowFree(const lq_scene *s, const volatile int *cancel, lq_sh
                 }
                 if (blocked) continue;
                 ++out->clear; out->clear_area += area;
+                if (bits_out) bits_out[(size_t)d * s->light_visibility_words + i / 32] |= 1u << (i % 32);
             }
     }
     free(range); free(brushes);
@@ -575,6 +615,7 @@ uint32_t LQ_BuildVisibleLightInteractions(const lq_scene *scene, const lq_runtim
     for (uint32_t d = 0; d < scene->draw_count; ++d) {
         lq_draw *draw = &output[d];
         memset(draw->light_bits, 0, sizeof(draw->light_bits));
+        memset(draw->shadow_free_bits, 0, sizeof(draw->shadow_free_bits));
         if (draw->flags & LQ_SURFACE_SKY || draw->index_count < 3) continue;
         if (visible && !visible[d].index_count) continue;
         float computed[6];
@@ -583,6 +624,8 @@ uint32_t LQ_BuildVisibleLightInteractions(const lq_scene *scene, const lq_runtim
         const float *bounds_min = bounds, *bounds_max = bounds + 3;
         const lq_vertex *first = &scene->vertices[scene->indices[draw->first_index]];
         const uint32_t *reach = scene->light_visibility ? scene->light_visibility + d * scene->light_visibility_words : NULL;
+        const uint32_t *clear = scene->shadow_free && scene->light_visibility ?
+            scene->shadow_free + (size_t)d * scene->light_visibility_words : NULL;
         for (uint32_t i = 0; i < light_count; ++i) {
             const float *position = lights[i].position_radius;
             uint32_t source = lights[i].source_index;
@@ -603,6 +646,12 @@ uint32_t LQ_BuildVisibleLightInteractions(const lq_scene *scene, const lq_runtim
                 LQ_SpotReachesBox(position, lights[i].spot, lights[i].spot[3], LQ_SPOT_EDGE_BLUR + lights[i].source_radius, bounds))) {
                 draw->light_bits[i / 32] |= 1u << (i % 32);
                 ++relationships;
+                /* The proof holds for the source where it stands; a flame's
+                 * light that has moved with its pose looks its shadow up. */
+                const float *origin = source < scene->light_source_count ? scene->light_sources[source].origin : NULL;
+                if (clear && origin && (clear[source / 32] & (1u << (source % 32))) && position[0] == origin[0] &&
+                    position[1] == origin[1] && position[2] == origin[2])
+                    draw->shadow_free_bits[i / 32] |= 1u << (i % 32);
             }
         }
     }
@@ -779,6 +828,13 @@ int LQ_SceneCheck(const lq_scene *s, char *error, size_t size)
             isfinite(light->output_scale) && light->output_scale >= 0 &&
             isfinite(light->source_radius) && light->source_radius >= 0 && light->source_radius <= 1024,
             "invalid light falloff parameters");
+        if (light->shadow_group) {
+            REQUIRE(light->shadow_group <= s->light_source_count && !light->spotlight &&
+                isfinite(light->shadow_origin[0]) && isfinite(light->shadow_origin[1]) && isfinite(light->shadow_origin[2]) &&
+                isfinite(light->shadow_reach) && light->shadow_reach > 0 && light->shadow_reach <= LQ_LIGHT_MAX_RANGE * 2 &&
+                isfinite(light->shadow_radius) && light->shadow_radius >= 0 && light->shadow_radius <= 1024,
+                "invalid panel shadow group");
+        }
         if (light->spotlight) {
             float length = sqrtf(light->spot_direction[0]*light->spot_direction[0] +
                 light->spot_direction[1]*light->spot_direction[1] + light->spot_direction[2]*light->spot_direction[2]);

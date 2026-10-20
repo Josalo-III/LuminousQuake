@@ -178,6 +178,8 @@ static uint32_t ExpandSurfaceLight(model_t *world, const lq_scene *scene, const 
             lq_light_source *light = &out[count++];
             *light = *template;
             memcpy(light->origin, origin, sizeof(light->origin));
+            memcpy(light->surface_plane, normal, 3 * sizeof(float));
+            light->surface_plane[3] = DotProduct(normal, polygon[0]);
             if (extra->surface_spotlight) {
                 float degrees = template->cone_angle > 0 && template->cone_angle < 360 ? template->cone_angle : 40;
                 memcpy(light->spot_direction, normal, sizeof(light->spot_direction));
@@ -827,6 +829,18 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
     s->world_draw_end = (uint32_t)(world->firstmodelsurface + world->nummodelsurfaces);
     if (!Spawn(world, s)) FAIL("Cannot retain map light inventory (allocation/4096-source limit)");
     if (!BuildBSP(world,s) || !BuildLightReach(world,s)) FAIL("Cannot build light reach");
+    {
+        uint32_t copies = 0, grouped = 0;
+        uint32_t groups = LQ_SceneGroupSurfaceShadows(s, LQ_PANEL_SHADOW_EXTENT, LQ_PANEL_SHADOW_MEMBERS,
+            SURFACE_LIGHT_SPACING / 2);
+        for (uint32_t i = 0; i < s->light_source_count; ++i) {
+            const lq_light_source *light = &s->light_sources[i];
+            copies += light->surface_plane[0] != 0 || light->surface_plane[1] != 0 || light->surface_plane[2] != 0;
+            grouped += light->shadow_group != 0;
+        }
+        if (groups) printf("Light inventory: %u of %u surface-light copies share %u panel shadow cubes\n",
+            grouped, copies, groups);
+    }
     if (!BuildSampleGrids(world,s,face_atlas)) FAIL("Cannot build light sample grids");
     free(face_atlas);
     if (!LQ_SceneCheck(s, error, size)) { LQ_SceneFree(s); return 0; }

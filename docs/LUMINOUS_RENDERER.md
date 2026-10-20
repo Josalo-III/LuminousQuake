@@ -20,7 +20,7 @@ Classic pixel, but changes must preserve the readability of its lighting.
 | Visibility, animated textures/models, moving brushes, particles | Retain; camera visibility is not light/shadow visibility |
 | Sky, water, palettes, fullbrights and transparency | Retain existing behavior until a particular effect is deliberately superseded |
 | Sky and opaque liquids | Drawn with the palette's own colours (colormap row 32) in Classic and Luminous, as software Quake draws them. Both GPU renderers first used row 0, which is about twice as bright and clips: id1's palette collapses to 132 colours there, and an E1M1 sky crop showed 4. The Luminous sky is always filtered bilinearly, whatever the texture filter: each layer within its own half of the texture, with the front layer's index-0 mask as fractional coverage so cloud edges feather, blended in linear light. Sky light is computed from the same colours; `LQ_SKY_LIGHT_GAIN` 2 keeps the outdoor light level tuned against the row-0 sky |
-| Translucent liquids (`r_wateralpha` < 1) | Lit by runtime lights and static probes; light crossing the surface scales by 1 − opacity (direct and static bounce) |
+| Translucent liquids (`r_wateralpha` < 1) | Lit by runtime lights and static probes; light crossing the surface scales by 1 − opacity (direct and static bounce). Blended by opacity in linear light, in the float frame |
 | Filtering, mipmaps, anisotropy, MSAA, resolution/FOV and VSync | Shared settings; retain relevant implementations |
 | HUD, menus, console, UI scaling, input and saved settings | Shared |
 | Baked lightmaps and Classic model shading | Preserve unchanged for Classic and comparison; Luminous replaces direct light, with an explicit map-local static composition patch only when reconstruction and authored controls cannot retain an important original scene |
@@ -155,7 +155,8 @@ comes from each light's falloff and from occlusion.
   of time and position, cut into 1.6 s windows: nothing (35%), a dropout of
   35–140 ms (35%), chatter of 3–6 short dropouts (15%), or a restrike (15%),
   where the starter heats the cathodes (5%, orange) and fails with a flash (80%,
-  bluish) once or twice before the arc holds. A struck arc overshoots by up to
+  bluish) once or twice before the arc holds. A flash reaches up to twice the
+  tube's output, and its light reaches twice as far (`LQ_FluorescentReach`). A struck arc overshoots by up to
   45%, bluish, decaying over 60 ms. Over an hour a tube is dark 4.3% of the
   time and glowing 4.1%, with 0.7 outages a second. Probe layers are map-wide
   and keep only the three strongest non-zero styles, so actors may miss a
@@ -406,6 +407,15 @@ table at the top.
   - Classic passes through unchanged, so it stays palette-exact.
   - `lq_gamma` (default 2.2) sets how display values become light, for every
     renderer; Software applies it to its palette as it presents.
+  - The shoulder (0.8), white point (6) and the fullbright emission gains
+    (3 for the world and models, 3 for sprites) can be set live while tuning:
+    `lq_tone_shoulder`, `lq_tone_white`, `lq_emission`, `lq_sprite_emission`
+    (`LQ_GPUTone`). In `s_explod.spr`, 34% of the opaque texels are
+    fullbright: whites and yellows of 1.74–3.0 linear at gain 3, which a 2×
+    HDR display shows at 1.35–1.65× SDR white, short of its peak. The other
+    two-thirds are reds, oranges and greys (0.01–0.84 linear), drawn at their
+    palette colour below the shoulder whatever the gain. At
+    `lq_sprite_emission 6`, 84% of the fullbright texels reach 1.9× or more.
   - The UI is drawn over the tone-mapped frame in display values, so it
     blends as it always did. On HDR those display values continue past
     white, and a last pass turns them into linear light as it draws into an
@@ -417,9 +427,8 @@ table at the top.
     and then don't show highlights. With it on, the PM161W's peak is about
     2× SDR white (`lq_hdr_test` grades to the 2× band), matching the 2.09×
     headroom macOS reports. `lq_hdr_peak` (Video Options → HDR peak) caps
-    highlights for a display that shows less than it reports.
-    caps highlights at what a display really shows, and `lq_hdr_test` finds
-    that level.
+    highlights for a display that shows less than it reports, and
+    `lq_hdr_test` finds that level.
 
 `--light-gamma 1` reads summed brightness as linear light directly. At four
 test cameras it is 17–35% brighter on average, with flatter contrast and
@@ -427,8 +436,23 @@ lifted shadows. 2.2 keeps the old composition: mean brightness within 0.3 of
 the 8-bit path at all four.
 
 Limits:
-- Translucent surfaces (water, particles) still blend in display space, in an
-  8-bit target. Blending in linear light arrives with the HDR float target.
+- **Blending** happens in the float frame, before tone mapping (since
+  October 18).
+  - Translucent liquids (by `r_wateralpha`), smoke and sprites blend there.
+    In Luminous the frame holds linear light, so they blend in linear light.
+  - Classic GPU blends its palette colours, as GLQuake did.
+  - Particles that aren't smoke are drawn solid, as in Quake.
+  - Entity alpha (protocols 666 and 999) is received but not drawn, so those
+    entities draw solid.
+- **Screen tints** (pain, pickups, powerups and the underwater colour) are not
+  a blend. As in Software Quake, they wash the palette toward each tint in turn,
+  `c += percent × (tint − c) / 256` (`V_UpdatePalette`, `WinQuake/view.c:614`).
+  - Classic GPU and the HUD draw from that palette, so they match Software.
+  - Luminous lights the washed colours, so the wash comes before lighting:
+    unlit areas stay dark, and bright light carries the tint into HDR
+    highlights.
+  - Kept as is on October 20: the tint is meant to wash out the old colour,
+    which a blend over the finished frame would not do.
 - With VSync off and 16× anisotropic trilinear filtering, the old and new
   shaders both ran at about 120 frames a second at E1M1's exterior. No cost
   was visible, but that rate may be a cap, so the GPU cost is not measured.
@@ -450,6 +474,16 @@ distinguishes muzzle flashes, rockets/lava balls, explosions and powerup glows:
 warm flashes/fire, orange projectiles, and neutral powerup glow. Most emitters
 have a 4-unit radius; explosions use 12 units. Their shadow cubes follow the
 live light positions. Classic retains the original dlight calculation.
+
+Explosions flash as a failing tube's strike does, at half the boost
+(October 20, `LQ_FlashRuntimeLight` in `renderer/fluorescent.c`, shared with
+the tubes; `LQ_EXPLOSION_FLASH` in `platform/render_bridge.c`): 1.5 times the
+output, and a falloff raised to reach 1.5 times as far. A rocket's 350-unit
+light becomes a 525-unit light of value 524.75 at strength 1.5, so a surface
+facing it gets 1.5 × (524.75 − distance) brightness units: 2.25 times Classic's
+at the blast, reaching 525 units out, and shrinking with Quake's decay over
+the half second. The tubes' full boost (2 and 2) was too much for explosions
+in play; 1.5 was confirmed in play the same day. Muzzle flashes, rockets and glows are unchanged.
 
 Scripted E1M1 captures (rocket launcher fired from the start) show the muzzle
 flash, the rocket in flight and its explosion lighting the corridor. An ASan
@@ -702,6 +736,45 @@ the baked lightmap contains:
   keep templates together out of sight (E3M6's sit together at `-1088 -240`).
   E1M1's 9 templates on 163 faces become 206 lights (252 entities → 448
   sources). They share the 120 runtime map-light slots with everything else.
+- **Panel shadows** (October 20, experimental; `lq_panel_shadows`, default 1;
+  the viewer's `--no-panel-shadows` turns it off). Each piece stays a point
+  light, so lighting is unchanged where nothing blocks it. For shadows,
+  neighbouring pieces share one cube:
+  - At load (`LQ_SceneGroupSurfaceShadows`, `renderer/bounce.c`), copies of
+    one template on one plane gather nearest-first into groups of at most 4.
+    Every member must lie within 192 units of the group's centre, and the
+    centre must see each member through the BSP. Spotlight copies stay alone.
+  - Each frame (`LQ_ShareGroupShadows`, `renderer/scene.c`), the lowest
+    selected slot of a group draws the cube from the group's centre, reaching
+    as far as its farthest member's light. The others draw none and read that
+    one. The cube waits while offscreen only if every member is offscreen.
+  - The shared emitter radius is the group's extent plus half a piece
+    (64 units), so 150–260 units against 8 for a lone piece: a panel that size
+    is a large emitter, and its shadows soften.
+  - The shader filters a cube once per pixel and reuses the result for every
+    member (`lightShadow` in `world.frag`, an eight-entry cache keyed by cube).
+    Diffuse effects aim each light's test their own way and skip the cache.
+  - On E1M1, 148 of the 206 copies form 55 groups, so 93 fewer cubes exist.
+    Most E1M1 panels are one piece per face, and only coplanar pieces group.
+  - Viewer comparisons, October 20, at the same camera with each piece's own
+    cube, plus a no-shadow control:
+    - E1M1's south corridor (`--camera "1000 1760 -330 5 0"`): 6 slots read
+      5 others' cubes. Mean difference 0.2 of 255; 0.21% of pixels differ by
+      more than 8.
+    - The exit slipgate (`--camera "1312 740 -220 8 270"`): 28 slots read 13
+      cubes. Mean difference 4.5; 17% of pixels differ by more than 8. That
+      shot predates the viewer fix below: the gate's trigger brush cast
+      shadows over the lights inside it, so it overstates the change.
+  - **Against the bake** (Classic, the same cameras): the corridor's mean
+    luma is 34.4 in Luminous and 31.1 in Classic (Luminous 0–16% brighter by
+    region). At the slipgate, once trigger brushes stopped casting, it is 22.9
+    against 23.1; the floor reads 14.0 against 19.1 and the crates 15.7 against
+    19.7, with a redder cast near the gate.
+  - **Viewer fix:** brush models cast from where they were compiled in the
+    viewer, and that included trigger brushes, which the game never shows or
+    casts. Faces textured `trigger` no longer cast there.
+  - Not yet measured: frame time, shadow redraw counts in play, or the look in
+    game.
 
 E1M1 profile while firing rockets (`lq_profile`, 7 s after warm-up, M1 Max,
 640×480):

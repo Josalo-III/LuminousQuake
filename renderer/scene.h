@@ -23,6 +23,9 @@ typedef struct {
     uint8_t styles[4];
     uint32_t light_bits[4]; /* runtime-light slots reaching the face; Classic uses word 0 for dlights */
     uint8_t bounce_styles[4]; /* Luminous bounce layer styles; 255 is unused */
+    /* Runtime-light slots whose shadow lookup on this face provably finds no
+     * static blocker (LQ_SceneFindShadowFree); world faces only. */
+    uint32_t shadow_free_bits[4];
 } lq_draw;
 /* Renderer-owned descriptions from BSP entity text, retained after QC discards
  * static lights. Intensity is the compiler's light value; with the formula,
@@ -89,6 +92,14 @@ typedef struct {
     float gate; /* ericw-tools _gate: brightness below which the light stops; 0 unset */
     float flame_origin[3]; /* the torch or flame an accent spotlight lights; valid when flame_bound */
     uint32_t flame_bound;
+    /* An ericw-tools surface-light copy's face plane (normal, distance); a zero
+     * normal for every other light. */
+    float surface_plane[4];
+    /* Panel shadow group (LQ_SceneGroupSurfaceShadows): 1 + the group's first
+     * source, 0 for none. Members share one shadow cube drawn from
+     * shadow_origin, reaching shadow_reach, with emitter radius shadow_radius. */
+    uint32_t shadow_group;
+    float shadow_origin[3], shadow_reach, shadow_radius;
     uint32_t formula, spotlight;
     uint32_t style, spawnflags, entity_index, flags;
     char classname[64], target[64], targetname[64];
@@ -121,6 +132,9 @@ typedef struct {
      * conservative culling only; shadows decide actual occlusion. */
     uint32_t *light_visibility;
     uint32_t light_visibility_words;
+    /* Optional, laid out as light_visibility: the source's shadow lookup on
+     * the face finds nothing static (LQ_SceneFindShadowFree). */
+    uint32_t *shadow_free;
     /* Optional leaf visibility for selecting lights that can affect the view.
      * leaf_pvs has leaf_count rows; light_leaves has one row per source. */
     lq_bsp_node *bsp_nodes;
@@ -223,6 +237,10 @@ typedef struct {
     uint8_t submerged; /* origin inside water, slime or lava */
     float limit; /* most brightness this light adds to a surface; 0 none (torch accents) */
     uint8_t offscreen; /* lights nothing in the selection view: its shadow updates wait; never sent to the GPU */
+    /* The shadow cube's centre and range, and the emitter radius its filter
+     * uses: the light's own unless it shares a panel group's cube. */
+    float shadow_origin_range[4], shadow_radius;
+    uint32_t shadow_slot; /* 1 + the slot whose cube this light reads; 0: its own */
 } lq_runtime_light;
 typedef struct {
     float origin[3], angles[3], horizontal_fov;
@@ -240,6 +258,7 @@ typedef struct {
      * they move and cast as frame geometry instead. */
     uint32_t static_brush_shadows;
     uint32_t disable_bounce; /* Luminous diagnostic: direct light only */
+    uint32_t disable_shadow_free; /* Luminous diagnostic: look up shadows even where none can fall */
     float exposure; /* Luminous brightness scale; zero means 1 */
     float light_gamma; /* Luminous brightness-to-linear exponent; zero means LQ_LIGHT_GAMMA */
     /* Lights cast no shadow below shadow_faint brightness, or below
@@ -344,12 +363,32 @@ uint32_t LQ_BuildVisibleLightInteractions(const lq_scene *scene, const lq_runtim
  * Reads the scene only. Returns 0 if cancelled or the scene lacks a BSP. */
 typedef struct { uint64_t pairs, clear; double area, clear_area; } lq_shadow_free_count;
 int LQ_SceneCountShadowFree(const lq_scene *scene, const volatile int *cancel, lq_shadow_free_count *out);
+/* As above, and with `bits` (draw_count * light_visibility_words words, laid
+ * out as light_visibility) set the clear pairs' bits. Runtime interactions
+ * then mark those slots in each draw's shadow_free_bits while the light is at
+ * its source's origin. Moving casters are the renderer's to rule out. */
+int LQ_SceneFindShadowFree(const lq_scene *scene, const volatile int *cancel, lq_shadow_free_count *out,
+    uint32_t *bits);
 /* ericw-tools surface-light placement: split a convex polygon on axis planes
  * at multiples of `subdivide`, as GLQuake subdivides warped faces, and write
  * each piece's vertex centroid. Returns the number of pieces (only the first
  * `capacity` are written). */
 uint32_t LQ_SurfaceLightPoints(const float (*polygon)[3], uint32_t count, float subdivide,
     float (*out)[3], uint32_t capacity);
+/* Panel shadows: neighbouring copies of one surface-light template on one
+ * plane share a shadow cube instead of each drawing and filtering their own.
+ * Copies are gathered nearest-first while every member lies within
+ * `max_extent` of the group's centre, the centre sees every member (BSP), and
+ * the group has at most `max_members`. Spotlight copies stay alone. The shared
+ * emitter radius is the extent plus `piece_radius`, half a piece's size.
+ * Needs the scene's BSP. Returns the number of groups of two or more. */
+#define LQ_PANEL_SHADOW_EXTENT 192.0f
+#define LQ_PANEL_SHADOW_MEMBERS 4u
+uint32_t LQ_SceneGroupSurfaceShadows(lq_scene *scene, float max_extent, uint32_t max_members, float piece_radius);
+/* Point grouped lights at one cube per group: the lowest slot of a group
+ * holding any member draws the cube from the group's centre, the others read
+ * it. With `enabled` 0 every light keeps its own cube. */
+void LQ_ShareGroupShadows(const lq_scene *scene, lq_runtime_light *lights, uint32_t count, int enabled);
 /* Light budget diagnostic. A map light reaches the view when it could light a
  * visible draw (`visible` nonzero per draw, NULL for all): in its PVS reach and
  * range, with the draw in front of it. `peak` bounds what it adds there in

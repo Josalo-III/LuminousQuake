@@ -76,7 +76,6 @@ For the next working session. The standing priorities are in
   `U_LERPFINISH` isn't used by frame blending yet; ask before wiring it in.
 - Luminous bounce takes 27 s at load on `ad_tfuma`, and its light-reach table
   overflows.
-- See-through smoke waits for blending in linear light (the HDR work).
 
 ## How to test without trouble
 
@@ -103,8 +102,8 @@ For the next working session. The standing priorities are in
 ## Open threads, in suggested order
 
 1. Choose the retail-baseline lighting approach.
-2. Draw what AD sends: entity alpha (with linear-light blending), fog,
-   skyboxes.
+2. Draw what AD sends: entity alpha (the float frame already blends in linear
+   light), fog, skyboxes.
 3. The RAM slider, scene caching for the last two maps, and memory-scaled
    lighting (AGENDA item 6).
 4. Luminous load time and light reach on large maps.

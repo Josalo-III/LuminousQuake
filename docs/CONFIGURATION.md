@@ -152,6 +152,12 @@ and only print `Unknown command`.
 | `lq_shadow_detail` | 64 | Brightness at which a light filters its shadow with all 16 samples; 8 from a quarter of it, 4 below (0: always 16) |
 | `lq_cull` | 1 | 0 draws every face in the PVS, including those behind the camera or off screen (for comparisons) |
 | `lq_shadows` | 1 | 0 lights Luminous without shadow cubes or shadow filtering (for comparisons) |
+| `lq_panel_shadows` | 1 | Experimental: neighbouring pieces of a lit panel share one shadow cube, drawn from their centre with the panel as a wide emitter; 0 gives each piece its own |
+| `lq_shadow_free` | 1 | Skip shadow lookups proved to find no blocker; 0 looks every one up (for comparisons) |
+| `lq_tone_shoulder` | 0.8 | Luminous: linear light below this is shown unchanged; above it highlights roll off (0.1–0.95) |
+| `lq_tone_white` | 6 | Luminous: light that reaches the display's ceiling (SDR white, or the HDR headroom); on HDR at least twice the headroom (1.5–64) |
+| `lq_emission` | 3 | Luminous: how many times their palette colour fullbright texels emit, for the world and models (1–16) |
+| `lq_sprite_emission` | 3 | As `lq_emission`, for sprites such as explosions (1–16) |
 | `lq_scene_cache_mb` | 0 | Memory for keeping the last two maps' built scenes, so a restart skips rebuilding; 0 is a quarter of free RAM, -1 turns it off |
 | `lq_workers` | −1 | Worker threads; −1 picks from the CPU |
 | `lq_clock_mode` | 0 | Tick-clock timing policy ([frame timing](FRAME_TIMING.md)) |
@@ -178,7 +184,9 @@ noclip), `fog density [r g b]` (stored, not yet drawn), `vid_restart`,
 | `vid_gamma`, `vid_contrast` (QuakeSpasm) | `gamma` |
 | `scr_conalpha`, `scr_sbaralpha`, `r_particles`, `r_useportalculling` | None yet |
 
-`gl_cshiftpercent` (screen flashes) still works.
+`gl_cshiftpercent` (screen flashes) is accepted but has no effect. Only
+GLQuake's view blend reads it (`V_CalcBlend`, `WinQuake/view.c:481`). This
+engine tints the palette as Software Quake does, always at full strength.
 
 ### Classic settings that now mean something different
 
