@@ -230,25 +230,39 @@ may use them.
 - `COM_AddGameDirectory` (`WinQuake/common.c:1765`) adds `pak0.pak`,
   `pak1.pak`… only, and puts the loose directory *below* them, as 1996 Quake
   did. DarkPlaces puts it above.
-- No PK3 support and no image decoders. zlib is already linked, and
-  `platform/localization.c` has a bounded ZIP reader for one entry of the
-  rerelease's `QuakeEX.kpf`.
+- The game's search path reads no PK3s. Texture packs are read from PK3s
+  by their own reader (below), outside it.
 - Community skyboxes are planned under agenda item 1.
 
 ## Implemented: first stage (October 20)
 
 High-res textures and bump maps, on Options → Luminous Options:
-- **Texture pack** (`lq_texture_pack`, saved, default `auto`): a folder of the
-  Quake install whose `textures/` holds DarkPlaces material maps (a `*_norm`
-  image), such as `rygel_ultra`, so a mod's own textures folder is not taken
-  for one. `auto` uses the first such folder (sorted by name), `none` none.
-  An empty value also means `auto`: the setting's first build defaulted to
-  `""`, which players' configs then saved, and a Dock launch after the
-  upgrade still loaded nothing.
-  The menu cycles auto, none and each pack found, and shows auto's choice. Its textures are read directly (`COM_LoadMallocFolderFile`),
-  not through the game's search path, so a pack's models and maps are not
-  loaded with them, and no `-game` is needed. Choosing another pack rebuilds
-  the map's scene; the scene cache keys on the pack.
+- **Texture pack** (`lq_texture_pack`, saved, default `auto`): a pack is
+  anything whose `textures/` holds DarkPlaces material maps (a `*_norm`
+  image), so a mod's own textures are not taken for one. Players get packs
+  as one `.pk3` download, which DarkPlaces players drop into `id1/`; that
+  works here as it is, with nothing unpacked or overwritten
+  (`LQ_TexturePacks`, `platform/render_bridge.c`), in this order:
+  1. a `.pk3` **beside the app** (the folder holding `LuminousQuake.app`, or
+     the executable's folder elsewhere): one pack for every install;
+  2. a `.pk3` in the install's **`id1/`**, then the running mod's folder;
+  3. a **folder of the install** holding the pack unpacked (`rygel_ultra/`).
+  Each place is sorted by name, and an earlier place wins a name. ~/Library
+  is not used: macOS hides it. `auto` takes the first pack, `none` none; an
+  empty value is `auto` too (the setting's first build saved `""`).
+  The menu cycles auto, none and each pack found, shows where the chosen one
+  is, and, when none is found, says where to put a `.pk3`. Pack files are
+  read directly, never through the game's search path, so a pack's models,
+  maps and menu graphics replace nothing, and no `-game` is needed. Choosing
+  another pack rebuilds the map's scene; the scene cache keys on the pack.
+- **PK3 reading (October 21)** (`renderer/pack_archive.c`): the ZIP central
+  directory is read once per load; entries are found by name ignoring case,
+  read raw on the loading thread, then inflated (stb_image's zlib) and
+  CRC-checked on the job threads with the decoding. Stored and deflated
+  entries only; ZIP64, encrypted entries and entries over 256 MB are skipped.
+  Rygel's ultra `.pk3` (2.84 GB, 2,815 entries) gives E1M1 the same 81
+  textures as its unpacked folder, from byte-identical files; the viewer
+  run took 8.6 s against 8.1 s from the folder.
 - **High-res textures** (`lq_pack_textures`) and **Bump maps**
   (`lq_pack_bumps`), both saved and on by default, switch at once, so a view
   can be compared both ways.
@@ -265,8 +279,8 @@ as `none`. The console now says which pack a map used, or why none.
   Suffixes `_norm`, and `_glow` then `_luma` for glow; a glow counts only with
   a replacement colour image, as in DarkPlaces. Files come through the game's
   search path (`COM_LoadMallocFileQuiet`, which searches as `COM_FindFile` does
-  without printing every miss), then from the chosen pack folder. Loose files
-  only for now; PK3 reading is still to come.
+  without printing every miss), then from the chosen pack, a `.pk3` or a
+  folder.
 - **Decoding:** stb_image 2.29 (`third_party/stb/stb_image.h`, public domain or
   MIT; copied from dhewm3's patched copy), JPG, PNG and TGA only, at most
   4096 per side, in parallel on the job threads. Images stay with the scene,
@@ -359,8 +373,8 @@ as `none`. The console now says which pack a map used, or why none.
   mips, as made); 32.7 with linear mips and matched brightness. The bump direction looks right there (riveted strips lit on their
   upper edges from the ceiling light); a test scene with a known bump should
   still confirm it.
-- The viewer loads a pack with `--texture-pack <folder>` (or from a `-game`
-  folder); `--no-pack-textures`, `--no-bump-maps` and `--pack-as-made` turn
+- The viewer loads a pack with `--texture-pack <path>`, a `.pk3` or a pack
+  folder, or the name of one in the install (or from a `-game` folder); `--no-pack-textures`, `--no-bump-maps` and `--pack-as-made` turn
   the stages off, `--parallax <depth>` sets the depth (0 off), and
   `--quake-gamma <g>` reproduces a player's `gamma`.
 - In the game (`+lq_texture_pack rygel_ultra`, no `-game`), E1M1 loads 81
@@ -369,7 +383,9 @@ as `none`. The console now says which pack a map used, or why none.
 ## Luminous plan
 
 1. **Loader.**
-   - PK3 and `.pk3dir` packages in each game directory, in DarkPlaces' order:
+   - Texture packs from PK3s: done October 21 (above). Still open, for the
+     game's own search path:
+     PK3 and `.pk3dir` packages in each game directory, in DarkPlaces' order:
      loose files over PK3s over PAKs, last name wins, case-insensitive
      names. A ZIP central-directory reader with deflate (zlib), bounded entry
      sizes and CRC checks. Whether PAK loading also takes DarkPlaces' order

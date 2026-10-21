@@ -7,6 +7,7 @@
 #include "render_bridge.h"
 #include "gpu_sdl.h"
 #include "quake_scene.h"
+#include "pack_archive.h"
 #include "scene_fixture.h"
 #include "gpu_entities.h"
 #include "effects.h"
@@ -92,15 +93,23 @@ static cvar_t lq_pack_brightness = {"lq_pack_brightness", "1", true};
  * setting defaulted to "" and saved it into players' configs. Changing it
  * rebuilds the map. */
 static cvar_t lq_texture_pack = {"lq_texture_pack", "auto", true};
-static char texture_pack[64]; /* the folder lq_texture_pack chose when the scene was built; "" none */
+typedef struct { char name[64], path[MAX_OSPATH]; const char *place; } texture_pack_entry;
+static int FindTexturePacks(texture_pack_entry *packs, int capacity);
+/* The pack lq_texture_pack chose when the scene was built ("" none): its
+ * name, and its path, a .pk3 or a folder (FindTexturePacks). */
+static char texture_pack[64], texture_pack_path[MAX_OSPATH];
 static void ChooseTexturePack(void)
 {
     const char *choice = lq_texture_pack.string;
-    texture_pack[0] = 0;
-    if (!choice[0] || !Q_strcasecmp((char *)choice, "auto")) {
-        char found[1][64];
-        if (LQ_TexturePackFolders(found, 1)) snprintf(texture_pack, sizeof(texture_pack), "%s", found[0]);
-    } else if (Q_strcasecmp((char *)choice, "none")) snprintf(texture_pack, sizeof(texture_pack), "%s", choice);
+    static texture_pack_entry packs[32];
+    texture_pack[0] = texture_pack_path[0] = 0;
+    if (!Q_strcasecmp((char *)choice, "none")) return;
+    int count = FindTexturePacks(packs, 32), chosen = -1;
+    if (!choice[0] || !Q_strcasecmp((char *)choice, "auto")) chosen = count ? 0 : -1;
+    for (int i = 0; chosen < 0 && i < count; ++i) if (!Q_strcasecmp(packs[i].name, (char *)choice)) chosen = i;
+    if (chosen < 0) return;
+    snprintf(texture_pack, sizeof(texture_pack), "%s", packs[chosen].name);
+    snprintf(texture_pack_path, sizeof(texture_pack_path), "%s", packs[chosen].path);
 }
 static char loaded_pack[64]; /* lq_texture_pack when the loaded scene was built */
 /* Luminous tone mapping and emission, for tuning by eye (see LQ_GPUTone). */
@@ -400,18 +409,18 @@ void LQ_RenderBegin(void)
             /* A community texture pack in any game folder: its images are kept
              * with the scene, so lq_pack_textures and lq_pack_bumps switch at once. */
             started = Sys_FloatTime();
-            uint32_t found[3], packed = LQ_QuakeSceneLoadPack(&map_scene, texture_pack, LQ_JobsRunRange, found);
+            uint32_t found[3], packed = LQ_QuakeSceneLoadPack(&map_scene, texture_pack_path, LQ_JobsRunRange, found);
             if (packed)
                 Con_Printf("Texture pack%s%s: %u of %u textures replaced (%u colour, %u bump, %u glow) in %.2f s.\n",
                     texture_pack[0] ? " " : "", texture_pack,
                     packed, map_scene.material_count, found[0], found[1], found[2], Sys_FloatTime() - started);
             else if (texture_pack[0])
-                Con_Printf("Texture pack %s: nothing for this map's textures in %s/%s/textures.\n",
-                    texture_pack, com_basedir, texture_pack);
+                Con_Printf("Texture pack %s: nothing for this map's textures in %s.\n", texture_pack, texture_pack_path);
             else if (!Q_strcasecmp(lq_texture_pack.string, "none"))
                 Con_Printf("Texture pack: none (lq_texture_pack none).\n");
             else
-                Con_Printf("Texture pack: none found in %s (a folder with textures/*_norm images).\n", com_basedir);
+                Con_Printf("Texture pack: none found (a .pk3 beside the app or in id1, or a folder of %s, with textures/*_norm images).\n",
+                    com_basedir);
         }
         if (!LQ_GPUUpload(gpu, &map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }
         if (luminous && !map_scene.draw_bounds && !LQ_SceneDrawBounds(&map_scene)) { LQ_FallbackRenderer("Cannot allocate draw bounds"); return; }
@@ -774,30 +783,90 @@ qboolean LQ_RenderBridgePresent(void)
 failed:
     LQ_FallbackRenderer(error); return false;
 }
-/* Folders of the install whose textures/ holds DarkPlaces material maps
- * (any *_norm image), so a mod's own textures folder is not taken for a
- * pack: the texture packs a player can choose (lq_texture_pack). */
-typedef struct { char (*names)[64]; int count, capacity; } pack_listing;
-static SDL_EnumerationResult PackFolder(void *opaque, const char *dirname, const char *name)
+/* Texture packs a player can choose (lq_texture_pack): DarkPlaces material
+ * maps (any textures/..._norm image) in a .pk3 beside the app, a .pk3 in id1
+ * or the running mod's folder (where DarkPlaces players put them), or a
+ * folder of the install holding them unpacked. Earlier places win a name.
+ * None of them joins the game's search path, so a pack's models and maps
+ * replace nothing; only its textures are read. */
+typedef struct { texture_pack_entry *packs; int count, capacity; const char *place; } pack_listing;
+static int PackListed(const pack_listing *list, const char *name)
+{
+    for (int i = 0; i < list->count; ++i) if (!Q_strcasecmp(list->packs[i].name, (char *)name)) return 1;
+    return 0;
+}
+static int ComparePacks(const void *a, const void *b)
+{
+    return strcmp(((const texture_pack_entry *)a)->name, ((const texture_pack_entry *)b)->name);
+}
+static int PackHasMaps(const char *path, int archive)
+{
+    if (archive) {
+        lq_archive *pk3 = LQ_ArchiveOpen(path);
+        int found = LQ_ArchiveContains(pk3, "textures/", "_norm.");
+        LQ_ArchiveClose(pk3);
+        return found;
+    }
+    char textures[MAX_OSPATH]; int maps = 0;
+    if (snprintf(textures, sizeof(textures), "%s/textures", path) >= (int)sizeof(textures)) return 0;
+    char **found = SDL_GlobDirectory(textures, "*_norm.*", SDL_GLOB_CASEINSENSITIVE, &maps);
+    SDL_free(found);
+    return maps > 0;
+}
+static SDL_EnumerationResult PackEntry(void *opaque, const char *dirname, const char *name, int archives)
 {
     pack_listing *list = opaque;
     char path[MAX_OSPATH]; SDL_PathInfo info;
-    if (name[0] == '.' || strlen(name) >= 64) return SDL_ENUM_CONTINUE;
-    size_t n = strlen(dirname);
-    snprintf(path, sizeof(path), "%s%s%s/textures", dirname, n && (dirname[n-1] == '/' || dirname[n-1] == '\\') ? "" : "/", name);
-    if (!SDL_GetPathInfo(path, &info) || info.type != SDL_PATHTYPE_DIRECTORY || list->count >= list->capacity)
+    size_t length = strlen(name), n = strlen(dirname);
+    if (name[0] == '.' || length >= 64 || list->count >= list->capacity || PackListed(list, name)) return SDL_ENUM_CONTINUE;
+    if (archives != (length > 4 && !Q_strcasecmp((char *)name + length - 4, ".pk3"))) return SDL_ENUM_CONTINUE;
+    if (snprintf(path, sizeof(path), "%s%s%s", dirname, n && (dirname[n-1] == '/' || dirname[n-1] == '\\') ? "" : "/", name)
+            >= (int)sizeof(path) || !SDL_GetPathInfo(path, &info) ||
+        info.type != (archives ? SDL_PATHTYPE_FILE : SDL_PATHTYPE_DIRECTORY) || !PackHasMaps(path, archives))
         return SDL_ENUM_CONTINUE;
-    int maps = 0; char **found = SDL_GlobDirectory(path, "*_norm.*", SDL_GLOB_CASEINSENSITIVE, &maps);
-    SDL_free(found);
-    if (maps > 0) snprintf(list->names[list->count++], 64, "%s", name);
+    texture_pack_entry *e = &list->packs[list->count++];
+    snprintf(e->name, sizeof(e->name), "%s", name); snprintf(e->path, sizeof(e->path), "%s", path); e->place = list->place;
     return SDL_ENUM_CONTINUE;
 }
-static int ComparePackNames(const void *a, const void *b) { return strcmp(a, b); }
-int LQ_TexturePackFolders(char names[][64], int capacity)
+static SDL_EnumerationResult PackArchive(void *opaque, const char *dirname, const char *name) { return PackEntry(opaque, dirname, name, 1); }
+static SDL_EnumerationResult PackFolder(void *opaque, const char *dirname, const char *name) { return PackEntry(opaque, dirname, name, 0); }
+static void ListPlace(pack_listing *list, const char *folder, int archives, const char *place)
 {
-    pack_listing list = {names, 0, capacity};
-    if (!com_basedir[0] || capacity <= 0) return 0;
-    SDL_EnumerateDirectory(com_basedir, PackFolder, &list);
-    qsort(names, (size_t)list.count, sizeof(names[0]), ComparePackNames);
+    int first = list->count;
+    list->place = place;
+    SDL_EnumerateDirectory(folder, archives ? PackArchive : PackFolder, list);
+    qsort(list->packs + first, (size_t)(list->count - first), sizeof(*list->packs), ComparePacks);
+}
+/* The folder holding the app: the bundle's parent on macOS, else the
+ * executable's own folder. */
+static int AppFolder(char *out, size_t size)
+{
+    const char *base = SDL_GetBasePath();
+    if (!base || snprintf(out, size, "%s", base) >= (int)size) return 0;
+    char *bundle = NULL;
+    for (char *p = strstr(out, ".app/"); p; p = strstr(p + 1, ".app/")) bundle = p;
+    if (bundle) {
+        bundle[4] = 0;
+        char *slash = strrchr(out, '/');
+        if (slash) slash[slash == out ? 1 : 0] = 0;
+    }
+    return out[0] != 0;
+}
+static int FindTexturePacks(texture_pack_entry *packs, int capacity)
+{
+    pack_listing list = {packs, 0, capacity, NULL};
+    char folder[MAX_OSPATH];
+    if (AppFolder(folder, sizeof(folder))) ListPlace(&list, folder, 1, "Beside the app.");
+    if (com_basedir[0] && snprintf(folder, sizeof(folder), "%s/" GAMENAME, com_basedir) < (int)sizeof(folder))
+        ListPlace(&list, folder, 1, "In id1.");
+    if (com_gamedir[0] && Q_strcasecmp(com_gamedir, folder)) ListPlace(&list, com_gamedir, 1, "In the mod's folder.");
+    if (com_basedir[0]) ListPlace(&list, com_basedir, 0, "A folder of the Quake install.");
     return list.count;
+}
+int LQ_TexturePacks(char names[][64], const char *places[], int capacity)
+{
+    static texture_pack_entry packs[32];
+    int count = FindTexturePacks(packs, capacity < 32 ? capacity : 32);
+    for (int i = 0; i < count; ++i) { snprintf(names[i], 64, "%s", packs[i].name); if (places) places[i] = packs[i].place; }
+    return count;
 }

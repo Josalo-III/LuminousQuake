@@ -24,4 +24,7 @@ void LQ_PackSetAlpha(lq_image *image, uint8_t alpha);
 int LQ_PackHalve(const lq_image *source, int normal_map, lq_image *out);
 /* Mean brightness of an RGBA8 image in linear light (2.2 power), Rec. 709. */
 float LQ_PackLinearMean(const lq_image *image);
+/* Inflate a raw deflate stream (a .pk3 entry) into exactly `size` bytes.
+ * Returns 0 when it does not fill `out` exactly. */
+int LQ_PackInflate(const uint8_t *data, size_t stored, uint8_t *out, size_t size);
 #endif

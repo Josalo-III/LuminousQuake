@@ -159,7 +159,7 @@ point, and both glow gains, each taking effect at once (for comparisons;
 | `lq_shadows` | 1 | 0 lights Luminous without shadow cubes or shadow filtering (for comparisons) |
 | `lq_panel_shadows` | 1 | Experimental: neighbouring pieces of a lit panel share one shadow cube, drawn from their centre with the panel as a wide emitter; 0 gives each piece its own |
 | `lq_shadow_free` | 1 | Skip shadow lookups proved to find no blocker; 0 looks every one up (for comparisons) |
-| `lq_texture_pack` | auto | Luminous: the install's folder holding a community texture pack, such as `rygel_ultra`; `auto` (or empty) takes the first folder whose `textures/` has `*_norm` maps, `none` none. Only its textures are used; changing it reloads the map (saved) |
+| `lq_texture_pack` | auto | Luminous: the community texture pack, by name: a `.pk3` beside the app, a `.pk3` in `id1` or the mod's folder, or a folder of the install (such as `rygel_ultra`), searched in that order; `auto` (or empty) takes the first found, `none` none. Only its textures are used; changing it reloads the map (saved) |
 | `lq_pack_textures` | 1 | Luminous: the texture pack's colour and glow in place of the 8-bit textures (saved) |
 | `lq_pack_bumps` | 1 | Luminous: the pack's normal maps shape direct light (saved) |
 | `lq_pack_parallax` | 0.04 | Luminous: parallax depth from the pack's normal-map height, as a fraction of the texture's size (DarkPlaces' offset-mapping scale); 0 off (saved) |

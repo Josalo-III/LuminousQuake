@@ -147,7 +147,8 @@ from the strongest light only; compression by measurement. October 21:
 brightness matching (Pack brightness), pack colours following Quake's
 screen tints, the bump frame's sign, parallax (Parallax depth) with each
 texture's mean height held at the face, and Quake's `gamma` applied to the
-finished Luminous frame, as software Quake does. Still to come: PK3 reading, gloss specular, relief shadows, a
+finished Luminous frame, as software Quake does. Texture packs read straight from a `.pk3` beside the app or in `id1`
+(October 21). Still to come: gloss specular, relief shadows, a
 parallax fade with distance, liquids, sky, models and `_bump` maps
 ([status](MATERIAL_PACKS.md#implemented-first-stage-october-20)).
 

@@ -179,7 +179,6 @@ byte *COM_LoadStackFile (char *path, void *buffer, int bufsize);
 byte *COM_LoadTempFile (char *path);
 byte *COM_LoadHunkFile (char *path);
 byte *COM_LoadMallocFileQuiet (const char *filename, int *length);	// LuminousQuake
-byte *COM_LoadMallocFolderFile (const char *folder, const char *filename, int *length);	// LuminousQuake
 extern	char	com_basedir[MAX_OSPATH];	// LuminousQuake
 void COM_LoadCacheFile (char *path, struct cache_user_s *cu);
 

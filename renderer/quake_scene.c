@@ -5,6 +5,7 @@
 #include "quake_scene.h"
 #include "user_paths.h"
 #include "pack_images.h"
+#include "pack_archive.h"
 #include <stdint.h>
 #include <ctype.h>
 void COM_InitFilesystem(void);
@@ -894,25 +895,44 @@ int LQ_QuakeSceneFromWorld(lq_scene *s, char *error, size_t size)
 }
 /* Community texture packs. */
 enum { PACK_COLOR, PACK_NORMAL, PACK_GLOW, PACK_KINDS };
-typedef struct { uint8_t *bytes[PACK_KINDS]; int sizes[PACK_KINDS]; } pack_files;
+/* Each image's file as read; entries of a .pk3 are still raw (archived). */
+typedef struct { lq_archive_blob files[PACK_KINDS]; uint8_t archived[PACK_KINDS]; } pack_files;
 typedef struct { lq_scene *scene; pack_files *files; uint32_t found[PACK_KINDS]; } pack_job;
-/* The game's search path first (a pack in a -game folder or id1), then the
- * chosen pack folder of the install, which adds nothing else. */
-static uint8_t *PackFile(const char *pack, const char *map, const char *name, const char *suffix, int *size)
+static uint8_t *LoadPathFile(const char *path, size_t *size)
+{
+    int h, length = Sys_FileOpenRead((char *)path, &h);
+    if (length < 0) return NULL;
+    uint8_t *bytes = malloc(length > 0 ? (size_t)length : 1);
+    if (bytes && Sys_FileRead(h, bytes, length) == length) { Sys_FileClose(h); *size = (size_t)length; return bytes; }
+    free(bytes); Sys_FileClose(h);
+    return NULL;
+}
+/* The game's search path first (loose files in a -game folder or id1), then
+ * the chosen pack, a folder or a .pk3 (`archive`), which adds nothing else. */
+static int PackFile(const char *pack, lq_archive *archive, const char *map, const char *name, const char *suffix,
+                    lq_archive_blob *file, uint8_t *archived)
 {
     static const char *formats[] = {"tga", "png", "jpg"};
-    char path[MAX_OSPATH];
+    char path[MAX_OSPATH], full[MAX_OSPATH];
+    memset(file, 0, sizeof(*file)); *archived = 0;
     for (int source = 0; source < 2; ++source) {
         if (source == 1 && (!pack || !pack[0])) break;
         for (int folder = 0; folder < 2; ++folder)
             for (int f = 0; f < 3; ++f) {
                 if (folder == 0) snprintf(path, sizeof(path), "textures/%s/%s%s.%s", map, name, suffix, formats[f]);
                 else snprintf(path, sizeof(path), "textures/%s%s.%s", name, suffix, formats[f]);
-                uint8_t *bytes = source ? COM_LoadMallocFolderFile(pack, path, size) : COM_LoadMallocFileQuiet(path, size);
-                if (bytes) return bytes;
+                if (source == 1 && archive) {
+                    if (LQ_ArchiveReadRaw(archive, path, file)) { *archived = 1; return 1; }
+                    continue;
+                }
+                int length = 0;
+                if (source == 0) file->data = COM_LoadMallocFileQuiet(path, &length), file->size = (size_t)length;
+                else if (snprintf(full, sizeof(full), "%s/%s", pack, path) < (int)sizeof(full))
+                    file->data = LoadPathFile(full, &file->size);
+                if (file->data) { file->stored = file->size; return 1; }
             }
     }
-    return NULL;
+    return 0;
 }
 static void PackDecode(void *opaque, size_t begin, size_t end)
 {
@@ -921,15 +941,16 @@ static void PackDecode(void *opaque, size_t begin, size_t end)
         lq_material *m = &job->scene->materials[i];
         pack_files *f = &job->files[i];
         lq_image glow = {0};
-        if (LQ_PackDecode(f->bytes[PACK_COLOR], (size_t)f->sizes[PACK_COLOR], &m->pack_color)) {
+        for (int k = 0; k < PACK_KINDS; ++k) if (f->archived[k]) LQ_ArchiveExpand(&f->files[k]);
+        if (LQ_PackDecode(f->files[PACK_COLOR].data, f->files[PACK_COLOR].size, &m->pack_color)) {
             LQ_PackSetAlpha(&m->pack_color, 0);
             /* A glow of another size is left out (it runs on a worker: no printing). */
-            if (LQ_PackDecode(f->bytes[PACK_GLOW], (size_t)f->sizes[PACK_GLOW], &glow))
+            if (LQ_PackDecode(f->files[PACK_GLOW].data, f->files[PACK_GLOW].size, &glow))
                 LQ_PackFoldGlow(&m->pack_color, &glow);
             free(glow.pixels);
         }
-        LQ_PackDecode(f->bytes[PACK_NORMAL], (size_t)f->sizes[PACK_NORMAL], &m->pack_normal);
-        for (int k = 0; k < PACK_KINDS; ++k) { free(f->bytes[k]); f->bytes[k] = NULL; }
+        LQ_PackDecode(f->files[PACK_NORMAL].data, f->files[PACK_NORMAL].size, &m->pack_normal);
+        for (int k = 0; k < PACK_KINDS; ++k) { free(f->files[k].data); f->files[k].data = NULL; }
     }
 }
 uint32_t LQ_QuakeSceneLoadPack(lq_scene *s, const char *pack, lq_range_runner run, uint32_t counts[3])
@@ -940,6 +961,8 @@ uint32_t LQ_QuakeSceneLoadPack(lq_scene *s, const char *pack, lq_range_runner ru
     COM_FileBase(loaded_world->name, map);
     pack_files *files = calloc(s->material_count, sizeof(*files));
     if (!files) return 0;
+    size_t pack_length = pack ? strlen(pack) : 0;
+    lq_archive *archive = pack_length > 4 && !Q_strcasecmp((char *)pack + pack_length - 4, ".pk3") ? LQ_ArchiveOpen(pack) : NULL;
     uint32_t any = 0;
     for (uint32_t i = 0; i < s->material_count; ++i) {
         const lq_material *m = &s->materials[i];
@@ -950,15 +973,15 @@ uint32_t LQ_QuakeSceneLoadPack(lq_scene *s, const char *pack, lq_range_runner ru
         snprintf(name, sizeof(name), "%s", m->name);
         for (int k = 0; name[k]; ++k) lower[k] = (char)tolower((unsigned char)name[k]), lower[k + 1] = 0;
         static const char *suffixes[PACK_KINDS][2] = {{"", NULL}, {"_norm", NULL}, {"_glow", "_luma"}};
+        pack_files *f = &files[i];
         for (int k = 0; k < PACK_KINDS; ++k)
-            for (int j = 0; j < 2 && !files[i].bytes[k] && suffixes[k][j]; ++j) {
-                files[i].bytes[k] = PackFile(pack, map, name, suffixes[k][j], &files[i].sizes[k]);
-                if (!files[i].bytes[k] && strcmp(name, lower))
-                    files[i].bytes[k] = PackFile(pack, map, lower, suffixes[k][j], &files[i].sizes[k]);
-            }
+            for (int j = 0; j < 2 && !f->files[k].data && suffixes[k][j]; ++j)
+                if (!PackFile(pack, archive, map, name, suffixes[k][j], &f->files[k], &f->archived[k]) && strcmp(name, lower))
+                    PackFile(pack, archive, map, lower, suffixes[k][j], &f->files[k], &f->archived[k]);
         /* A glow belongs to a replacement colour image (as in DarkPlaces). */
-        if (!files[i].bytes[PACK_COLOR]) { free(files[i].bytes[PACK_GLOW]); files[i].bytes[PACK_GLOW] = NULL; }
+        if (!f->files[PACK_COLOR].data) { free(f->files[PACK_GLOW].data); f->files[PACK_GLOW].data = NULL; }
     }
+    LQ_ArchiveClose(archive);
     pack_job job = {s, files, {0}};
     run(s->material_count, 1, PackDecode, &job);
     /* Each pack colour's brightness against its original's: the palette's own

@@ -1716,41 +1716,6 @@ byte *COM_LoadMallocFileQuiet (const char *filename, int *length)
 	return NULL;
 }
 
-/*
-============
-COM_LoadMallocFolderFile
-
-LuminousQuake: a loose file inside another folder of the install (a texture
-pack's), outside the game search path, so the pack adds nothing but what is
-asked of it. `folder` is one plain name. Returns a malloc'd copy, or NULL.
-============
-*/
-byte *COM_LoadMallocFolderFile (const char *folder, const char *filename, int *length)
-{
-	char	path[MAX_OSPATH];
-	int		h, len;
-	byte	*buf;
-
-	if (!folder || !folder[0] || strchr (folder, '/') || strchr (folder, '\\') || strstr (folder, "..") ||
-		strstr (filename, ".."))
-		return NULL;
-	if (snprintf (path, sizeof(path), "%s/%s/%s", com_basedir, folder, filename) >= (int)sizeof(path))
-		return NULL;
-	len = Sys_FileOpenRead (path, &h);
-	if (len < 0)
-		return NULL;
-	buf = malloc (len > 0 ? len : 1);
-	if (buf && Sys_FileRead (h, buf, len) == len)
-	{
-		Sys_FileClose (h);
-		*length = len;
-		return buf;
-	}
-	free (buf);
-	Sys_FileClose (h);
-	return NULL;
-}
-
 byte *COM_LoadHunkFile (char *path)
 {
 	return COM_LoadFile (path, 1);

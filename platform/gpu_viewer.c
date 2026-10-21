@@ -921,7 +921,14 @@ int LQ_GPUViewer(int argc, char **argv)
         free(visible); free(game); free(all); result = 0; goto done;
     }
     if (luminous && !test) {
-        uint32_t found[3], packed = LQ_QuakeSceneLoadPack(&scene, Argument(argc, argv, "--texture-pack"), LQ_JobsRunRange, found);
+        /* --texture-pack takes a path to a .pk3 or a pack folder, or the
+         * name of one in the install (the game finds packs on its own). */
+        const char *pack = Argument(argc, argv, "--texture-pack");
+        const char *base = Argument(argc, argv, "-basedir");
+        char pack_path[1024] = "";
+        if (pack && (strchr(pack, '/') || !base)) snprintf(pack_path, sizeof(pack_path), "%s", pack);
+        else if (pack) snprintf(pack_path, sizeof(pack_path), "%s/%s", base, pack);
+        uint32_t found[3], packed = LQ_QuakeSceneLoadPack(&scene, pack_path, LQ_JobsRunRange, found);
         if (packed) printf("Texture pack: %u of %u textures replaced (%u colour, %u bump, %u glow)\n",
             packed, scene.material_count, found[0], found[1], found[2]);
     }

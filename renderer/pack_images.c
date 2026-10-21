@@ -22,6 +22,11 @@
 #pragma GCC diagnostic pop
 #endif
 
+int LQ_PackInflate(const uint8_t *data, size_t stored, uint8_t *out, size_t size)
+{
+    if (!data || !out || stored > 0x7fffffff || size > 0x7fffffff) return 0;
+    return stbi_zlib_decode_noheader_buffer((char *)out, (int)size, (const char *)data, (int)stored) == (int)size;
+}
 int LQ_PackDecode(const uint8_t *data, size_t size, lq_image *out)
 {
     memset(out, 0, sizeof(*out));

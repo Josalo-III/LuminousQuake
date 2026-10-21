@@ -1630,7 +1630,8 @@ static const luminous_option_t luminous_options[] =
 #define	LUMINOUS_ITEMS	(LUMINOUS_TABLE + 2)
 
 static int	luminous_cursor;
-static char	luminous_packs[32][64];	// install folders holding textures/ (LQ_TexturePackFolders)
+static char	luminous_packs[32][64];	// texture packs found (LQ_TexturePacks)
+static const char	*luminous_places[32];	// where each one is
 static int	luminous_pack_count;
 
 void M_Menu_Luminous_f (void)
@@ -1638,7 +1639,7 @@ void M_Menu_Luminous_f (void)
 	key_dest = key_menu;
 	m_state = m_luminous;
 	m_entersound = true;
-	luminous_pack_count = LQ_TexturePackFolders (luminous_packs, 32);
+	luminous_pack_count = LQ_TexturePacks (luminous_packs, luminous_places, 32);
 }
 
 // The choices in order: auto (-2), none (-1), then each pack found.
@@ -1650,7 +1651,7 @@ static int M_LuminousPackIndex (void)
 	if (!current[0] || !Q_strcasecmp ((char *)current, "auto"))	// empty is auto (an early default)
 		return -2;
 	for (i = 0 ; i < luminous_pack_count ; i++)
-		if (!strcmp (luminous_packs[i], current))
+		if (!Q_strcasecmp (luminous_packs[i], (char *)current))
 			return i;
 	return -1;	// none, or a folder no longer there
 }
@@ -1707,12 +1708,21 @@ void M_Luminous_Draw (void)
 	if (Cvar_VariableValue ("lq_renderer") != 2)
 		M_Print (16, 176, "Luminous renderer only.");
 	else if (luminous_cursor == 0)
-		M_Print (16, 176, luminous_pack_count ? "Auto uses the first pack found." : "No texture pack in your Quake folder.");
+	{
+		int		at = M_LuminousPackIndex ();
+		if (!luminous_pack_count)
+			M_Print (16, 176, "No pack: put a .pk3 beside the app");
+		else if (at == -1)
+			M_Print (16, 176, "Original textures only.");
+		else
+			M_Print (16, 176, (char *)luminous_places[at == -2 ? 0 : at]);
+	}
 	else if (luminous_cursor <= LUMINOUS_TABLE)
 		M_Print (16, 176, (char *)luminous_options[luminous_cursor - 1].help);
 	else
 		M_Print (16, 176, "Sliders back to their defaults.");
-	M_Print (16, 184, luminous_cursor == 0 ? "A new pack reloads the map." : "Changes apply at once.");
+	M_Print (16, 184, luminous_cursor != 0 ? "Changes apply at once." :
+		luminous_pack_count ? "A new pack reloads the map." : "or in id1, then reopen this menu.");
 }
 
 void M_Luminous_Key (int key)

@@ -11,8 +11,9 @@ int LQ_QuakeSceneVisibleDraws(const lq_scene *scene, const float camera[3], uint
  * _luma folded into alpha) and _norm map, found as DarkPlaces finds them:
  * textures/<map>/<name>, then textures/<name>, as .tga, .png then .jpg, with
  * '*' written '#'. Files come from the game's search path, then from the
- * install's folder `pack` (NULL or "" for none), on this thread; `run`
- * decodes them in parallel. counts gets colour, normal and glow images found.
+ * pack at path `pack` (NULL or "" for none): a folder holding textures/, or
+ * a .pk3. They are read on this thread; `run` inflates and decodes them in
+ * parallel. counts gets colour, normal and glow images found.
  * Returns the number of materials given any image. */
 uint32_t LQ_QuakeSceneLoadPack(lq_scene *scene, const char *pack, lq_range_runner run, uint32_t counts[3]);
 void LQ_QuakeSceneShutdown(void);
