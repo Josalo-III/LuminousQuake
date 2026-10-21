@@ -140,6 +140,17 @@ from the height values and specular from gloss maps. Design and the DarkPlaces
 conventions are in [material packs](MATERIAL_PACKS.md). The test data (QRP,
 Rygel) goes in an ignored game directory.
 
+**First stage done October 20:** high-res colour (with glow) and bump maps
+from loose pack files, on solid world surfaces in Luminous, switched on
+Options → Luminous Options. Decided: parallax and relief shadows, the latter
+from the strongest light only; compression by measurement. October 21:
+brightness matching (Pack brightness), pack colours following Quake's
+screen tints, the bump frame's sign, parallax (Parallax depth) with each
+texture's mean height held at the face, and Quake's `gamma` applied to the
+finished Luminous frame, as software Quake does. Still to come: PK3 reading, gloss specular, relief shadows, a
+parallax fade with distance, liquids, sky, models and `_bump` maps
+([status](MATERIAL_PACKS.md#implemented-first-stage-october-20)).
+
 ### 5. The existing Luminous queue
 
 From the [Luminous notes](LUMINOUS_RENDERER.md#next-implementation-sequence):

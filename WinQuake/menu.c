@@ -18,6 +18,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 #include "quakedef.h"
+#include "render_bridge.h"
 #ifdef LQ_PORTABLE
 #include "user_paths.h"
 #endif
@@ -29,7 +30,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 void (*vid_menudrawfn)(void);
 void (*vid_menukeyfn)(int key);
 
-enum {m_none, m_main, m_singleplayer, m_load, m_save, m_multiplayer, m_setup, m_net, m_options, m_video, m_keys, m_help, m_quit, m_serialconfig, m_modemconfig, m_lanconfig, m_gameoptions, m_search, m_slist} m_state;
+enum {m_none, m_main, m_singleplayer, m_load, m_save, m_multiplayer, m_setup, m_net, m_options, m_video, m_luminous, m_keys, m_help, m_quit, m_serialconfig, m_modemconfig, m_lanconfig, m_gameoptions, m_search, m_slist} m_state;
 
 void M_Menu_Main_f (void);
 	void M_Menu_SinglePlayer_f (void);
@@ -1044,10 +1045,12 @@ again:
 /* OPTIONS MENU */
 
 #ifdef _WIN32
-#define	OPTIONS_ITEMS	17
+#define	OPTIONS_ITEMS	18
 #else
-#define	OPTIONS_ITEMS	16
+#define	OPTIONS_ITEMS	17
 #endif
+#define	OPTIONS_LUMINOUS	16	// LuminousQuake: the Luminous Options page
+void M_Menu_Luminous_f (void);
 
 #define	SLIDER_RANGE	10
 
@@ -1066,7 +1069,7 @@ void M_Menu_Options_f (void)
 	m_entersound = true;
 
 #ifdef _WIN32
-	if ((options_cursor == 16) && (modestate != MS_WINDOWED))
+	if ((options_cursor == 17) && (modestate != MS_WINDOWED))
 	{
 		options_cursor = 0;
 	}
@@ -1174,7 +1177,7 @@ void M_AdjustSliders (int dir)
 		break;
 
 #ifdef _WIN32
-	case 16:	// _windowed_mouse
+	case 17:	// _windowed_mouse
 		Cvar_SetValue ("_windowed_mouse", !_windowed_mouse.value);
 		break;
 #endif
@@ -1278,22 +1281,23 @@ void M_Options_Draw (void)
 	if (options_cursor == 14)
 	{
 		if (M_RendererChoice () == 0)
-			M_Print (16, 168, "Software gameplay is available.");
+			M_Print (16, 176, "Software gameplay is available.");
 		else if (M_RendererChoice () == 1)
-			M_Print (16, 168, "Classic GPU world, actors/effects.");
+			M_Print (16, 176, "Classic GPU world, actors/effects.");
 		else
-			M_Print (16, 168, "Experimental: runtime light/shadow.");
-		M_Print (16, 176, "Restart or use vid_restart to apply.");
+			M_Print (16, 176, "Experimental: runtime light/shadow.");
+		M_Print (16, 184, "Restart or use vid_restart to apply.");
 	}
 
 	if (vid_menudrawfn)
 		M_Print (16, 152, "         Video Options");
+	M_Print (16, 160, "      Luminous Options");
 
 #ifdef _WIN32
 	if (modestate == MS_WINDOWED)
 	{
-		M_Print (16, 160, "             Use Mouse");
-		M_DrawCheckbox (220, 160, _windowed_mouse.value);
+		M_Print (16, 168, "             Use Mouse");
+		M_DrawCheckbox (220, 168, _windowed_mouse.value);
 	}
 #endif
 
@@ -1326,6 +1330,9 @@ void M_Options_Key (int k)
 			break;
 		case 15:
 			M_Menu_Video_f ();
+			break;
+		case OPTIONS_LUMINOUS:
+			M_Menu_Luminous_f ();
 			break;
 		default:
 			M_AdjustSliders (1);
@@ -1361,14 +1368,14 @@ void M_Options_Key (int k)
 		if (k == K_UPARROW)
 			options_cursor = 14;
 		else
-			options_cursor = 0;
+			options_cursor = OPTIONS_LUMINOUS;
 	}
 
 #ifdef _WIN32
-	if ((options_cursor == 16) && (modestate != MS_WINDOWED))
+	if ((options_cursor == 17) && (modestate != MS_WINDOWED))
 	{
 		if (k == K_UPARROW)
-			options_cursor = 15;
+			options_cursor = 16;
 		else
 			options_cursor = 0;
 	}
@@ -1589,6 +1596,180 @@ void M_Video_Draw (void)
 void M_Video_Key (int key)
 {
 	(*vid_menukeyfn) (key);
+}
+
+//=============================================================================
+/* LUMINOUS OPTIONS MENU (LuminousQuake) */
+
+/* Switches and sliders for comparing Luminous features: each takes effect at
+ * once, so a setting can be flipped back and forth while looking at a scene.
+ * Texture-pack settings join as those features arrive. */
+typedef struct
+{
+	const char	*label, *cvar, *help;
+	float		low, high, step, base;	// step 0: an on/off switch
+	const char	*off, *on;
+} luminous_option_t;
+
+static const luminous_option_t luminous_options[] =
+{
+	{"     High-res textures", "lq_pack_textures", "The pack's colour and glow.", 0, 1, 0, 1, "off", "on"},
+	{"             Bump maps", "lq_pack_bumps", "Texture pack normal maps.", 0, 1, 0, 1, "off", "on"},
+	{"        Parallax depth", "lq_pack_parallax", "Bump depth, of texture size. 0 off.", 0, 0.08f, 0.01f, 0.04f, NULL, NULL},
+	{"       Pack brightness", "lq_pack_brightness", "Match: each texture at its original's.", 0, 1, 0, 1, "as made", "match"},
+	{"               Shadows", "lq_shadows", "Shadow cubes and their filtering.", 0, 1, 0, 1, "off", "on"},
+	{"         Panel shadows", "lq_panel_shadows", "Lit panels: one cube per group.", 0, 1, 0, 1, "per piece", "shared"},
+	{"    Skip clear shadows", "lq_shadow_free", "No lookup where none can fall.", 0, 1, 0, 1, "off", "on"},
+	{"        Tone: shoulder", "lq_tone_shoulder", "Light below this is unchanged.", 0.5f, 0.95f, 0.05f, 0.8f, NULL, NULL},
+	{"     Tone: white point", "lq_tone_white", "Light that reaches the peak.", 2, 12, 0.5f, 6, NULL, NULL},
+	{"     Fullbright glow x", "lq_emission", "Lava, flames, lit panels.", 1, 8, 0.5f, 3, NULL, NULL},
+	{"      Explosion glow x", "lq_sprite_emission", "Explosions and other sprites.", 1, 8, 0.5f, 3, NULL, NULL},
+};
+// Item 0 chooses the texture pack; the table follows; the last item resets.
+#define	LUMINOUS_TABLE	((int)(sizeof(luminous_options) / sizeof(luminous_options[0])))
+#define	LUMINOUS_ITEMS	(LUMINOUS_TABLE + 2)
+
+static int	luminous_cursor;
+static char	luminous_packs[32][64];	// install folders holding textures/ (LQ_TexturePackFolders)
+static int	luminous_pack_count;
+
+void M_Menu_Luminous_f (void)
+{
+	key_dest = key_menu;
+	m_state = m_luminous;
+	m_entersound = true;
+	luminous_pack_count = LQ_TexturePackFolders (luminous_packs, 32);
+}
+
+// The choices in order: auto (-2), none (-1), then each pack found.
+static int M_LuminousPackIndex (void)
+{
+	const char	*current = Cvar_VariableString ("lq_texture_pack");
+	int		i;
+
+	if (!current[0] || !Q_strcasecmp ((char *)current, "auto"))	// empty is auto (an early default)
+		return -2;
+	for (i = 0 ; i < luminous_pack_count ; i++)
+		if (!strcmp (luminous_packs[i], current))
+			return i;
+	return -1;	// none, or a folder no longer there
+}
+
+static void M_LuminousPack (int dir)
+{
+	int		at = M_LuminousPackIndex () + dir;
+
+	if (at < -2)
+		at = luminous_pack_count - 1;
+	if (at >= luminous_pack_count)
+		at = -2;
+	Cvar_Set ("lq_texture_pack", at == -2 ? "auto" : at == -1 ? "none" : luminous_packs[at]);
+}
+
+static float M_LuminousValue (const luminous_option_t *o)
+{
+	float	v = Cvar_VariableValue ((char *)o->cvar);
+
+	if (!(v >= o->low && v <= o->high))
+		v = o->base;
+	return v;
+}
+
+void M_Luminous_Draw (void)
+{
+	int		i, y;
+	const luminous_option_t	*o;
+
+	M_Print ((320 - 16*8)/2, 4, "LUMINOUS OPTIONS");
+	{
+		int		at = M_LuminousPackIndex ();
+		M_Print (16, 32, "          Texture pack");
+		if (at == -2)
+			M_Print (220, 32, luminous_pack_count ? va("auto:%.7s", luminous_packs[0]) : "auto: none");
+		else
+			M_Print (220, 32, at < 0 ? "none" : va("%.12s", luminous_packs[at]));
+	}
+	for (i = 0 ; i < LUMINOUS_TABLE ; i++)
+	{
+		o = &luminous_options[i];
+		y = 40 + i*8;
+		M_Print (16, y, (char *)o->label);
+		if (!o->step)
+			M_Print (220, y, (char *)(M_LuminousValue (o) != 0 ? o->on : o->off));
+		else
+		{
+			M_DrawSlider (220, y, (M_LuminousValue (o) - o->low) / (o->high - o->low));
+			M_Print (320 - 8*4, y, va("%.2g", M_LuminousValue (o)));
+		}
+	}
+	M_Print (16, 40 + i*8, "         Reset sliders");
+	M_DrawCharacter (200, 32 + luminous_cursor*8, 12+((int)(realtime*4)&1));
+	if (Cvar_VariableValue ("lq_renderer") != 2)
+		M_Print (16, 176, "Luminous renderer only.");
+	else if (luminous_cursor == 0)
+		M_Print (16, 176, luminous_pack_count ? "Auto uses the first pack found." : "No texture pack in your Quake folder.");
+	else if (luminous_cursor <= LUMINOUS_TABLE)
+		M_Print (16, 176, (char *)luminous_options[luminous_cursor - 1].help);
+	else
+		M_Print (16, 176, "Sliders back to their defaults.");
+	M_Print (16, 184, luminous_cursor == 0 ? "A new pack reloads the map." : "Changes apply at once.");
+}
+
+void M_Luminous_Key (int key)
+{
+	const luminous_option_t	*o;
+	int		dir, i;
+	float	v;
+
+	switch (key)
+	{
+	case K_ESCAPE:
+		M_Menu_Options_f ();
+		return;
+	case K_UPARROW:
+		S_LocalSound ("misc/menu1.wav");
+		luminous_cursor = (luminous_cursor + LUMINOUS_ITEMS - 1) % LUMINOUS_ITEMS;
+		return;
+	case K_DOWNARROW:
+		S_LocalSound ("misc/menu1.wav");
+		luminous_cursor = (luminous_cursor + 1) % LUMINOUS_ITEMS;
+		return;
+	case K_LEFTARROW:
+	case K_RIGHTARROW:
+	case K_ENTER:
+		break;
+	default:
+		return;
+	}
+	S_LocalSound ("misc/menu3.wav");
+	dir = key == K_LEFTARROW ? -1 : 1;
+	if (luminous_cursor == 0)
+	{
+		M_LuminousPack (dir);
+		return;
+	}
+	if (luminous_cursor == LUMINOUS_ITEMS - 1)
+	{
+		if (key == K_ENTER)
+			for (i = 0 ; i < LUMINOUS_TABLE ; i++)
+				if (luminous_options[i].step)
+					Cvar_SetValue ((char *)luminous_options[i].cvar, luminous_options[i].base);
+		return;
+	}
+	o = &luminous_options[luminous_cursor - 1];
+	v = M_LuminousValue (o);
+	if (!o->step)
+		v = v != 0 ? 0 : 1;
+	else
+	{
+		v += dir * o->step;
+		if (v < o->low)
+			v = o->low;
+		if (v > o->high)
+			v = o->high;
+		v = (float)((int)(v / o->step + 0.5f)) * o->step;	// stay on the steps
+	}
+	Cvar_SetValue ((char *)o->cvar, v);
 }
 
 //=============================================================================
@@ -3155,6 +3336,10 @@ void M_Draw (void)
 		M_Video_Draw ();
 		break;
 
+	case m_luminous:
+		M_Luminous_Draw ();
+		break;
+
 	case m_help:
 		M_Help_Draw ();
 		break;
@@ -3245,6 +3430,10 @@ void M_Keydown (int key)
 
 	case m_video:
 		M_Video_Key (key);
+		return;
+
+	case m_luminous:
+		M_Luminous_Key (key);
 		return;
 
 	case m_help:

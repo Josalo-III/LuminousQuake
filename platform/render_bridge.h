@@ -7,6 +7,10 @@ int LQ_RenderBridgeActive(void);
 void LQ_RenderMapChanged(void);
 /* Registers the bridge's settings (lq_scene_cache_mb). */
 void LQ_RenderBridgeRegister(void);
+/* Folders of the install whose textures/ holds DarkPlaces material maps,
+ * sorted: the texture packs Options -> Luminous Options offers, and the one
+ * lq_texture_pack "auto" takes (the first). Returns how many were written. */
+int LQ_TexturePackFolders(char names[][64], int capacity);
 int LQ_RenderGPUView(void);
 /* Particle kinds for LQ_RenderGPUParticle. For smoke, scale is the puff's
  * growth (1 when emitted) and erode the fraction its surface has worn away.

@@ -9,7 +9,9 @@
 void LQ_SceneFree(lq_scene *s)
 {
     if (!s) return;
-    for (uint32_t i = 0; i < s->material_count; ++i) free(s->materials[i].indices.pixels);
+    for (uint32_t i = 0; i < s->material_count; ++i) {
+        free(s->materials[i].indices.pixels); free(s->materials[i].pack_color.pixels); free(s->materials[i].pack_normal.pixels);
+    }
     free(s->light_sources); free(s->light_visibility); free(s->shadow_free);
     free(s->bsp_nodes); free(s->leaf_pvs); free(s->light_leaves); free(s->leaf_contents);
     free(s->face_samples); free(s->sample_positions); free(s->bounce.pixels);
@@ -785,8 +787,12 @@ int LQ_SceneCheck(const lq_scene *s, char *error, size_t size)
     REQUIRE(ImageCheck(&s->colormap, 4) && s->colormap.width == 256 && s->colormap.height == 64,
         "invalid palette colormap");
     REQUIRE(ImageCheck(&s->lightmap, 4), "invalid lightmap atlas");
-    for (uint32_t i = 0; i < s->material_count; ++i)
-        REQUIRE(ImageCheck(&s->materials[i].indices, 1), "invalid indexed texture");
+    for (uint32_t i = 0; i < s->material_count; ++i) {
+        const lq_material *m = &s->materials[i];
+        REQUIRE(ImageCheck(&m->indices, 1), "invalid indexed texture");
+        REQUIRE((!m->pack_color.pixels || ImageCheck(&m->pack_color, 4)) &&
+            (!m->pack_normal.pixels || ImageCheck(&m->pack_normal, 4)), "invalid texture-pack image");
+    }
     for (int j = 0; j < 3; ++j)
         REQUIRE(isfinite(s->spawn_origin[j]) && isfinite(s->spawn_angles[j]), "nonfinite spawn camera");
     REQUIRE(s->light_source_count <= 4096 && (!s->light_source_count || s->light_sources), "invalid light source inventory");

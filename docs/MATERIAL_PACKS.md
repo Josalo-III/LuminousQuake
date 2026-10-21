@@ -1,4 +1,4 @@
-# Community material packs — October 17, 2026 (updated October 20)
+# Community material packs — October 17, 2026 (updated October 21)
 
 Luminous will use community retexture packs when they are installed: normal maps,
 height, gloss (specular) and glow. Original assets alone remain the baseline, and
@@ -123,6 +123,38 @@ texture units: 0.04 of the texture's width. For a 64-texel texture at scale 1,
 the full height range is about 2.6 world units. Offset mapping is off by default
 (`r_glsl_offsetmapping 0`), and it moves texture coordinates only.
 
+**Offset mapping is the only use of height** (`OffsetMapping` in
+`shader_glsl.h:872–917`; the alpha is read nowhere else). Every texture is
+marked for it (`mod_noshader_default_offsetmapping 1`), and the global switch
+decides. Two forms:
+- **Offset mapping** (`r_glsl_offsetmapping 1`): 2 steps
+  (`r_glsl_offsetmapping_steps`). Each moves the texture coordinate along the
+  view direction by `−height × offset + (1 − bias) × offset`, with
+  `offset = normalize(eye).xy × scale / steps`.
+- **Relief mapping** (`r_glsl_offsetmapping_reliefmapping 1`): 10 linear steps
+  (`_reliefmapping_steps`) until the view ray is below the height field, then
+  5 halving steps (`_refinesteps`) to find where it entered. This is parallax
+  occlusion mapping.
+- **Bias:** 0 for textures without a shader, so alpha 1 is the surface and
+  everything lower is carved in. Rygel's `tech08_1` peaks at 159 of 255, so
+  even its highest parts sit 38% of the depth below the face. A shader's
+  `dpoffsetmapping` keyword sets the mode, scale and a bias to treat a given
+  height as the surface.
+- **Distance:** `r_glsl_offsetmapping_lod` (off by default) cuts steps with
+  distance from 32 units (`_lod_distance`).
+- Colour, normal, gloss and glow are all sampled at the moved coordinate. The
+  surface's geometry, depth and silhouette do not change.
+
+**Normal maps shade** DarkPlaces' realtime lights (`r_shadow_realtime_dlight 1`:
+explosions, rockets; `r_shadow_realtime_world 0`: the map's lights) with
+specular from `_gloss`, and baked light only where a `.dlit` deluxemap gives
+its direction (`r_glsl_deluxemapping 1`). Without one, a lightmapped surface's
+normal map shows only under realtime lights.
+
+**Luminous decision, October 20:** parallax (relief mapping, matched to
+DarkPlaces' scale and bias) and relief shadows, marched toward each light from
+the point the view ray found.
+
 **Self-shadowing is not in DarkPlaces.** It never marches the height field
 toward a light. Luminous's relief shadows are therefore new behaviour, built on
 DarkPlaces' depth scale and height orientation so that packs keep the depth
@@ -172,6 +204,16 @@ version of the same thing.
   Loading a pack's `progs/*.mdl` changes models, not just their looks, so that
   needs its own decision.
 
+**Installed for development** (October 20): extracted to
+`quake-complete/Quake/rygel_ultra/`, a game folder of its own (git ignores
+`quake-complete/`), with DarkPlaces' layout inside. `-game rygel_ultra` turns it
+on and the original `id1` stays untouched. The engine already reads loose
+models from a game folder, so that switch also loads the pack's replacement
+`progs/*.mdl` and item-box BSPs today, before any texture support. Base names:
+730 (`tech08_1.jpg`, `tech08_1_norm.tga`, `tech08_1_gloss.jpg`); `*` becomes `#`
+(`#04awater1.jpg`). In `tech08_1_norm.tga` the height (alpha) spans 0–159 of
+255: plates lowest, riveted strips above them, the olive panel highest.
+
 Every TGA seen in the first files read is uncompressed (type 2 at 24 or 32
 bits, or type 3 greyscale). The pack uses `_luma`, Tenebrae's name, for most
 glow maps; DarkPlaces tries it last (`gl_rmain.c:2482`).
@@ -193,6 +235,137 @@ may use them.
   rerelease's `QuakeEX.kpf`.
 - Community skyboxes are planned under agenda item 1.
 
+## Implemented: first stage (October 20)
+
+High-res textures and bump maps, on Options → Luminous Options:
+- **Texture pack** (`lq_texture_pack`, saved, default `auto`): a folder of the
+  Quake install whose `textures/` holds DarkPlaces material maps (a `*_norm`
+  image), such as `rygel_ultra`, so a mod's own textures folder is not taken
+  for one. `auto` uses the first such folder (sorted by name), `none` none.
+  An empty value also means `auto`: the setting's first build defaulted to
+  `""`, which players' configs then saved, and a Dock launch after the
+  upgrade still loaded nothing.
+  The menu cycles auto, none and each pack found, and shows auto's choice. Its textures are read directly (`COM_LoadMallocFolderFile`),
+  not through the game's search path, so a pack's models and maps are not
+  loaded with them, and no `-game` is needed. Choosing another pack rebuilds
+  the map's scene; the scene cache keys on the pack.
+- **High-res textures** (`lq_pack_textures`) and **Bump maps**
+  (`lq_pack_bumps`), both saved and on by default, switch at once, so a view
+  can be compared both ways.
+
+The first version found packs only through the search path, so it needed
+`-game rygel_ultra`. A Dock launch found nothing and the switches did nothing,
+which is how it first failed in play; the second needed the pack chosen in
+the menu first, and the third read the empty value its predecessor had saved
+as `none`. The console now says which pack a map used, or why none.
+
+- **Finding the files** (`LQ_QuakeSceneLoadPack`, `renderer/quake_scene.c`).
+  For each world texture: `textures/<map>/<name>`, then `textures/<name>`, as
+  `.tga`, `.png`, then `.jpg`, with `*` written `#` and a lower-case retry.
+  Suffixes `_norm`, and `_glow` then `_luma` for glow; a glow counts only with
+  a replacement colour image, as in DarkPlaces. Files come through the game's
+  search path (`COM_LoadMallocFileQuiet`, which searches as `COM_FindFile` does
+  without printing every miss), then from the chosen pack folder. Loose files
+  only for now; PK3 reading is still to come.
+- **Decoding:** stb_image 2.29 (`third_party/stb/stb_image.h`, public domain or
+  MIT; copied from dhewm3's patched copy), JPG, PNG and TGA only, at most
+  4096 per side, in parallel on the job threads. Images stay with the scene,
+  so a cached map keeps them.
+- **On the GPU:** RGBA8 with a full mip chain, sampled with trilinear
+  filtering and the anisotropy setting. The levels are built on the CPU at
+  upload (`LQ_PackHalve`): colour averaged in linear light (the 2.2 power
+  `world.frag` decodes with) and normal maps renormalized. The first version
+  let the GPU build them from encoded values, which darkened distant texels:
+  at 1/16 size the median E1M1 pack texture lost 15%. Colour carries its glow in
+  alpha (the glow image's brightest channel); the normal map keeps height in
+  alpha, for parallax next.
+- **Colour:** in Luminous only, on solid world surfaces and inline brush
+  models. The pack's colour is decoded with the palette's 2.2 power and lit
+  the same way. The game also changes its palette before we see it: Quake's
+  `gamma` (the Options brightness slider, `gammatable`) and the screen tints
+  (damage, pickups, powerups, liquids; `V_UpdatePalette` mixes them into the
+  palette in software Quake). Pack colours take the tints as the palette does
+  (`v_palette_shift`, `lights.palette_shift`). Until October 21 they took
+  neither: with `gamma 0.7` in a player's config, every unreplaced texture
+  showed pale and washed out beside the pack's (`tech08_4`, which Rygel's
+  pack lacks, on E1M1).
+- **Quake's gamma in Luminous (October 21).** Software Quake's gamma bends the
+  final on-screen colour, so it lifts dark areas most. Luminous used to apply
+  it only to texture colour, before lighting, where it did about half as much
+  in dim places. Now `world.frag` undoes it when decoding palette colours
+  (`paletteDecode`, exponent 2.2 / gamma), pack colours never take it, and
+  `tonemap.frag` applies it once to the finished frame (light^gamma up to SDR
+  white; HDR highlights above white keep their level). Classic GPU is
+  unchanged: it shows the gamma'd palette directly. At `gamma 0.7`, E1M3's
+  view at `--camera "1330 640 690 5 180"`: the dim floor rose from 21.2 to
+  27.1 mean luma and a shaded pillar from 12.4 to 17.9; the lit back wall
+  barely moved (54.9 to 55.4). Glow emits as fullbrights do: colour × glow × `lq_emission`.
+  This approximates DarkPlaces, which adds the glow image itself.
+- **Bump maps:** the normal map turns into world space with a frame built
+  from screen derivatives of position and texture coordinate, so no vertex
+  data changed. Green points up the image (against increasing t). The frame
+  is divided by its determinant, which is negative under Metal's
+  downward screen y; the first version left it out and, by that reasoning,
+  lit every bump from the opposite side. Rivets now light on the side
+  facing the lamp. The bumped
+  normal sets each light's incidence, LIGHT's softened `(1 − s) + s·n·l`
+  included, and the sun's. The face's own normal still decides which side a
+  light is on, and drives shadow filtering, bounce, sky and probes.
+- **Parallax (October 21):** DarkPlaces' relief mapping. The view ray
+  marches down through the normal map's alpha in
+  8 even steps facing the surface to 24 at grazing views, then interpolates
+  between the last step above and the first below the surface (DarkPlaces
+  halves 5 more times instead). Depth is **Parallax depth**
+  (`lq_pack_parallax`, saved, default 0.04 as DarkPlaces' scale) times the
+  texture's size on the face, the geometric mean of its two axes, so
+  stretched textures keep round bumps. The shift is held to a 4:1 slope at
+  grazing views. **Each texture's mean height lies at the face**
+  (`lq_material.pack_height`, measured at load), as DarkPlaces' `match` bias
+  puts a chosen height there: higher parts stand out and lower ones sink, and
+  the ray starts above the face at the top of the range. DarkPlaces' default
+  bias puts height 1 at the face instead, and many of Rygel's height maps sit
+  mostly low (`wizmet1_2` averages 0.03, `wgrnd1_5` 0.05, `door04_2` peaks at
+  0.36), so the first version carved whole textures to full depth and slid
+  them across their faces as the view moved. Everything the surface draws (colour, normal map, the
+  palette texture when the pack's colour is off) is read at the shifted
+  point; mip levels and the bump frame use the unshifted coordinate, so steps
+  in the shift don't tear them. Lightmaps are not shifted. On E1M1's south
+  corridor ceiling rivets now stand out and stretch toward the camera, as
+  raised bumps do.
+- **Not yet:** liquids, sky, masked (`{`) textures, models and sprites keep
+  their original textures; `_gloss` specular, `_bump` height-only maps and
+  relief shadows are later stages; parallax has no fade with distance yet.
+- **E1M1 with Rygel's ultra pack:** 81 of 86 textures replaced (81 colour, 79
+  bump, 39 glow); about 9 s to load in the debug build, including bounce.
+- **E1M3 brightness (October 21).** Matched, the pack's walls in the view
+  above came within 5% of the originals (back wall 54.9 against 57.8). The
+  matching dims Rygel's `rock4_1` (pack brighter than the original: 0.59 at
+  full size) and lifts `wbrick1_5` (2.21, held at the 2× cap). Matching by
+  mean display value or by median instead of linear mean barely changes
+  `rock4_1` (0.78, 0.79 and 0.91 at 256²), so the method was kept.
+- **Brightness.** The pack's images are sRGB (every JPG carries the IEC
+  61966-2.1 profile; the TGAs none), and decoding them with the 2.2 power
+  shows each at normal brightness exactly as drawn, as the palette textures
+  are. But they are darker than Quake's: across E1M1's 81 the median pack
+  image has 0.87 of its original's linear brightness, and the corridor walls
+  0.66–0.73 (`tech08_1` 0.73, `twall3_1` 0.67, `tech07_2` 0.66). Maps were
+  lit for the originals, so **Pack brightness** (`lq_pack_brightness`, default
+  `match`) scales each pack texture's lit colour to its original's mean
+  linear brightness (non-fullbright palette texels against the whole image;
+  clamped to 0.5–2×); glow keeps the pack's level. `as made` shows the pack
+  as drawn.
+- At the south corridor (`--camera "1000 1760 -330 5 0"`), mean luma: 34.4
+  with the original textures; 28.0 with the pack as first drawn (gamma-space
+  mips, as made); 32.7 with linear mips and matched brightness. The bump direction looks right there (riveted strips lit on their
+  upper edges from the ceiling light); a test scene with a known bump should
+  still confirm it.
+- The viewer loads a pack with `--texture-pack <folder>` (or from a `-game`
+  folder); `--no-pack-textures`, `--no-bump-maps` and `--pack-as-made` turn
+  the stages off, `--parallax <depth>` sets the depth (0 off), and
+  `--quake-gamma <g>` reproduces a player's `gamma`.
+- In the game (`+lq_texture_pack rygel_ultra`, no `-game`), E1M1 loads 81
+  of 86 textures from the pack in 1.04 s.
+
 ## Luminous plan
 
 1. **Loader.**
@@ -211,15 +384,36 @@ may use them.
    - `_norm` and `_gloss` sampled in the Luminous branch.
    - Direct light and specular use the mapped normal; bounce and probes keep
      the geometric normal.
-3. **Relief shadows.**
-   - March from each shaded pixel toward a light through the height field.
-   - Use the DarkPlaces depth scale, with soft results from the closest miss.
-   - Bound the cost: only a pixel's strongest few lights march, step count
-     grows with grazing angle, and the effect fades out with distance and mip
-     level.
+3. **Parallax and relief shadows** (decided October 20).
+   - Parallax: relief mapping as DarkPlaces does it (linear steps, then
+     halving steps), with its depth scale and bias, so packs look as authored.
+   - Relief shadows: march from the point the view ray found toward the
+     pixel's **strongest light only**, through the height field, with soft
+     results from the closest miss. Only one light marches because the cost is
+     unknown and no other engine does this; more lights may come later.
+   - Step counts grow with grazing angle; the effect fades with distance and
+     mip level.
+   - The march reads only height, so height gets its own single-channel
+     texture: a quarter of an RGBA read, compressed or not.
 4. **Replacement diffuse and glow.** These bypass the palette and colormap path
    and need their own decision on colour grading.
 5. **Model skins.** Per-vertex tangents for MDL, `_pants`/`_shirt`.
+6. **Controls.** Each feature gets a switch on Options → **Luminous Options**
+   as it lands, for A/B comparison: replacement textures, bump maps,
+   parallax, relief shadows, texture compression.
+7. **Texture compression, decided by measurement.** The M1 Max samples BC1,
+   BC3, BC4, BC5, BC7 (and sRGB variants) and ASTC through SDL's Metal
+   backend (checked October 20).
+   - Memory: a 1024² RGBA8 image with mips is 5.6 MB; BC7 or BC5 is 1.4 MB;
+     BC1 or BC4 0.7 MB. E1M1's 86 materials × base, normal and gloss is about
+     1.4 GB uncompressed and about 0.4 GB compressed. 64 GB doesn't need
+     that; 8–16 GB Macs will.
+   - Speed: the relief march's many dependent reads gain most from smaller
+     textures in cache. Whether frame time improves is for the performance
+     round to show, with compression on and off.
+   - Cost: BC1/BC4/BC5 encode in milliseconds; good BC7 takes far longer, so
+     encoded results would be cached on disk, as DarkPlaces' `dds/` cache is.
+     BC5 suits normals; BC1 bands on smooth gradients.
 
 Test data (QRP, Rygel) goes in an ignored game directory, never into the
 repository.

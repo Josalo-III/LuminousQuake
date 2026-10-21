@@ -17,7 +17,16 @@ enum { LQ_SURFACE_SKY = 1, LQ_SURFACE_WATER = 2, LQ_SURFACE_MODEL = 4,
        LQ_SURFACE_SOLID_EFFECT = 512, /* small lit 3D particles: effect colour, oriented normals */
        LQ_SURFACE_ERODE = 1024, /* smoke: noise cuts away the fraction uv.y of the surface */
        LQ_SURFACE_SPRITE = 2048 /* Luminous filters it bilinearly; index 255 becomes partial coverage */ };
-typedef struct { lq_image indices; char name[17]; uint32_t resource_id; } lq_material;
+/* pack_color and pack_normal are optional community-pack images
+ * (LQ_QuakeSceneLoadPack), RGBA8: colour with its glow in alpha, and a
+ * DarkPlaces _norm map (tangent normal, green up the image, height in alpha). */
+/* pack_gain scales the pack colour to the original texture's mean linear
+ * brightness (clamped to 0.5-2; 0 when unset), for lq_pack_brightness.
+ * pack_height is the normal map's mean height (alpha, 0-1), which parallax
+ * holds at the face so the texture does not slide off its geometry. */
+typedef struct {
+    lq_image indices; char name[17]; uint32_t resource_id; lq_image pack_color, pack_normal; float pack_gain, pack_height;
+} lq_material;
 typedef struct {
     uint32_t first_index, index_count, material, flags;
     uint8_t styles[4];
@@ -259,6 +268,15 @@ typedef struct {
     uint32_t static_brush_shadows;
     uint32_t disable_bounce; /* Luminous diagnostic: direct light only */
     uint32_t disable_shadow_free; /* Luminous diagnostic: look up shadows even where none can fall */
+    /* Luminous community texture packs: draw the pack's colour images, and
+     * shape direct light by its normal maps, where a material has them. */
+    uint32_t pack_textures, pack_bumps;
+    uint32_t pack_match; /* scale pack colour to each original texture's brightness (pack_gain) */
+    float pack_parallax; /* parallax depth from normal-map height, as a fraction of texture size; 0 off */
+    /* What the game does to its palette, done to pack colours too: Quake's
+     * gamma (the brightness slider; zero means 1), then before it the screen
+     * tints as one mix, colour * (1 - w) + rgb on 0-1 values. */
+    float palette_gamma, palette_shift[4];
     float exposure; /* Luminous brightness scale; zero means 1 */
     float light_gamma; /* Luminous brightness-to-linear exponent; zero means LQ_LIGHT_GAMMA */
     /* Lights cast no shadow below shadow_faint brightness, or below

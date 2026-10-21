@@ -17,3 +17,4 @@ void LQ_UIEnd(void) {}
 int LQ_UIScale(void) { return 1; }
 int LQ_UIActive(void) { return 0; }
 void LQ_UIShutdown(void) {}
+int LQ_TexturePackFolders(char names[][64], int capacity) { (void)names; (void)capacity; return 0; }

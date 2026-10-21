@@ -259,6 +259,10 @@ cshift_t	cshift_lava = { {255,80,0}, 150 };
 cvar_t		v_gamma = {"gamma", "1", true};
 
 byte		gammatable[256];	// palette is sent through this
+// The colour shifts V_UpdatePalette last mixed into the palette, as one mix:
+// colour * (1 - w) + rgb, on 0-1 values before gammatable. Luminous applies
+// it to texture-pack colours, which never pass through the palette.
+float		v_palette_shift[4];
 
 #ifdef	GLQUAKE
 byte		ramps[3][256];
@@ -655,6 +659,20 @@ void V_UpdatePalette (void)
 			
 	basepal = host_basepal;
 	newpal = pal;
+
+	{
+		float keep = 1, offset[3] = {0, 0, 0};
+		for (j=0 ; j<NUM_CSHIFTS ; j++)
+		{
+			float p = cl.cshifts[j].percent / 256.0f;
+			for (i=0 ; i<3 ; i++)
+				offset[i] = offset[i] * (1 - p) + p * cl.cshifts[j].destcolor[i] / 255.0f;
+			keep *= 1 - p;
+		}
+		for (i=0 ; i<3 ; i++)
+			v_palette_shift[i] = offset[i];
+		v_palette_shift[3] = 1 - keep;
+	}
 	
 	for (i=0 ; i<256 ; i++)
 	{

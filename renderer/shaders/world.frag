@@ -18,6 +18,10 @@ layout(set=2,binding=10) uniform sampler2DArrayShadow shadow_maps2;
 layout(set=2,binding=11) uniform sampler2DArray shadow_depths2;
 layout(set=2,binding=12) uniform sampler2DArrayShadow shadow_maps3;
 layout(set=2,binding=13) uniform sampler2DArray shadow_depths3;
+// Community texture pack (Luminous): colour with its glow in alpha, and a
+// DarkPlaces _norm map (tangent normal, green up the image; height in alpha).
+layout(set=2,binding=14) uniform sampler2D pack_color;
+layout(set=2,binding=15) uniform sampler2D pack_normal;
 layout(set=3,binding=0,std140) uniform Surface {
     vec4 light_weights;
     vec4 parameters; // time, surface flags, smooth filter, mip mode
@@ -27,6 +31,8 @@ layout(set=3,binding=0,std140) uniform Surface {
     vec4 bounce_weights; // live style value per bounce layer
     vec4 face_light; // x: 1 + the slot brightest everywhere on this face (found on the CPU); 0 unknown
     uvec4 shadow_free; // slots whose shadow lookup here provably finds no blocker (LQ_SceneFindShadowFree)
+    vec4 pack; // x: draw the pack's colour; y: shade direct light by its normal map; z: colour gain
+    vec4 relief; // x: parallax depth, as a fraction of the texture's size (0 off); y: height held at the face
 } surface;
 // Luminous runtime lights, pushed once per frame. Each slot owns a shadow cube.
 layout(set=3,binding=1,std140) uniform Lights {
@@ -49,7 +55,8 @@ layout(set=3,binding=1,std140) uniform Lights {
                       // y: faint level, z: dominance ratio below which lights cast no shadow (0 off)
     vec4 shadow_filter; // x: a light's brightness at which its shadow takes all 16 samples (0: always)
     vec4 limit[128]; // x: most brightness the light adds to a surface; 0 none (torch accents); yzw: shadow cube centre
-    vec4 effects; // x: sprite fullbright emission (lq_sprite_emission)
+    vec4 effects; // x: sprite fullbright emission (lq_sprite_emission); y: Quake's palette gamma
+    vec4 palette_shift; // screen tints on pack colours: colour * (1 - w) + rgb
 } lights;
 const float SHADOW_NEAR = 2.0;
 layout(location=0) in vec2 uv;
@@ -71,6 +78,12 @@ vec3 lit_radiance = vec3(1.0);
 const float DISPLAY_GAMMA = 2.2;
 vec3 displayDecode(vec3 c) { return pow(max(c, vec3(0.0)), vec3(DISPLAY_GAMMA)); }
 vec3 displayEncode(vec3 c) { return pow(clamp(c, 0.0, 1.0), vec3(1.0 / DISPLAY_GAMMA)); }
+// Palette colours to linear light. The game sends its palette through Quake's
+// gamma (the brightness slider, lights.effects.y), as software Quake shows it.
+// Luminous undoes that here and applies the gamma to the finished frame in
+// tone mapping, where it bends what the display shows, light included, as
+// software Quake's does, rather than only the textures' colour.
+vec3 paletteDecode(vec3 c) { return pow(max(c, vec3(0.0)), vec3(DISPLAY_GAMMA / lights.effects.y)); }
 // Fullbrights (palette 224-255: flames, lava, lit panels) emit. In Luminous
 // they shine at color_space.w (3) times their palette colour in linear light:
 // tone mapping rolls them back to about their colour on SDR, and HDR displays
@@ -78,10 +91,17 @@ vec3 displayEncode(vec3 c) { return pow(clamp(c, 0.0, 1.0), vec3(1.0 / DISPLAY_G
 float emission() { return lights.parameters.y != 0u && lights.color_space.w > 0.0 ? lights.color_space.w : 1.0; }
 // Sprites (explosions, s_light) emit by their own gain, so they can reach
 // further into HDR highlights than lava and lit panels.
+// A pack colour in linear light, as the palette would have it: scaled by
+// `gain` in linear light, then the screen tints the game mixes into its
+// palette entries before they reach us (Quake's gamma comes at the end).
+vec3 packAlbedo(vec3 encoded, float gain) {
+    vec3 c = encoded * pow(gain, 1.0 / DISPLAY_GAMMA);
+    return displayDecode(c * (1.0 - lights.palette_shift.w) + lights.palette_shift.rgb);
+}
 float spriteEmission() { return lights.parameters.y != 0u && lights.effects.x > 0.0 ? lights.effects.x : emission(); }
 vec4 litEntry(float entry) {
     vec4 c = texture(colormap, vec2((entry + 0.5) / 256.0, 32.5 / 64.0));
-    c.rgb = displayDecode(c.rgb);
+    c.rgb = paletteDecode(c.rgb);
     if (entry < 224.0) c.rgb *= lit_radiance;
     else c.rgb *= emission();
     return c;
@@ -135,7 +155,7 @@ vec4 filteredColor(vec2 coord, vec2 dx, vec2 dy, float grade) {
 // 32), blended in linear light. Classic keeps the original nearest-texel sky.
 vec4 skyEntry(float entry) {
     vec4 c = texture(colormap, vec2((entry + 0.5) / 256.0, 32.5 / 64.0));
-    c.rgb = displayDecode(c.rgb);
+    c.rgb = paletteDecode(c.rgb);
     return c;
 }
 vec4 skyLayer(vec2 layer_uv, int left, bool masked) {
@@ -169,7 +189,7 @@ vec4 spriteSample(vec2 coord) {
         float entry = floor(texelFetch(indices, p, 0).r * 255.0 + 0.5);
         if (entry > 254.5) continue;
         float w = ((i & 1) != 0 ? weight.x : 1.0 - weight.x) * ((i >> 1) != 0 ? weight.y : 1.0 - weight.y);
-        vec3 c = displayDecode(texture(colormap, vec2((entry + 0.5) / 256.0, 32.5 / 64.0)).rgb);
+        vec3 c = paletteDecode(texture(colormap, vec2((entry + 0.5) / 256.0, 32.5 / 64.0)).rgb);
         if (entry >= 224.0) c *= spriteEmission();
         sum += vec4(c, 1.0) * w;
     }
@@ -337,7 +357,61 @@ float lightShadow(uint i, vec3 normal, float brightness, bool diffuse_effect) {
 }
 // Unshadowed light from slot i at this point, in Quake brightness units (its
 // strength included, colour not), and the direction toward it.
-float lightReach(uint i, vec3 normal, bool diffuse_effect, bool liquid, float opacity, bool submerged, out vec3 direction) {
+// The world-space gradients of the texture coordinates across the face, from
+// screen derivatives of position and coordinate (a cotangent frame), so no
+// vertex data is needed. Dividing by the determinant keeps the sign right
+// whichever way the API's screen y runs.
+void textureFrame(vec3 n, vec2 coord, out vec3 du, out vec3 dv) {
+    vec3 dp1 = dFdx(world_position), dp2 = dFdy(world_position);
+    vec2 duv1 = dFdx(coord), duv2 = dFdy(coord);
+    vec3 dp2perp = cross(dp2, n), dp1perp = cross(n, dp1);
+    float det = dot(dp1, dp2perp);
+    float inverse = abs(det) > 1e-20 ? 1.0 / det : 0.0;
+    du = (dp2perp * duv1.x + dp1perp * duv2.x) * inverse;
+    dv = (dp2perp * duv1.y + dp1perp * duv2.y) * inverse;
+}
+// The pack's normal map in world space, sampled at `coord`. DarkPlaces' _norm
+// red points along the image's rows and green up it; texture rows run down
+// the image, so green turns toward decreasing t.
+vec3 bumpNormal(vec3 n, vec3 du, vec3 dv, vec2 coord, vec2 dx, vec2 dy) {
+    float scale = inversesqrt(max(max(dot(du, du), dot(dv, dv)), 1e-20));
+    vec3 m = textureGrad(pack_normal, coord, dx, dy).rgb * 2.0 - 1.0;
+    vec3 bumped = du * (scale * m.x) - dv * (scale * m.y) + n * m.z;
+    return dot(bumped, bumped) > 1e-12 ? normalize(bumped) : n;
+}
+// Parallax, as DarkPlaces' relief mapping: the normal map's alpha is height,
+// spanning surface.relief.x of the texture's size. The texture's mean height
+// (relief.y) lies at the face, as DarkPlaces' "match" bias puts a chosen
+// height there, so higher parts stand out of it and lower ones sink. The view
+// ray starts where it is at the top of the range, above the face, and marches
+// down in even steps (more where the view grazes); the hit is interpolated
+// between the last step above the surface and the first below it. Returns
+// the texture-coordinate shift to where the ray meets the surface.
+vec2 parallaxShift(vec3 n, vec3 du, vec3 dv, vec2 coord, vec2 dx, vec2 dy) {
+    vec3 to_eye = normalize(surface.camera_origin.xyz - world_position);
+    float facing = dot(to_eye, n);
+    float lu = dot(du, du), lv = dot(dv, dv);
+    if (facing <= 0.0 || lu <= 0.0 || lv <= 0.0) return vec2(0.0);
+    // Depth in world units, from the texture's size on the face.
+    float depth = surface.relief.x * inversesqrt(sqrt(lu * lv));
+    // Grazing views are held to a 4:1 slope so the shift stays bounded.
+    vec2 full = -vec2(dot(to_eye, du), dot(to_eye, dv)) * (depth / max(facing, 0.25));
+    int steps = int(mix(24.0, 8.0, facing));
+    float layer = 1.0 / float(steps);
+    vec2 shift = -full * (1.0 - surface.relief.y), last_shift = shift;
+    float ray = 1.0, height = textureGrad(pack_normal, coord + shift, dx, dy).a, last_gap = 0.0;
+    for (int i = 0; i < 24 && i < steps && height < ray; ++i) {
+        last_gap = ray - height; last_shift = shift;
+        ray -= layer; shift += full * layer;
+        height = textureGrad(pack_normal, coord + shift, dx, dy).a;
+    }
+    float under = height - ray;
+    if (last_gap > 0.0 && under > 0.0) shift = mix(shift, last_shift, under / (under + last_gap));
+    return shift;
+}
+// `shading` is the bumped normal where a normal map applies: it sets the
+// incidence, while the face's own normal still decides which side lights it.
+float lightReach(uint i, vec3 normal, vec3 shading, bool diffuse_effect, bool liquid, float opacity, bool submerged, out vec3 direction) {
     vec4 origin = lights.position_range[i];
     direction = origin.xyz-world_position;
     float distance = length(direction);
@@ -345,9 +419,10 @@ float lightReach(uint i, vec3 normal, bool diffuse_effect, bool liquid, float op
     direction = distance > 0.001 ? direction/distance : normal;
     float facing = diffuse_effect ? 1.0 : dot(normal,direction);
     if (facing <= 0.0) return 0.0; // LIGHT rejects sources behind a face
+    if (!diffuse_effect) facing = dot(shading, direction);
     vec4 f = lights.falloff[i];
     /* LIGHT's softened incidence: half the value at grazing. */
-    float direct = lightValue(f,distance) * ((1.0 - f.z) + f.z * facing);
+    float direct = lightValue(f,distance) * max((1.0 - f.z) + f.z * facing, 0.0);
     // Unbounded falloffs stop at the range (their fade level); taper them to
     // zero over its last fifth (LQ_LIGHT_TAPER) so no edge shows.
     int formula = int(f.w + 0.5);
@@ -437,6 +512,17 @@ void main() {
     bool lit_effect = diffuse_effect || (lights.parameters.y != 0u && (flags & 512) != 0);
     vec3 effect_light = vec3(0.0);
     vec2 sample_uv = uv;
+    // The pack's frame and footprint, from the coordinate before any parallax
+    // shift so steps in the shift do not tear the frame or the filtering.
+    vec3 frame_du = vec3(0.0), frame_dv = vec3(0.0);
+    vec2 frame_dx = dFdx(uv), frame_dy = dFdy(uv), parallax = vec2(0.0);
+    if (surface.pack.y > 0.5 && (flags & 39) == 0) {
+        textureFrame(normalize(world_normal), uv, frame_du, frame_dv);
+        if (surface.relief.x > 0.0) {
+            parallax = parallaxShift(normalize(world_normal), frame_du, frame_dv, uv, frame_dx, frame_dy);
+            sample_uv += parallax;
+        }
+    }
     // Unlit surfaces (sky, opaque liquids) take colormap row 32, the palette's
     // own colours, as software Quake draws them; row 0 is twice that, clipped.
     float index_value, grade = 32.0;
@@ -466,6 +552,7 @@ void main() {
             bool actor = (flags & 32) != 0;
             if (lights.parameters.y != 0u && ((flags & 4) == 0 || actor)) {
                 vec3 normal = normalize(world_normal);
+                vec3 shading = surface.pack.y > 0.5 && !actor ? bumpNormal(normal, frame_du, frame_dv, sample_uv, frame_dx, frame_dy) : normal;
                 vec3 illumination = vec3(0.0);
                 // Shadows are filtered only where they can be seen. A light
                 // below the faint level, or below the dominance ratio of the
@@ -484,7 +571,7 @@ void main() {
                 if (lights.color_space.z > 0.0 && known != 0u && !actor) {
                     lead = known - 1u;
                     vec3 c = lights.color_strength[lead].rgb;
-                    brightest = lightReach(lead, normal, diffuse_effect, liquid, opacity, submerged, toward) * max(c.r, max(c.g, c.b));
+                    brightest = lightReach(lead, normal, shading, diffuse_effect, liquid, opacity, submerged, toward) * max(c.r, max(c.g, c.b));
                     brightest_shadow = lightShadow(lead,diffuse_effect ? toward : normal,brightest,diffuse_effect);
                     strongest = brightest * brightest_shadow;
                 } else if (lights.color_space.z > 0.0) {
@@ -493,11 +580,11 @@ void main() {
                         uint i = word * 32u + uint(findLSB(bits));
                         if (i >= lights.parameters.x) break;
                         vec3 c = lights.color_strength[i].rgb;
-                        float value = lightReach(i, normal, diffuse_effect, liquid, opacity, submerged, toward) * max(c.r, max(c.g, c.b));
+                        float value = lightReach(i, normal, shading, diffuse_effect, liquid, opacity, submerged, toward) * max(c.r, max(c.g, c.b));
                         if (value > brightest) { brightest = value; lead = i; }
                     }
                     if (lead != 0xffffffffu) {
-                        lightReach(lead, normal, diffuse_effect, liquid, opacity, submerged, toward);
+                        lightReach(lead, normal, shading, diffuse_effect, liquid, opacity, submerged, toward);
                         brightest_shadow = lightShadow(lead,diffuse_effect ? toward : normal,brightest,diffuse_effect);
                         strongest = brightest * brightest_shadow;
                     }
@@ -506,7 +593,7 @@ void main() {
                 for (uint bits = surface.light_bits[word]; bits != 0u; bits &= bits - 1u) {
                     uint i = word * 32u + uint(findLSB(bits));
                     if (i >= lights.parameters.x) break;
-                    float direct = lightReach(i, normal, diffuse_effect, liquid, opacity, submerged, toward);
+                    float direct = lightReach(i, normal, shading, diffuse_effect, liquid, opacity, submerged, toward);
                     if (direct < 0.01) continue;
                     vec3 c = lights.color_strength[i].rgb;
                     if (i == lead) { illumination += c * direct * brightest_shadow; continue; }
@@ -544,7 +631,8 @@ void main() {
                             visible = probeCube(probe_static, 24.0, 6.0, world_position + normal * (actor ? 0.0 : 8.0), normal).a;
                     }
                     float as = lights.sun_direction.w;
-                    illumination += lights.sun_light.rgb * ((1.0 - as) + as * facing) * visible;
+                    if (!diffuse_effect) facing = -dot(shading, lights.sun_direction.xyz);
+                    illumination += lights.sun_light.rgb * max((1.0 - as) + as * facing, 0.0) * visible;
                 }
                 // Probes: static bounce for actors; gameplay-light bounce for all.
                 int probes = int(lights.probe_size.w + 0.5);
@@ -579,7 +667,7 @@ void main() {
             grade = clamp(floor((255.0 - brightness) * 0.25), 0.0, 63.0);
         }
     }
-    vec2 dx = dFdx(sample_uv), dy = dFdy(sample_uv);
+    vec2 dx = dFdx(sample_uv - parallax), dy = dFdy(sample_uv - parallax);
     float index = floor(index_value * 255.0 + 0.5);
     bool smooth_sprite = (flags & 2048) != 0 && lights.parameters.y != 0u;
     if ((flags & 8) != 0 && index > 254.5 && !smooth_sprite) discard;
@@ -595,10 +683,18 @@ void main() {
         // effect_light is relative to; row 0 is double that and would show
         // lit effects twice as bright as the walls around them.
         color = texture(colormap, vec2((index + 0.5) / 256.0, 32.5 / 64.0));
-        color.rgb = displayDecode(color.rgb) * pow(max(effect_light, vec3(0.0)), vec3(lights.color_space.x));
+        color.rgb = paletteDecode(color.rgb) * pow(max(effect_light, vec3(0.0)), vec3(lights.color_space.x));
         written_linear = true;
     } else if (linear_lit) {
         if ((flags & 9) != 0) color = litEntry(index);
+        // The pack's colour in place of the palette's, lit the same way; its
+        // glow (alpha) emits as fullbrights do.
+        if (surface.pack.x > 0.5 && (flags & 13) == 0) {
+            vec4 hd = textureGrad(pack_color, sample_uv, frame_dx, frame_dy);
+            // z matches the original texture's brightness (lq_pack_brightness);
+            // the glow keeps the pack's own level.
+            color = vec4(packAlbedo(hd.rgb, surface.pack.z) * lit_radiance + packAlbedo(hd.rgb, 1.0) * (hd.a * emission()), 1.0);
+        }
         written_linear = true;
     } else if (lights.parameters.y != 0u && index < 224.0) color.rgb *= direct_tint;
     if (sky_color.a > 0.0) { color = sky_color; written_linear = false; }
@@ -615,7 +711,8 @@ void main() {
     // palette colours as they are.
     if ((flags & 1024) != 0) color.a = smoke_alpha;
     if (lights.parameters.y != 0u && !written_linear) {
-        color.rgb = displayDecode(color.rgb);
+        // The smooth sky was re-encoded with the plain transfer.
+        color.rgb = sky_color.a > 0.0 ? displayDecode(color.rgb) : paletteDecode(color.rgb);
         if (index >= 224.0 && sky_color.a <= 0.0 && (flags & 1) == 0) color.rgb *= emission();
     }
 }

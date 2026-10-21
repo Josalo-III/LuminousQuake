@@ -128,10 +128,15 @@ and only print `Unknown command`.
 
 ### LuminousQuake settings
 
+Options → **Luminous Options** sets `lq_texture_pack`, `lq_pack_textures`, `lq_pack_bumps`, `lq_pack_parallax`, `lq_pack_brightness`,
+`lq_shadows`, `lq_panel_shadows`, `lq_shadow_free`, the tone shoulder and white
+point, and both glow gains, each taking effect at once (for comparisons;
+**Reset sliders** restores the parallax depth, tone and glow defaults).
+
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `lq_renderer` | 0 | 0 Software, 1 Classic GPU, 2 Luminous; applies at `vid_restart` |
-| `lq_gamma` | 2.2 | Display gamma for all three renderers (Options → **Gamma**, 1.6–2.8). Higher darkens the mid-tones, lower lifts them; 2.2 shows Quake's palette as drawn. `gamma` (Brightness) still works alongside it |
+| `lq_gamma` | 2.2 | Display gamma for all three renderers (Options → **Gamma**, 1.6–2.8). Higher darkens the mid-tones, lower lifts them; 2.2 shows Quake's palette as drawn. `gamma` (Brightness) still works alongside it; in Luminous it bends the finished frame, as software Quake's does, so it lifts dim areas most |
 | `lq_hdr` | 1 | GPU renderers: HDR output (macOS extended dynamic range) where the display is in HDR mode; 0 never. Video Options → **HDR** and **HDR peak** set it and `lq_hdr_peak` |
 | `lq_hdr_test` | 0 | 1 replaces the 3D view with an HDR test pattern: SDR white along the top, bands at 0.5–10× it below. Where the bands stop changing is your display's real peak, the value for `lq_hdr_peak` |
 | `lq_hdr_peak` | 0 | Caps HDR highlights at this many times SDR white; 0 uses the headroom macOS reports. Set it when bright highlights clip. First check the monitor's own menu: some, like the Acer PM161W, ship with HDR off there and clip everything above white |
@@ -154,6 +159,11 @@ and only print `Unknown command`.
 | `lq_shadows` | 1 | 0 lights Luminous without shadow cubes or shadow filtering (for comparisons) |
 | `lq_panel_shadows` | 1 | Experimental: neighbouring pieces of a lit panel share one shadow cube, drawn from their centre with the panel as a wide emitter; 0 gives each piece its own |
 | `lq_shadow_free` | 1 | Skip shadow lookups proved to find no blocker; 0 looks every one up (for comparisons) |
+| `lq_texture_pack` | auto | Luminous: the install's folder holding a community texture pack, such as `rygel_ultra`; `auto` (or empty) takes the first folder whose `textures/` has `*_norm` maps, `none` none. Only its textures are used; changing it reloads the map (saved) |
+| `lq_pack_textures` | 1 | Luminous: the texture pack's colour and glow in place of the 8-bit textures (saved) |
+| `lq_pack_bumps` | 1 | Luminous: the pack's normal maps shape direct light (saved) |
+| `lq_pack_parallax` | 0.04 | Luminous: parallax depth from the pack's normal-map height, as a fraction of the texture's size (DarkPlaces' offset-mapping scale); 0 off (saved) |
+| `lq_pack_brightness` | 1 | Luminous: 1 scales each pack texture to its original's mean brightness (maps were lit for those); 0 shows the pack as made (saved) |
 | `lq_tone_shoulder` | 0.8 | Luminous: linear light below this is shown unchanged; above it highlights roll off (0.1–0.95) |
 | `lq_tone_white` | 6 | Luminous: light that reaches the display's ceiling (SDR white, or the HDR headroom); on HDR at least twice the headroom (1.5–64) |
 | `lq_emission` | 3 | Luminous: how many times their palette colour fullbright texels emit, for the world and models (1–16) |

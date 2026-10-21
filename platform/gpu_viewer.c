@@ -920,6 +920,11 @@ int LQ_GPUViewer(int argc, char **argv)
         }
         free(visible); free(game); free(all); result = 0; goto done;
     }
+    if (luminous && !test) {
+        uint32_t found[3], packed = LQ_QuakeSceneLoadPack(&scene, Argument(argc, argv, "--texture-pack"), LQ_JobsRunRange, found);
+        if (packed) printf("Texture pack: %u of %u textures replaced (%u colour, %u bump, %u glow)\n",
+            packed, scene.material_count, found[0], found[1], found[2]);
+    }
     if (!LQ_GPUUpload(gpu, &scene, error, sizeof(error))) goto done;
     if (luminous && Has(argc, argv, "--compare-probes")) { result = CompareProbes(&scene, gpu, view.origin) ? 0 : 1; goto done; }
     if (luminous) {
@@ -929,6 +934,25 @@ int LQ_GPUViewer(int argc, char **argv)
         pvs = malloc(scene.draw_count); pvs_draws = malloc(scene.draw_count*sizeof(*pvs_draws));
         if (!pvs || !pvs_draws) { snprintf(error,sizeof(error),"cannot allocate light selection"); goto done; }
         view.world_draws = interaction_draws; view.world_draw_count = scene.draw_count;
+        /* A community texture pack, as the game loads it (-game <folder>). */
+        view.pack_textures = !Has(argc, argv, "--no-pack-textures");
+        view.pack_bumps = !Has(argc, argv, "--no-bump-maps");
+        view.pack_match = !Has(argc, argv, "--pack-as-made");
+        /* Parallax depth (the game's lq_pack_parallax), and Quake's palette
+         * gamma (its brightness slider), which pack colours follow. */
+        const char *parallax = Argument(argc, argv, "--parallax"), *quake_gamma = Argument(argc, argv, "--quake-gamma");
+        view.pack_parallax = parallax ? strtof(parallax, NULL) : 0.04f;
+        if (!(view.pack_parallax >= 0 && view.pack_parallax <= 0.2f)) view.pack_parallax = 0.04f;
+        view.palette_gamma = quake_gamma ? strtof(quake_gamma, NULL) : 1;
+        if (!(view.palette_gamma >= 0.5f && view.palette_gamma <= 1)) view.palette_gamma = 1;
+        if (view.palette_gamma != 1 && scene.colormap.pixels) {
+            /* The palette through Quake's gammatable, as the game uploads it. */
+            static uint8_t colors[256 * 64 * 4];
+            for (int i = 0; i < 256 * 64 * 4; ++i)
+                colors[i] = (i & 3) == 3 ? 255 : (uint8_t)fminf(255 * powf((scene.colormap.pixels[i] + 0.5f) / 255.5f, view.palette_gamma) + 0.5f, 255);
+            lq_image gamma_colormap = {256, 64, 4, colors};
+            if (!LQ_GPUColormap(gpu, &gamma_colormap, error, sizeof(error))) goto done;
+        }
         /* As the game proves in the background: pairs whose shadow lookup
          * cannot find a blocker skip it (unless --no-shadow-free). */
         view.disable_shadow_free = Has(argc, argv, "--no-shadow-free");

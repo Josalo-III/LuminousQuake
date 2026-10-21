@@ -76,6 +76,33 @@ static cvar_t lq_panel_shadows = {"lq_panel_shadows", "1"};
 /* Luminous skips shadow lookups proved to find no blocker (1), or looks them
  * all up (0, for comparisons). */
 static cvar_t lq_shadow_free = {"lq_shadow_free", "1"};
+/* Community texture packs (Luminous): the pack's colour and glow images in
+ * place of the 8-bit textures, and its normal maps shaping direct light. Both
+ * switch at once; the images load with the map whenever a pack is present. */
+static cvar_t lq_pack_textures = {"lq_pack_textures", "1", true}, lq_pack_bumps = {"lq_pack_bumps", "1", true};
+/* Parallax depth as a fraction of the texture's size (DarkPlaces' offset
+ * mapping scale is 0.04); zero turns parallax off. */
+static cvar_t lq_pack_parallax = {"lq_pack_parallax", "0.04", true};
+/* 1: each pack texture at its original's mean brightness, so maps lit for the
+ * 8-bit textures keep their level; 0: the pack as its author made it. */
+static cvar_t lq_pack_brightness = {"lq_pack_brightness", "1", true};
+/* The install's folder holding the pack, read beside the game's own search
+ * path so only its textures are used: "auto" (the default) takes the first
+ * pack found, "none" none. An empty value is "auto": the first build of this
+ * setting defaulted to "" and saved it into players' configs. Changing it
+ * rebuilds the map. */
+static cvar_t lq_texture_pack = {"lq_texture_pack", "auto", true};
+static char texture_pack[64]; /* the folder lq_texture_pack chose when the scene was built; "" none */
+static void ChooseTexturePack(void)
+{
+    const char *choice = lq_texture_pack.string;
+    texture_pack[0] = 0;
+    if (!choice[0] || !Q_strcasecmp((char *)choice, "auto")) {
+        char found[1][64];
+        if (LQ_TexturePackFolders(found, 1)) snprintf(texture_pack, sizeof(texture_pack), "%s", found[0]);
+    } else if (Q_strcasecmp((char *)choice, "none")) snprintf(texture_pack, sizeof(texture_pack), "%s", choice);
+}
+static char loaded_pack[64]; /* lq_texture_pack when the loaded scene was built */
 /* Luminous tone mapping and emission, for tuning by eye (see LQ_GPUTone). */
 static cvar_t lq_tone_shoulder = {"lq_tone_shoulder", "0.8"}, lq_tone_white = {"lq_tone_white", "6"};
 static cvar_t lq_emission = {"lq_emission", "3"}, lq_sprite_emission = {"lq_sprite_emission", "3"};
@@ -101,6 +128,7 @@ static uint64_t SceneKey(void)
     if (!m) return 0;
     h = Hash(h, com_gamedir, strlen(com_gamedir) + 1); h = Hash(h, m->name, strlen(m->name) + 1);
     h = Hash(h, settings, sizeof(settings));
+    if (luminous) { ChooseTexturePack(); h = Hash(h, texture_pack, strlen(texture_pack) + 1); }
     if (m->vertexes) h = Hash(h, m->vertexes, (size_t)m->numvertexes * sizeof(*m->vertexes));
     if (m->entities) h = Hash(h, m->entities, strlen(m->entities));
     for (int i = 0; i < m->numsurfaces; ++i) { /* each face's lightmap, as baked */
@@ -123,6 +151,9 @@ static size_t SceneBytes(const lq_scene *s)
         ImageBytes(&s->bounce) + (size_t)s->light_source_count * (sizeof(*s->light_sources) + (size_t)s->leaf_words * 4) +
         (size_t)s->bsp_node_count * sizeof(*s->bsp_nodes) + (size_t)s->leaf_count * ((size_t)s->leaf_words * 4 + 1) +
         (size_t)s->sample_count * sizeof(*s->sample_positions);
+    for (uint32_t i = 0; i < s->material_count; ++i)
+        bytes += ImageBytes(&s->materials[i].indices) + ImageBytes(&s->materials[i].pack_color) +
+            ImageBytes(&s->materials[i].pack_normal);
     size_t probes = (size_t)s->probe_size[0] * s->probe_size[1] * s->probe_size[2];
     if (s->probe_static) bytes += probes * 4 * 6 * 4;
     if (s->probe_valid) bytes += probes;
@@ -186,6 +217,8 @@ void LQ_RenderBridgeRegister(void)
 {
     Cvar_RegisterVariable(&lq_scene_cache_mb); Cvar_RegisterVariable(&lq_cull); Cvar_RegisterVariable(&lq_shadows);
     Cvar_RegisterVariable(&lq_panel_shadows); Cvar_RegisterVariable(&lq_shadow_free);
+    Cvar_RegisterVariable(&lq_pack_textures); Cvar_RegisterVariable(&lq_pack_bumps); Cvar_RegisterVariable(&lq_pack_parallax); Cvar_RegisterVariable(&lq_texture_pack);
+    Cvar_RegisterVariable(&lq_pack_brightness);
     Cvar_RegisterVariable(&lq_tone_shoulder); Cvar_RegisterVariable(&lq_tone_white);
     Cvar_RegisterVariable(&lq_emission); Cvar_RegisterVariable(&lq_sprite_emission);
     Cmd_AddCommand("lq_lights", ListLights_f);
@@ -330,6 +363,7 @@ void LQ_RenderBegin(void)
     memset(preserve, 0, count);
     /* A tube's colour is in its bounce, so a camera recording another colour reloads the map's lighting. */
     if (loaded && luminous && LQ_FluorescentCast(TubeCamera()) != LQ_FluorescentCast(tinted_camera)) LQ_RenderMapChanged();
+    if (loaded && luminous && strcmp(loaded_pack, lq_texture_pack.string)) LQ_RenderMapChanged();
     if (!loaded && cls.state == ca_connected && cl.worldmodel && !con_forcedup) {
         luminous = Cvar_VariableValue("lq_renderer") == 2;
         uint64_t key = SceneKey();
@@ -338,6 +372,7 @@ void LQ_RenderBegin(void)
             luminous ? "Luminous" : "Classic GPU");
         else if (!LQ_QuakeSceneFromWorld(&map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }
         map_key = key;
+        snprintf(loaded_pack, sizeof(loaded_pack), "%s", lq_texture_pack.string);
         if (luminous) {
             /* Before bounce, so each failing tube's bounce follows it. */
             if (!cached) {
@@ -362,6 +397,21 @@ void LQ_RenderBegin(void)
                     map_scene.sky_light[0], map_scene.sky_light[1], map_scene.sky_light[2], Sys_FloatTime() - started,
                     tracer.passes ? "GPU" : "CPU");
             else Con_Printf("Luminous bounce unavailable: %s\n", error);
+            /* A community texture pack in any game folder: its images are kept
+             * with the scene, so lq_pack_textures and lq_pack_bumps switch at once. */
+            started = Sys_FloatTime();
+            uint32_t found[3], packed = LQ_QuakeSceneLoadPack(&map_scene, texture_pack, LQ_JobsRunRange, found);
+            if (packed)
+                Con_Printf("Texture pack%s%s: %u of %u textures replaced (%u colour, %u bump, %u glow) in %.2f s.\n",
+                    texture_pack[0] ? " " : "", texture_pack,
+                    packed, map_scene.material_count, found[0], found[1], found[2], Sys_FloatTime() - started);
+            else if (texture_pack[0])
+                Con_Printf("Texture pack %s: nothing for this map's textures in %s/%s/textures.\n",
+                    texture_pack, com_basedir, texture_pack);
+            else if (!Q_strcasecmp(lq_texture_pack.string, "none"))
+                Con_Printf("Texture pack: none (lq_texture_pack none).\n");
+            else
+                Con_Printf("Texture pack: none found in %s (a folder with textures/*_norm images).\n", com_basedir);
         }
         if (!LQ_GPUUpload(gpu, &map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }
         if (luminous && !map_scene.draw_bounds && !LQ_SceneDrawBounds(&map_scene)) { LQ_FallbackRenderer("Cannot allocate draw bounds"); return; }
@@ -584,6 +634,11 @@ static void LuminousLights(void)
     float detail = Cvar_VariableValue("lq_shadow_detail");
     view.shadow_detail = detail > 0 ? detail : -1;
     view.disable_shadow_free = lq_shadow_free.value == 0;
+    view.pack_textures = lq_pack_textures.value != 0; view.pack_bumps = lq_pack_bumps.value != 0;
+    view.pack_match = lq_pack_brightness.value != 0;
+    view.pack_parallax = lq_pack_parallax.value > 0 && lq_pack_parallax.value <= 0.2f ? lq_pack_parallax.value : 0;
+    view.palette_gamma = v_gamma.value;
+    memcpy(view.palette_shift, v_palette_shift, sizeof(view.palette_shift));
     LQ_BuildVisibleLightInteractions(&map_scene, runtime_lights, count, world_draws, interaction_draws);
     for (uint32_t i = 0; i < map_scene.draw_count; ++i)
         if (world_draws[i].index_count)
@@ -718,4 +773,31 @@ qboolean LQ_RenderBridgePresent(void)
     return true;
 failed:
     LQ_FallbackRenderer(error); return false;
+}
+/* Folders of the install whose textures/ holds DarkPlaces material maps
+ * (any *_norm image), so a mod's own textures folder is not taken for a
+ * pack: the texture packs a player can choose (lq_texture_pack). */
+typedef struct { char (*names)[64]; int count, capacity; } pack_listing;
+static SDL_EnumerationResult PackFolder(void *opaque, const char *dirname, const char *name)
+{
+    pack_listing *list = opaque;
+    char path[MAX_OSPATH]; SDL_PathInfo info;
+    if (name[0] == '.' || strlen(name) >= 64) return SDL_ENUM_CONTINUE;
+    size_t n = strlen(dirname);
+    snprintf(path, sizeof(path), "%s%s%s/textures", dirname, n && (dirname[n-1] == '/' || dirname[n-1] == '\\') ? "" : "/", name);
+    if (!SDL_GetPathInfo(path, &info) || info.type != SDL_PATHTYPE_DIRECTORY || list->count >= list->capacity)
+        return SDL_ENUM_CONTINUE;
+    int maps = 0; char **found = SDL_GlobDirectory(path, "*_norm.*", SDL_GLOB_CASEINSENSITIVE, &maps);
+    SDL_free(found);
+    if (maps > 0) snprintf(list->names[list->count++], 64, "%s", name);
+    return SDL_ENUM_CONTINUE;
+}
+static int ComparePackNames(const void *a, const void *b) { return strcmp(a, b); }
+int LQ_TexturePackFolders(char names[][64], int capacity)
+{
+    pack_listing list = {names, 0, capacity};
+    if (!com_basedir[0] || capacity <= 0) return 0;
+    SDL_EnumerateDirectory(com_basedir, PackFolder, &list);
+    qsort(names, (size_t)list.count, sizeof(names[0]), ComparePackNames);
+    return list.count;
 }

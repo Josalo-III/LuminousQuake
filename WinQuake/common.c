@@ -41,6 +41,7 @@ qboolean        com_modified;   // set true if using non-id files
 qboolean		proghack;
 
 int             static_registered = 1;  // only for startup check, then set
+char	com_basedir[MAX_OSPATH];	// LuminousQuake: the install folder holding id1 and mod folders
 
 qboolean		msg_suppress_1 = 0;
 
@@ -1654,6 +1655,102 @@ byte *COM_LoadFile (char *path, int usehunk)
 	return buf;
 }
 
+/*
+============
+COM_LoadMallocFileQuiet
+
+LuminousQuake: as COM_FindFile searches (game directories newest first, each
+directory's paks before its loose files), but without printing every probe,
+for lookups that mostly miss (texture-pack images). Returns a malloc'd copy
+and its length, or NULL.
+============
+*/
+byte *COM_LoadMallocFileQuiet (const char *filename, int *length)
+{
+	searchpath_t	*search;
+	char			netpath[MAX_OSPATH];
+	int				i, h, len;
+	byte			*buf;
+
+	for (search = com_searchpaths ; search ; search = search->next)
+	{
+		if (search->pack)
+		{
+			pack_t	*pak = search->pack;
+			for (i=0 ; i<pak->numfiles ; i++)
+				if (!strcmp (pak->files[i].name, filename))
+				{
+					len = pak->files[i].filelen;
+					buf = malloc (len > 0 ? len : 1);
+					if (!buf)
+						return NULL;
+					Sys_FileSeek (pak->handle, pak->files[i].filepos);
+					if (Sys_FileRead (pak->handle, buf, len) != len)
+					{
+						free (buf);
+						return NULL;
+					}
+					*length = len;
+					return buf;
+				}
+			continue;
+		}
+		if (!static_registered && (strchr (filename, '/') || strchr (filename, '\\')))
+			continue;
+		if (snprintf (netpath, sizeof(netpath), "%s/%s", search->filename, filename) >= (int)sizeof(netpath))
+			continue;
+		len = Sys_FileOpenRead (netpath, &h);
+		if (len < 0)
+			continue;
+		buf = malloc (len > 0 ? len : 1);
+		if (buf && Sys_FileRead (h, buf, len) == len)
+		{
+			Sys_FileClose (h);
+			*length = len;
+			return buf;
+		}
+		free (buf);
+		Sys_FileClose (h);
+		return NULL;
+	}
+	return NULL;
+}
+
+/*
+============
+COM_LoadMallocFolderFile
+
+LuminousQuake: a loose file inside another folder of the install (a texture
+pack's), outside the game search path, so the pack adds nothing but what is
+asked of it. `folder` is one plain name. Returns a malloc'd copy, or NULL.
+============
+*/
+byte *COM_LoadMallocFolderFile (const char *folder, const char *filename, int *length)
+{
+	char	path[MAX_OSPATH];
+	int		h, len;
+	byte	*buf;
+
+	if (!folder || !folder[0] || strchr (folder, '/') || strchr (folder, '\\') || strstr (folder, "..") ||
+		strstr (filename, ".."))
+		return NULL;
+	if (snprintf (path, sizeof(path), "%s/%s/%s", com_basedir, folder, filename) >= (int)sizeof(path))
+		return NULL;
+	len = Sys_FileOpenRead (path, &h);
+	if (len < 0)
+		return NULL;
+	buf = malloc (len > 0 ? len : 1);
+	if (buf && Sys_FileRead (h, buf, len) == len)
+	{
+		Sys_FileClose (h);
+		*length = len;
+		return buf;
+	}
+	free (buf);
+	Sys_FileClose (h);
+	return NULL;
+}
+
 byte *COM_LoadHunkFile (char *path)
 {
 	return COM_LoadFile (path, 1);
@@ -1871,6 +1968,7 @@ void COM_InitFilesystem (void)
 		if ((basedir[j-1] == '\\') || (basedir[j-1] == '/'))
 			basedir[j-1] = 0;
 	}
+	snprintf (com_basedir, sizeof(com_basedir), "%s", basedir);	// LuminousQuake: texture packs live beside the game folders
 
 //
 // -cachedir <path>

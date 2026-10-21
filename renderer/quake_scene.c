@@ -4,7 +4,9 @@
 #include "quakedef.h"
 #include "quake_scene.h"
 #include "user_paths.h"
+#include "pack_images.h"
 #include <stdint.h>
+#include <ctype.h>
 void COM_InitFilesystem(void);
 static void *legacy_heap;
 #define ATLAS_SIZE 2048       /* the original square atlas, still used when a map fits */
@@ -889,4 +891,117 @@ int LQ_QuakeSceneFromWorld(lq_scene *s, char *error, size_t size)
         return Failure(s, error, size, "Invalid live BSP name");
     name[length - 4] = 0;
     return LQ_QuakeSceneLoad(0, NULL, name, s, error, size);
+}
+/* Community texture packs. */
+enum { PACK_COLOR, PACK_NORMAL, PACK_GLOW, PACK_KINDS };
+typedef struct { uint8_t *bytes[PACK_KINDS]; int sizes[PACK_KINDS]; } pack_files;
+typedef struct { lq_scene *scene; pack_files *files; uint32_t found[PACK_KINDS]; } pack_job;
+/* The game's search path first (a pack in a -game folder or id1), then the
+ * chosen pack folder of the install, which adds nothing else. */
+static uint8_t *PackFile(const char *pack, const char *map, const char *name, const char *suffix, int *size)
+{
+    static const char *formats[] = {"tga", "png", "jpg"};
+    char path[MAX_OSPATH];
+    for (int source = 0; source < 2; ++source) {
+        if (source == 1 && (!pack || !pack[0])) break;
+        for (int folder = 0; folder < 2; ++folder)
+            for (int f = 0; f < 3; ++f) {
+                if (folder == 0) snprintf(path, sizeof(path), "textures/%s/%s%s.%s", map, name, suffix, formats[f]);
+                else snprintf(path, sizeof(path), "textures/%s%s.%s", name, suffix, formats[f]);
+                uint8_t *bytes = source ? COM_LoadMallocFolderFile(pack, path, size) : COM_LoadMallocFileQuiet(path, size);
+                if (bytes) return bytes;
+            }
+    }
+    return NULL;
+}
+static void PackDecode(void *opaque, size_t begin, size_t end)
+{
+    pack_job *job = opaque;
+    for (size_t i = begin; i < end; ++i) {
+        lq_material *m = &job->scene->materials[i];
+        pack_files *f = &job->files[i];
+        lq_image glow = {0};
+        if (LQ_PackDecode(f->bytes[PACK_COLOR], (size_t)f->sizes[PACK_COLOR], &m->pack_color)) {
+            LQ_PackSetAlpha(&m->pack_color, 0);
+            /* A glow of another size is left out (it runs on a worker: no printing). */
+            if (LQ_PackDecode(f->bytes[PACK_GLOW], (size_t)f->sizes[PACK_GLOW], &glow))
+                LQ_PackFoldGlow(&m->pack_color, &glow);
+            free(glow.pixels);
+        }
+        LQ_PackDecode(f->bytes[PACK_NORMAL], (size_t)f->sizes[PACK_NORMAL], &m->pack_normal);
+        for (int k = 0; k < PACK_KINDS; ++k) { free(f->bytes[k]); f->bytes[k] = NULL; }
+    }
+}
+uint32_t LQ_QuakeSceneLoadPack(lq_scene *s, const char *pack, lq_range_runner run, uint32_t counts[3])
+{
+    for (int k = 0; k < PACK_KINDS; ++k) counts[k] = 0;
+    if (!s || !s->material_count || !loaded_world || !run) return 0;
+    char map[MAX_QPATH];
+    COM_FileBase(loaded_world->name, map);
+    pack_files *files = calloc(s->material_count, sizeof(*files));
+    if (!files) return 0;
+    uint32_t any = 0;
+    for (uint32_t i = 0; i < s->material_count; ++i) {
+        const lq_material *m = &s->materials[i];
+        /* Sky and liquids keep their own drawing for now; solid textures only. */
+        if (!m->name[0] || m->name[0] == '*' || !Q_strncasecmp((char *)m->name, "sky", 3) ||
+            m->pack_color.pixels || m->pack_normal.pixels) continue;
+        char name[32], lower[32];
+        snprintf(name, sizeof(name), "%s", m->name);
+        for (int k = 0; name[k]; ++k) lower[k] = (char)tolower((unsigned char)name[k]), lower[k + 1] = 0;
+        static const char *suffixes[PACK_KINDS][2] = {{"", NULL}, {"_norm", NULL}, {"_glow", "_luma"}};
+        for (int k = 0; k < PACK_KINDS; ++k)
+            for (int j = 0; j < 2 && !files[i].bytes[k] && suffixes[k][j]; ++j) {
+                files[i].bytes[k] = PackFile(pack, map, name, suffixes[k][j], &files[i].sizes[k]);
+                if (!files[i].bytes[k] && strcmp(name, lower))
+                    files[i].bytes[k] = PackFile(pack, map, lower, suffixes[k][j], &files[i].sizes[k]);
+            }
+        /* A glow belongs to a replacement colour image (as in DarkPlaces). */
+        if (!files[i].bytes[PACK_COLOR]) { free(files[i].bytes[PACK_GLOW]); files[i].bytes[PACK_GLOW] = NULL; }
+    }
+    pack_job job = {s, files, {0}};
+    run(s->material_count, 1, PackDecode, &job);
+    /* Each pack colour's brightness against its original's: the palette's own
+     * colours (colormap row 32, Quake's normal brightness) of the texture's
+     * non-fullbright texels, both in linear light. */
+    const uint8_t *row = s->colormap.pixels && s->colormap.width == 256 && s->colormap.height > 32 ?
+        s->colormap.pixels + (size_t)32 * 256 * 4 : NULL;
+    for (uint32_t i = 0; row && i < s->material_count; ++i) {
+        lq_material *m = &s->materials[i];
+        if (!m->pack_color.pixels) continue;
+        double sum = 0; size_t count = 0, texels = (size_t)m->indices.width * m->indices.height;
+        for (size_t t = 0; t < texels; ++t) {
+            uint8_t index = m->indices.pixels[t];
+            if (index >= 224) continue;
+            const uint8_t *c = row + (size_t)index * 4;
+            sum += 0.2126 * pow(c[0] / 255.0, 2.2) + 0.7152 * pow(c[1] / 255.0, 2.2) + 0.0722 * pow(c[2] / 255.0, 2.2);
+            ++count;
+        }
+        float pack = LQ_PackLinearMean(&m->pack_color);
+        m->pack_gain = count && pack > 1e-5f ? fminf(fmaxf((float)(sum / count) / pack, 0.5f), 2.0f) : 1;
+    }
+    /* Parallax holds each texture's mean height at the face: DarkPlaces holds
+     * height 1 there, and a height map that sits mostly low (Rygel's
+     * wizmet1_2 averages 0.03) then carves the whole texture to full depth,
+     * sliding it across its face as the view moves. */
+    for (uint32_t i = 0; i < s->material_count; ++i) {
+        lq_material *m = &s->materials[i];
+        if (!m->pack_normal.pixels) continue;
+        size_t texels = (size_t)m->pack_normal.width * m->pack_normal.height;
+        double sum = 0;
+        for (size_t t = 0; t < texels; ++t) sum += m->pack_normal.pixels[t * 4 + 3];
+        m->pack_height = texels ? (float)(sum / (255.0 * texels)) : 1;
+    }
+    for (uint32_t i = 0; i < s->material_count; ++i) {
+        const lq_material *m = &s->materials[i];
+        counts[PACK_COLOR] += m->pack_color.pixels != NULL;
+        counts[PACK_NORMAL] += m->pack_normal.pixels != NULL;
+        if (m->pack_color.pixels) {
+            size_t texels = (size_t)m->pack_color.width * m->pack_color.height;
+            for (size_t t = 0; t < texels; ++t) if (m->pack_color.pixels[t * 4 + 3]) { ++counts[PACK_GLOW]; break; }
+        }
+        any += m->pack_color.pixels || m->pack_normal.pixels;
+    }
+    free(files);
+    return any;
 }

@@ -12,7 +12,7 @@ layout(set=2,binding=0) uniform sampler2D scene;
 // final pass (tone.x = 2) turns them into linear light for the HDR swapchain.
 layout(set=3,binding=0,std140) uniform Display {
     vec4 tone;   // x: 1 for Luminous, 2 for the final HDR decode; y: gamma / 2.2, z: ceiling, w: white point
-    vec4 target; // x: 1 to let values pass SDR white (HDR), y: gamma, z: shoulder
+    vec4 target; // x: 1 to let values pass SDR white (HDR), y: gamma, z: shoulder, w: Quake's gamma (Luminous)
 } display;
 layout(location=0) in vec2 uv;
 layout(location=0) out vec4 color;
@@ -42,6 +42,11 @@ void main() {
         float peak = max(light.r, max(light.g, light.b));
         if (peak > display.target.z)
             light *= shoulder(peak, display.target.z, display.tone.z, display.tone.w) / peak;
+        // Quake's gamma (the brightness slider) bends display values up to SDR
+        // white as software Quake's gammatable does: display^g, so light^g.
+        // HDR highlights above white keep their level.
+        if (display.target.w > 0.0 && display.target.w != 1.0)
+            light = mix(light, pow(max(light, vec3(0.0)), vec3(display.target.w)), lessThanEqual(light, vec3(1.0)));
     } else {
         light = pow(min(c, vec3(1.0)), vec3(display.target.y));
     }

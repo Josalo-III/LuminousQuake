@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 #include "gpu_sdl.h"
 #include "indexed_mips.h"
+#include "pack_images.h"
 #include "generated/world_shaders.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,6 +45,11 @@ struct lq_gpu {
     SDL_GPUSampler *repeat, *point, *linear;
     SDL_GPUBuffer *vertices, *indices;
     SDL_GPUTexture **textures, *colormap, *lightmap, *bounce, *color, *depth, *overlay;
+    /* Community texture packs: per world material, its colour (glow in alpha)
+     * and normal map, mipmapped; placeholders where a material has none. */
+    SDL_GPUTexture **pack_color, **pack_normal, *pack_blank_color, *pack_flat_normal;
+    float *pack_gain, *pack_height; /* per world material: lq_material.pack_gain and pack_height */
+    SDL_GPUSampler *pack_sampler;
     /* The overlay texture and its staging buffer persist and are rewritten
      * each frame; the copy is recorded in the frame's own command buffer. */
     SDL_GPUTransferBuffer *overlay_transfer;
@@ -124,6 +130,8 @@ typedef struct {
     float bounce[4]; /* live style value per bounce layer */
     float face_light[4]; /* x: 1 + the slot that is brightest everywhere on the face; 0 unknown */
     uint32_t shadow_free[4]; /* slots whose shadow lookup on this face cannot find a blocker */
+    float pack[4]; /* x: draw the texture pack's colour; y: shade by its normal map; z: colour gain */
+    float relief[4]; /* x: parallax depth (0 off); y: the height held at the face */
 } lq_surface_uniforms;
 typedef struct {
     float position_range[LQ_MAX_RUNTIME_LIGHTS][4], color_strength[LQ_MAX_RUNTIME_LIGHTS][4];
@@ -142,7 +150,8 @@ typedef struct {
     float color_space[4]; /* x: exponent from summed brightness to linear light (Luminous) */
     float shadow_filter[4]; /* x: a light's brightness at which its shadow takes every sample; 0 always */
     float limit[LQ_MAX_RUNTIME_LIGHTS][4]; /* x: most brightness the light adds to a surface; 0 none */
-    float effects[4]; /* x: sprite fullbright emission */
+    float effects[4]; /* x: sprite fullbright emission; y: Quake's palette gamma, for pack colours */
+    float palette_shift[4]; /* screen tints on pack colours: colour * (1 - w) + rgb */
 } lq_light_uniforms;
 typedef struct { float face_projection[16]; } lq_shadow_uniforms;
 #define LQ_SHADOW_NEAR 2.0f
@@ -174,7 +183,7 @@ static SDL_GPUShader *Shader(lq_gpu *g, int fragment, int overlay)
 {
     if (overlay == 2) return SHADER(g, lq_tonemap_frag, 1, 1, 1);
     if (overlay) return fragment ? SHADER(g, lq_overlay_frag, 1, 1, 1) : SHADER(g, lq_overlay_vert, 0, 0, 0);
-    return fragment ? SHADER(g, lq_world_frag, 1, 14, 2) : SHADER(g, lq_world_vert, 0, 0, 1);
+    return fragment ? SHADER(g, lq_world_frag, 1, 16, 2) : SHADER(g, lq_world_vert, 0, 0, 1);
 }
 /* Shadow cubes are six layers each of a 2D array texture; the shader picks
  * the face (see faceTap in world.frag). SDL 3.4's Metal backend passes a cube
@@ -422,6 +431,48 @@ static SDL_GPUTexture *UploadImage(lq_gpu *g, const lq_image *image)
     if (transfer) SDL_ReleaseGPUTransferBuffer(g->device, transfer);
     return texture;
 }
+/* An RGBA8 pack image with its whole mip chain. The levels are made here, in
+ * linear light for colour and renormalized for normal maps (LQ_PackHalve):
+ * averaging encoded values, as a GPU blit does, darkens distant texels. */
+static SDL_GPUTexture *UploadMipmapped(lq_gpu *g, const lq_image *image, int normal_map)
+{
+    uint32_t levels = 1;
+    while ((image->width >> levels) || (image->height >> levels)) ++levels;
+    SDL_GPUTextureCreateInfo info = {0};
+    info.type = SDL_GPU_TEXTURETYPE_2D; info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    info.width = image->width; info.height = image->height; info.layer_count_or_depth = 1;
+    info.num_levels = levels; info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    SDL_GPUTexture *texture = SDL_CreateGPUTexture(g->device, &info);
+    if (!texture) return NULL;
+    SDL_GPUCommandBuffer *command = SDL_AcquireGPUCommandBuffer(g->device);
+    SDL_GPUTransferBuffer *transfers[16] = {0};
+    int ok = command != NULL;
+    SDL_GPUCopyPass *pass = ok ? SDL_BeginGPUCopyPass(command) : NULL;
+    lq_image level = *image, next = {0};
+    for (uint32_t l = 0; ok && l < levels && l < 16; ++l) {
+        transfers[l] = Transfer(g, level.width * level.height * 4, SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, level.pixels);
+        if (!transfers[l]) { ok = 0; break; }
+        SDL_GPUTextureTransferInfo source = {transfers[l], 0, level.width, level.height};
+        SDL_GPUTextureRegion dest = {0};
+        dest.texture = texture; dest.mip_level = l; dest.w = level.width; dest.h = level.height; dest.d = 1;
+        SDL_UploadToGPUTexture(pass, &source, &dest, false);
+        if (l + 1 < levels) {
+            if (!LQ_PackHalve(&level, normal_map, &next)) { ok = 0; break; }
+            if (level.pixels != image->pixels) free(level.pixels);
+            level = next;
+        }
+    }
+    if (level.pixels != image->pixels) free(level.pixels);
+    if (pass) SDL_EndGPUCopyPass(pass);
+    if (command) {
+        if (ok) ok = SDL_SubmitGPUCommandBuffer(command);
+        else SDL_CancelGPUCommandBuffer(command);
+    }
+    for (int l = 0; l < 16; ++l) if (transfers[l]) SDL_ReleaseGPUTransferBuffer(g->device, transfers[l]);
+    if (!ok) { SDL_ReleaseGPUTexture(g->device, texture); return NULL; }
+    return texture;
+}
 static SDL_GPUTexture *Upload3D(lq_gpu *g, uint32_t w, uint32_t h, uint32_t d, const uint8_t *pixels,
     SDL_GPUTextureUsageFlags usage)
 {
@@ -573,8 +624,15 @@ static void ReleaseScene(lq_gpu *g)
     free(g->caster_range_faces); g->caster_range_faces = NULL;
     memset(g->shadow_dynamic_faces, 0, sizeof(g->shadow_dynamic_faces));
     memset(g->shadow_valid, 0, sizeof(g->shadow_valid));
-    for (uint32_t i = 0; i < g->texture_count; ++i)
+    for (uint32_t i = 0; i < g->texture_count; ++i) {
         if (g->textures[i]) SDL_ReleaseGPUTexture(g->device, g->textures[i]);
+        if (g->pack_color && g->pack_color[i]) SDL_ReleaseGPUTexture(g->device, g->pack_color[i]);
+        if (g->pack_normal && g->pack_normal[i]) SDL_ReleaseGPUTexture(g->device, g->pack_normal[i]);
+    }
+    free(g->pack_color); free(g->pack_normal); free(g->pack_gain); free(g->pack_height);
+    g->pack_color = g->pack_normal = NULL; g->pack_gain = g->pack_height = NULL;
+    if (g->pack_sampler) SDL_ReleaseGPUSampler(g->device, g->pack_sampler);
+    g->pack_sampler = NULL;
     if (g->colormap) SDL_ReleaseGPUTexture(g->device, g->colormap);
     if (g->lightmap) SDL_ReleaseGPUTexture(g->device, g->lightmap);
     if (g->bounce) SDL_ReleaseGPUTexture(g->device, g->bounce);
@@ -843,6 +901,34 @@ int LQ_GPUUpload(lq_gpu *g, const lq_scene *s, char *error, size_t size)
         g->textures[i] = UploadIndexed(g, &s->materials[i].indices);
         if (!g->textures[i]) goto failed;
     }
+    /* Community texture packs: placeholders read as no glow and a flat normal. */
+    if (!g->pack_blank_color) {
+        uint8_t blank[4] = {0, 0, 0, 0}, flat[4] = {128, 128, 255, 255};
+        lq_image b = {1, 1, 4, blank}, f = {1, 1, 4, flat};
+        g->pack_blank_color = UploadImage(g, &b); g->pack_flat_normal = UploadImage(g, &f);
+        if (!g->pack_blank_color || !g->pack_flat_normal) goto failed;
+    }
+    g->pack_color = calloc(g->texture_count ? g->texture_count : 1, sizeof(*g->pack_color));
+    g->pack_normal = calloc(g->texture_count ? g->texture_count : 1, sizeof(*g->pack_normal));
+    g->pack_gain = calloc(g->texture_count ? g->texture_count : 1, sizeof(*g->pack_gain));
+    g->pack_height = calloc(g->texture_count ? g->texture_count : 1, sizeof(*g->pack_height));
+    if (!g->pack_color || !g->pack_normal || !g->pack_gain || !g->pack_height) { SDL_SetError("out of memory"); goto failed; }
+    for (uint32_t i = 0; i < g->texture_count; ++i) {
+        g->pack_gain[i] = s->materials[i].pack_gain; g->pack_height[i] = s->materials[i].pack_height;
+    }
+    {
+        SDL_GPUSamplerCreateInfo info = {0};
+        info.min_filter = info.mag_filter = SDL_GPU_FILTER_LINEAR; info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
+        info.address_mode_u = info.address_mode_v = info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+        info.max_lod = 1000; info.enable_anisotropy = g->anisotropy > 1; info.max_anisotropy = (float)g->anisotropy;
+        g->pack_sampler = SDL_CreateGPUSampler(g->device, &info);
+        if (!g->pack_sampler) goto failed;
+    }
+    for (uint32_t i = 0; i < g->texture_count; ++i) {
+        const lq_material *m = &s->materials[i];
+        if (m->pack_color.pixels && !(g->pack_color[i] = UploadMipmapped(g, &m->pack_color, 0))) goto failed;
+        if (m->pack_normal.pixels && !(g->pack_normal[i] = UploadMipmapped(g, &m->pack_normal, 1))) goto failed;
+    }
     return 1;
 failed:
     Error(error, size, "GPU scene upload"); ReleaseScene(g); return 0;
@@ -1089,6 +1175,8 @@ static void LightUniforms(lq_light_uniforms *uniforms, const lq_gpu *g, const lq
     uniforms->color_space[2] = view->shadow_dominance < 0 ? 0 : view->shadow_dominance > 0 ? view->shadow_dominance : LQ_SHADOW_DOMINANCE;
     uniforms->color_space[3] = g->emission;
     uniforms->effects[0] = g->sprite_emission;
+    uniforms->effects[1] = view->palette_gamma > 0 ? view->palette_gamma : 1;
+    memcpy(uniforms->palette_shift, view->palette_shift, sizeof(uniforms->palette_shift));
     uniforms->shadow_filter[0] = view->shadow_detail < 0 ? 0 : view->shadow_detail > 0 ? view->shadow_detail : LQ_SHADOW_DETAIL;
     uniforms->tuning[1] = g->bounce_ratio;
     uniforms->tuning[2] = view->luminous_lighting && g->bounce_ratio > 0 && !view->disable_bounce;
@@ -1330,21 +1418,41 @@ int LQ_GPUDynamicProbes(lq_gpu *g, const uint8_t *pixels, char *error, size_t si
     g->probe_dynamic_active = 1; return 1;
 }
 #define LQ_SHADER_SUBMERGED LQ_SURFACE_SUBMERGED /* face lies inside a liquid */
+/* Frame draws name textures by resource id; inline brush models use world
+ * materials, whose ids are their index plus one (LQ_EntitiesBegin). */
+static uint32_t FramePack(const lq_gpu *g, const lq_draw *d)
+{ return d->material && d->material - 1 < g->texture_count && !(d->flags & LQ_SURFACE_MODEL) ? d->material - 1 : UINT32_MAX; }
+/* `pack` is the world material whose texture-pack images the surface uses,
+ * or UINT32_MAX for none. */
 static void DrawSurface(lq_gpu *g, SDL_GPUCommandBuffer *command, SDL_GPURenderPass *pass, const lq_view *v,
-    const lq_draw *d, uint32_t extra_flags, SDL_GPUTexture *texture, SDL_GPUTexture *const *shadows, uint32_t lead)
+    const lq_draw *d, uint32_t extra_flags, SDL_GPUTexture *texture, SDL_GPUTexture *const *shadows, uint32_t lead,
+    uint32_t pack)
 {
     lq_surface_uniforms uniforms;
     SurfaceUniforms(&uniforms,g,v,d,lead);
     uniforms.parameters[1] = (float)(d->flags | extra_flags);
+    SDL_GPUTexture *pack_color = g->pack_blank_color, *pack_normal = g->pack_flat_normal;
+    if (pack < g->texture_count && g->pack_color && v->luminous_lighting &&
+            !(d->flags & (LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_MASKED))) {
+        if (v->pack_textures && g->pack_color[pack]) {
+            pack_color = g->pack_color[pack]; uniforms.pack[0] = 1;
+            uniforms.pack[2] = v->pack_match && g->pack_gain[pack] > 0 ? g->pack_gain[pack] : 1;
+        }
+        if (v->pack_bumps && g->pack_normal[pack]) {
+            pack_normal = g->pack_normal[pack]; uniforms.pack[1] = 1;
+            uniforms.relief[0] = v->pack_parallax; uniforms.relief[1] = g->pack_height[pack];
+        }
+    }
     SDL_GPUTextureSamplerBinding samplers[] = {
         {texture, g->repeat}, {g->colormap, g->point}, {g->lightmap, g->linear},
         {shadows[0], g->shadow_sampler}, {shadows[0], g->depth_sampler}, {g->bounce, g->linear},
         {g->probe_static, g->linear}, {g->probe_dynamic, g->linear},
         {shadows[1], g->shadow_sampler}, {shadows[1], g->depth_sampler},
         {shadows[2], g->shadow_sampler}, {shadows[2], g->depth_sampler},
-        {shadows[3], g->shadow_sampler}, {shadows[3], g->depth_sampler}
+        {shadows[3], g->shadow_sampler}, {shadows[3], g->depth_sampler},
+        {pack_color, g->pack_sampler ? g->pack_sampler : g->linear}, {pack_normal, g->pack_sampler ? g->pack_sampler : g->linear}
     };
-    SDL_BindGPUFragmentSamplers(pass, 0, samplers, 14);
+    SDL_BindGPUFragmentSamplers(pass, 0, samplers, 16);
     SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
     SDL_DrawGPUIndexedPrimitives(pass, d->index_count, 1, d->first_index, 0, 0);
 }
@@ -1428,7 +1536,7 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
             uint32_t lead = KnownLead(v, d, p, g->draw_bounds[i]);
             g->known_lead_faces += lead != 0;
             DrawSurface(g, command, pass, v, d, g->submerged && g->submerged[i] ? LQ_SHADER_SUBMERGED : 0,
-                g->textures[d->material], shadows, lead);
+                g->textures[d->material], shadows, lead, d->material);
         }
         if (!g->frame_draw_count) continue;
         vertex = (SDL_GPUBufferBinding){g->frame_vertices, 0};
@@ -1443,7 +1551,7 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
             if (cull && !(d->flags & LQ_SURFACE_WEAPON) && !LQ_BoundsInClip(matrix, g->frame_bounds[i])) continue;
             viewport.max_depth = d->flags & LQ_SURFACE_WEAPON ? 0.3f : 1.0f;
             SDL_SetGPUViewport(pass, &viewport);
-            DrawSurface(g, command, pass, v, d, 0, g->frame_textures[d->material], shadows, 0);
+            DrawSurface(g, command, pass, v, d, 0, g->frame_textures[d->material], shadows, 0, FramePack(g, d));
         }
     }
     {   /* Smoke and Luminous sprites last, blended by their alpha over
@@ -1463,7 +1571,7 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
                 SDL_BindGPUIndexBuffer(pass, &index, SDL_GPU_INDEXELEMENTSIZE_32BIT);
                 bound = 1;
             }
-            DrawSurface(g, command, pass, v, d, 0, g->frame_textures[d->material], shadows, 0);
+            DrawSurface(g, command, pass, v, d, 0, g->frame_textures[d->material], shadows, 0, FramePack(g, d));
         }
     }
     SDL_EndGPURenderPass(pass);
@@ -1471,7 +1579,8 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
         struct { float tone[4], target[4]; } display = {
             {g->test_pattern ? 3.0f : v->luminous_lighting ? 1.0f : 0.0f, g->gamma / 2.2f, g->hdr_active ? g->headroom : 1.0f,
              g->hdr_active ? fmaxf(g->tone_white, 2.0f * g->headroom) : g->tone_white},
-            {g->hdr_active ? 1.0f : 0.0f, g->gamma, g->tone_shoulder, 0}};
+            {g->hdr_active ? 1.0f : 0.0f, g->gamma, g->tone_shoulder,
+             v->luminous_lighting && v->palette_gamma > 0 ? v->palette_gamma : 1.0f}};
         SDL_GPUColorTargetInfo target = {0};
         target.texture = g->color; target.load_op = SDL_GPU_LOADOP_DONT_CARE; target.store_op = SDL_GPU_STOREOP_STORE;
         pass = SDL_BeginGPURenderPass(command, &target, 1, NULL);
@@ -1613,6 +1722,8 @@ void LQ_GPUDestroy(lq_gpu *g)
             if (g->shadow_static[t]) SDL_ReleaseGPUTexture(g->device, g->shadow_static[t]);
         }
         if (g->shadow_dummy) SDL_ReleaseGPUTexture(g->device, g->shadow_dummy);
+        if (g->pack_blank_color) SDL_ReleaseGPUTexture(g->device, g->pack_blank_color);
+        if (g->pack_flat_normal) SDL_ReleaseGPUTexture(g->device, g->pack_flat_normal);
         if (g->shadow_sampler) SDL_ReleaseGPUSampler(g->device, g->shadow_sampler);
         if (g->depth_sampler) SDL_ReleaseGPUSampler(g->device, g->depth_sampler);
         if (g->shadow_pipeline) SDL_ReleaseGPUGraphicsPipeline(g->device, g->shadow_pipeline);
