@@ -340,6 +340,23 @@ them. Principles, decided October 17, 2026:
   about 4 ms of work a frame, the GPU about 12 ms. Work that can run on either
   should move to whichever is idle, chosen at run time from measured load, not
   fixed per task.
+- **Sound mixing on its own thread, with the door checks.** Proposed by the
+  user October 19 ([handoff](HANDOFF.md), open thread 5) and missed from this
+  page until October 22. The open-air path search (`WinQuake/snd_path.c`) runs
+  on the main thread right before mixing, so a slow search or a slow frame
+  starves the 0.1 s mix-ahead. Reported October 21 as audio skipping on E1M1's
+  catwalk to the nailgun. That spot does about 5× the search work of the
+  spawn, by an offline count (not timed). Mixing comes first on the
+  thread. The search fills the time left, nearest cells first, because a
+  distant sound's late update matters least.
+  **Built October 22, not yet played:** a sound thread (`platform/snd_sdl.c`)
+  mixes every 5 ms, then searches for up to 3 ms. Sounds keep the last
+  finished search until the next is done. The main thread hands over sounds
+  and, once a frame, the listener and where each door and lift is. Loaded
+  sounds stay in memory of their own, outside Quake's cache, for the session.
+  `snd_trace` and `soundpaths` print a frame late, through the main thread.
+  Only sealing movers within the search's reach are traced, and the muffle
+  pass traces none.
 
 ### 7. Online play, at least to the QuakeWorld standard
 

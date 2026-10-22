@@ -378,13 +378,14 @@ static int TestPlatform(qboolean no_audio)
           cache->length = 64; cache->loopstart = -1; cache->speed = shm->speed;
           cache->width = 2; cache->stereo = 0;
           for (int i = 0; i < 64; ++i) ((short *)cache->data)[i] = i & 1 ? -1000 : 1000;
+          LQ_MixerLock(); /* the sound thread mixes too */
           S_ClearBuffer(); memset(channels, 0, sizeof(channels)); total_channels = 1;
           channels[0].sfx = &sound; channels[0].leftvol = 255; channels[0].rightvol = 128;
           channels[0].end = 64; paintedtime = 0;
           SNDDMA_BeginPainting(); S_PaintChannels(32);
           VERIFY(((short *)shm->buffer)[0] == (((1000 * 255) >> 8) * (int)(volume.value * 256) >> 8));
           VERIFY(((short *)shm->buffer)[1] == (((1000 * 128) >> 8) * (int)(volume.value * 256) >> 8));
-          SNDDMA_Submit(); channels[0].sfx = NULL; Cache_Free(&sound.cache); }
+          SNDDMA_Submit(); channels[0].sfx = NULL; LQ_MixerUnlock(); Cache_Free(&sound.cache); }
         S_Shutdown(); VERIFY(!LQ_AudioReady()); S_Startup(); VERIFY(LQ_AudioReady());
         LQ_AudioFocus(true); before = LQ_AudioFrames(); SDL_Delay(70);
         VERIFY(LQ_AudioFrames() > before);

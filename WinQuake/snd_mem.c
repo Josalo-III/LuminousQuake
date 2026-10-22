@@ -30,18 +30,13 @@ byte *S_Alloc (int size);
 ResampleSfx
 ================
 */
-void ResampleSfx (sfx_t *sfx, int inrate, int inwidth, byte *data)
+void ResampleSfx (sfxcache_t *sc, int inrate, int inwidth, byte *data)
 {
 	int		outcount;
 	int		srcsample;
 	float	stepscale;
 	int		i;
 	int		sample, samplefrac, fracstep;
-	sfxcache_t	*sc;
-	
-	sc = Cache_Check (&sfx->cache);
-	if (!sc)
-		return;
 
 	stepscale = (float)inrate / shm->speed;	// this is usually 0.5, 1, or 2
 
@@ -91,6 +86,9 @@ void ResampleSfx (sfx_t *sfx, int inrate, int inwidth, byte *data)
 S_LoadSound
 ==============
 */
+/* LuminousQuake: a loaded sound stays for the session in memory of its own,
+   not in Quake's cache, which the main thread may evict while the sound
+   thread mixes it. Main thread only: the sound thread never loads. */
 sfxcache_t *S_LoadSound (sfx_t *s)
 {
     char	namebuffer[256];
@@ -101,8 +99,8 @@ sfxcache_t *S_LoadSound (sfx_t *s)
 	sfxcache_t	*sc;
 	byte	stackbuf[1*1024];		// avoid dirtying the cache heap
 
-// see if still in memory
-	sc = Cache_Check (&s->cache);
+// see if already loaded
+	sc = s->cache.data;
 	if (sc)
 		return sc;
 
@@ -133,7 +131,7 @@ sfxcache_t *S_LoadSound (sfx_t *s)
 
 	len = len * 2 * info.channels;	// resampled to 16 bits
 
-	sc = Cache_Alloc ( &s->cache, len + sizeof(sfxcache_t), s->name);
+	sc = malloc (len + sizeof(sfxcache_t));
 	if (!sc)
 		return NULL;
 	
@@ -143,8 +141,11 @@ sfxcache_t *S_LoadSound (sfx_t *s)
 	sc->width = info.width;
 	sc->stereo = info.channels;
 
-	ResampleSfx (s, sc->speed, sc->width, data + info.dataofs);
+	ResampleSfx (sc, sc->speed, sc->width, data + info.dataofs);
 
+	LQ_MixerLock ();
+	s->cache.data = sc;
+	LQ_MixerUnlock ();
 	return sc;
 }
 

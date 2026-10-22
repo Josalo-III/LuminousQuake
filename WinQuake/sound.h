@@ -78,6 +78,7 @@ typedef struct
 	vec_t	dist_mult;		// distance multiplier (attenuation/clipK)
 	int		master_vol;		// 0-255 master volume
 	int		heard;			// LuminousQuake: audible at some point (snd_trace); -1 once reported unheard
+	int		fresh;			// LuminousQuake: started since the sound thread last spatialized
 } channel_t;
 
 typedef struct
@@ -100,6 +101,7 @@ void S_StopAllSounds(qboolean clear);
 void S_ClearBuffer (void);
 void S_Update (vec3_t origin, vec3_t v_forward, vec3_t v_right, vec3_t v_up);
 void S_ExtraUpdate (void);
+void S_ForgetWorld (void);		// LuminousQuake: the map's memory is about to be freed
 
 sfx_t *S_PrecacheSound (char *sample);
 void S_TouchSound (char *sample);
@@ -183,13 +185,34 @@ void S_AmbientOn (void);
 void SNDDMA_BeginPainting(void);
 int SNDDMA_GetSoundtime(void);
 int LQ_AudioSoundtime(void);
+/* LuminousQuake: the sound thread (snd_sdl.c) mixes and searches sound paths
+   on its own, so a slow frame can't starve the device. The mixer lock guards
+   the channels, the listener and what the game hands over; the path lock
+   guards the path search. Both are recursive; take the mixer lock first. */
+void LQ_MixerLock(void);
+void LQ_MixerUnlock(void);
+void LQ_PathsLock(void);
+void LQ_PathsUnlock(void);
+qboolean LQ_MixerRunning(void);
+#else
+#define LQ_MixerLock()
+#define LQ_MixerUnlock()
+#define LQ_PathsLock()
+#define LQ_PathsUnlock()
+#define LQ_MixerRunning() false
 #endif
+/* One turn of the sound thread: spatialize and mix under the locks, then
+   search sound paths for up to search_seconds (all of it when negative). */
+void S_MixerStep(double search_seconds);
 /* LuminousQuake: lights that follow a looping static sound. A loaded sound's
  * mono samples, and where the first static channel playing it is heard now,
  * in seconds into the sound; *audible is false while it is not being mixed. */
 qboolean LQ_SoundSamples(const char *name, const void **data, int *width, int *count, int *rate);
 qboolean LQ_StaticSoundClock(const char *name, double *position, qboolean *audible);
 /* LuminousQuake: sound travel through open air (snd_path.c). */
-void LQ_SoundPathsUpdate(vec3_t listener);
+void LQ_SoundPathsGather(vec3_t listener);
+void LQ_SoundPathsForget(void);
+void LQ_SoundPathsTake(void);
+qboolean LQ_SoundPathsWork(double seconds);
 // entnum: the sound's entity; a brush entity's sound is also reached at its surface
 int LQ_SoundPathDistance(int entnum, vec3_t source, vec_t straight, vec_t *distance, vec_t *open);

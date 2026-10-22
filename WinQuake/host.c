@@ -509,6 +509,7 @@ not reinitialize anything.
 void Host_ClearMemory (void)
 {
 	Con_DPrintf ("Clearing memory\n");
+	S_ForgetWorld ();	// the sound thread's path search reads the map
 	D_FlushCaches ();
 	Mod_ClearAll ();
 	if (host_hunklevel)

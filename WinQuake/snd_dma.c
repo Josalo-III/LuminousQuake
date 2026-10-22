@@ -86,6 +86,57 @@ cvar_t snd_show = {"snd_show", "0"};
 cvar_t snd_trace = {"snd_trace", "0"};
 cvar_t _snd_mixahead = {"_snd_mixahead", "0.1", true};
 
+/* LuminousQuake: the sound thread spatializes and mixes; the main thread hands
+   it sounds to start and stop and, once a frame, the listener. All of this is
+   under the mixer lock. */
+static int		listener_entity;	// cl.viewentity
+static double	snd_clock;			// cl.time, for snd_trace
+static qboolean	snd_respatialize;	// the listener moved or a sound started
+static qboolean	snd_paths_new;		// sound thread only: a path search finished
+static qboolean	snd_list_paths;		// soundpaths asked
+
+/* Console output from either thread waits here for the main thread
+   (S_FlushPrints); the console isn't safe to call from the sound thread. */
+static char		snd_prints[16384];
+static int		snd_printed;
+
+static void SND_Print (const char *format, ...)
+{
+	va_list	args;
+	int		room = sizeof(snd_prints) - snd_printed, n;
+
+	if (room <= 1)
+		return;
+	va_start (args, format);
+	n = vsnprintf (snd_prints + snd_printed, room, format, args);
+	va_end (args);
+	if (n > 0)
+		snd_printed += n < room ? n : room - 1;
+}
+
+static void S_FlushPrints (void)
+{
+	static char	text[sizeof(snd_prints)];
+	char		*line, *end, keep;
+	int			length;
+
+	LQ_MixerLock ();
+	length = snd_printed;
+	memcpy (text, snd_prints, length);
+	snd_printed = 0;
+	LQ_MixerUnlock ();
+	text[length] = 0;
+	for (line = text ; *line ; line = end)
+	{
+		end = strchr (line, '\n');
+		end = end ? end + 1 : line + strlen (line);
+		keep = *end;
+		*end = 0;
+		Con_Printf ("%s", line);
+		*end = keep;
+	}
+}
+
 
 // ====================================================================
 // User-setable variables
@@ -321,13 +372,10 @@ S_TouchSound
 */
 void S_TouchSound (char *name)
 {
-	sfx_t	*sfx;
-	
 	if (!sound_started)
 		return;
 
-	sfx = S_FindName (name);
-	Cache_Check (&sfx->cache);
+	S_FindName (name);		// loaded sounds stay loaded
 }
 
 /*
@@ -363,9 +411,9 @@ SND_PickChannel
 // snd_trace: a channel's sound is going away; say so if it was never heard
 static void SND_TraceUnheard (channel_t *ch, const char *why)
 {
-	if (!snd_trace.value || !ch->sfx || ch->heard)
-		return;
-	Con_Printf ("SND %.2f SILENT %s ent %i chan %i %s; from %.0f %.0f %.0f, listener %.0f %.0f %.0f\n", cl.time,
+	if (!snd_trace.value || !ch->sfx || ch->heard || ch->fresh)
+		return;		// a fresh sound was never spatialized, so heard says nothing yet
+	SND_Print ("SND %.2f SILENT %s ent %i chan %i %s; from %.0f %.0f %.0f, listener %.0f %.0f %.0f\n", snd_clock,
 		ch->sfx->name, ch->entnum, ch->entchannel, why, ch->origin[0], ch->origin[1], ch->origin[2],
 		listener_origin[0], listener_origin[1], listener_origin[2]);
 	ch->heard = -1;
@@ -408,7 +456,7 @@ channel_t *SND_PickChannel(int entnum, int entchannel)
 	{
 		channel_t *old = &channels[first_to_die];
 		if (snd_trace.value && old->end > paintedtime)
-			Con_Printf ("SND %.2f CUT %s ent %i chan %i, %.2f s left, by ent %i chan %i%s\n", cl.time, old->sfx->name,
+			SND_Print ("SND %.2f CUT %s ent %i chan %i, %.2f s left, by ent %i chan %i%s\n", cl.time, old->sfx->name,
 				old->entnum, old->entchannel, (old->end - paintedtime) / (float)shm->speed, entnum, entchannel,
 				old->entnum == entnum ? "" : " (stolen)");
 		SND_TraceUnheard (old, "cut");
@@ -454,7 +502,7 @@ void SND_Spatialize(channel_t *ch)
 
 	snd_shut = false;
 // anything coming from the view entity will allways be full volume
-	if (ch->entnum == cl.viewentity)
+	if (ch->entnum == listener_entity)
 	{
 		ch->leftvol = ch->master_vol;
 		ch->rightvol = ch->master_vol;
@@ -515,6 +563,8 @@ void SND_Spatialize(channel_t *ch)
 // Start a sound effect
 // =======================================================================
 
+/* LuminousQuake: the channel is set up here, under the mixer lock; the sound
+   thread spatializes it, traces it, and drops it if it can't be heard. */
 void S_StartSound(int entnum, int entchannel, sfx_t *sfx, vec3_t origin, float fvol, float attenuation)
 {
 	channel_t *target_chan, *check;
@@ -534,51 +584,29 @@ void S_StartSound(int entnum, int entchannel, sfx_t *sfx, vec3_t origin, float f
 
 	vol = fvol*255;
 
+	sc = S_LoadSound (sfx);		// before the lock: it may read the disk
+	if (!sc)
+		return;		// couldn't load the sound's data
+
+	LQ_MixerLock ();
+
 // pick a channel to play on
 	target_chan = SND_PickChannel(entnum, entchannel);
 	if (!target_chan)
+	{
+		LQ_MixerUnlock ();
 		return;
+	}
 		
-// spatialize
 	memset (target_chan, 0, sizeof(*target_chan));
 	VectorCopy(origin, target_chan->origin);
 	target_chan->dist_mult = attenuation / sound_nominal_clip_dist;
 	target_chan->master_vol = vol;
 	target_chan->entnum = entnum;
 	target_chan->entchannel = entchannel;
-	SND_Spatialize(target_chan);
-	target_chan->heard = target_chan->leftvol || target_chan->rightvol;
-	if (snd_trace.value)
-	{
-		vec3_t		d;
-		vec_t		straight, travelled = 0, open = 1;
-		int			path = 0;
-		qboolean	view = entnum == cl.viewentity;
-
-		VectorSubtract (origin, listener_origin, d);
-		straight = Length (d);
-		if (!view && target_chan->dist_mult > 0)
-			path = LQ_SoundPathDistance (entnum, origin, straight, &travelled, &open);
-		Con_Printf ("SND %.2f START %s ent %i chan %i%s vol %i attn %.2f: L %i R %i, %.0f units, path %s",
-			cl.time, sfx->name, entnum, entchannel, view ? " (you)" : "", vol, attenuation,
-			target_chan->leftvol, target_chan->rightvol, straight,
-			view ? "-" : path < 0 ? "shut" : path > 0 ? "open" : "none");
-		if (path > 0)
-			Con_Printf (" %.0f units, open %.2f", travelled, open);
-		Con_Printf ("%s\n", !target_chan->heard && !snd_shut && !view ? " (dropped)" : "");
-	}
-
-	if (!target_chan->leftvol && !target_chan->rightvol && !snd_shut)
-		return;		// not audible at all; a shut-off sound plays on silently
+	target_chan->fresh = 1;
 
 // new channel
-	sc = S_LoadSound (sfx);
-	if (!sc)
-	{
-		target_chan->sfx = NULL;
-		return;		// couldn't load the sound's data
-	}
-
 	target_chan->sfx = sfx;
 	target_chan->pos = 0.0;
     target_chan->end = paintedtime + sc->length;	
@@ -601,12 +629,36 @@ void S_StartSound(int entnum, int entchannel, sfx_t *sfx, vec3_t origin, float f
 		}
 		
 	}
+	snd_respatialize = true;
+	LQ_MixerUnlock ();
+}
+
+// snd_trace: a sound just spatialized for the first time
+static void SND_TraceStart (channel_t *ch)
+{
+	vec3_t		d;
+	vec_t		straight, travelled = 0, open = 1;
+	int			path = 0;
+	qboolean	view = ch->entnum == listener_entity;
+
+	VectorSubtract (ch->origin, listener_origin, d);
+	straight = Length (d);
+	if (!view && ch->dist_mult > 0)
+		path = LQ_SoundPathDistance (ch->entnum, ch->origin, straight, &travelled, &open);
+	SND_Print ("SND %.2f START %s ent %i chan %i%s vol %i attn %.2f: L %i R %i, %.0f units, path %s",
+		snd_clock, ch->sfx->name, ch->entnum, ch->entchannel, view ? " (you)" : "", ch->master_vol,
+		ch->dist_mult * sound_nominal_clip_dist, ch->leftvol, ch->rightvol, straight,
+		view ? "-" : path < 0 ? "shut" : path > 0 ? "open" : "none");
+	if (path > 0)
+		SND_Print (" %.0f units, open %.2f", travelled, open);
+	SND_Print ("%s\n", !ch->heard && !snd_shut && !view ? " (dropped)" : "");
 }
 
 void S_StopSound(int entnum, int entchannel)
 {
 	int i;
 
+	LQ_MixerLock ();
 	for (i=0 ; i<MAX_DYNAMIC_CHANNELS ; i++)
 	{
 		if (channels[i].entnum == entnum
@@ -615,9 +667,10 @@ void S_StopSound(int entnum, int entchannel)
 			SND_TraceUnheard (&channels[i], "stopped");
 			channels[i].end = 0;
 			channels[i].sfx = NULL;
-			return;
+			break;
 		}
 	}
+	LQ_MixerUnlock ();
 }
 
 void S_StopAllSounds(qboolean clear)
@@ -627,6 +680,7 @@ void S_StopAllSounds(qboolean clear)
 	if (!sound_started)
 		return;
 
+	LQ_MixerLock ();
 	total_channels = MAX_DYNAMIC_CHANNELS + NUM_AMBIENTS;	// no statics
 
 	for (i=0 ; i<MAX_CHANNELS ; i++)
@@ -637,6 +691,7 @@ void S_StopAllSounds(qboolean clear)
 
 	if (clear)
 		S_ClearBuffer ();
+	LQ_MixerUnlock ();
 }
 
 void S_StopAllSoundsC (void)
@@ -725,9 +780,6 @@ void S_StaticSound (sfx_t *sfx, vec3_t origin, float vol, float attenuation)
 		return;
 	}
 
-	ss = &channels[total_channels];
-	total_channels++;
-
 	sc = S_LoadSound (sfx);
 	if (!sc)
 		return;
@@ -737,14 +789,17 @@ void S_StaticSound (sfx_t *sfx, vec3_t origin, float vol, float attenuation)
 		Con_Printf ("Sound %s not looped\n", sfx->name);
 		return;
 	}
-	
+
+	LQ_MixerLock ();
+	ss = &channels[total_channels];
+	total_channels++;
 	ss->sfx = sfx;
 	VectorCopy (origin, ss->origin);
 	ss->master_vol = vol;
 	ss->dist_mult = (attenuation/64) / sound_nominal_clip_dist;
     ss->end = paintedtime + sc->length;	
-	
-	SND_Spatialize (ss);
+	snd_respatialize = true;	// the sound thread spatializes it
+	LQ_MixerUnlock ();
 }
 
 
@@ -782,6 +837,7 @@ qboolean LQ_StaticSoundClock(const char *name, double *position, qboolean *audib
 
 	if (!sound_started || !shm || !(sfx = LQ_KnownSound(name)))
 		return false;
+	LQ_MixerLock ();
 	ch = NULL;
 	for (i = MAX_DYNAMIC_CHANNELS + NUM_AMBIENTS ; i < total_channels ; i++)
 		if (channels[i].sfx == sfx)
@@ -794,20 +850,24 @@ qboolean LQ_StaticSoundClock(const char *name, double *position, qboolean *audib
 				break;
 			}
 		}
-	if (!ch || !(sc = Cache_Check(&sfx->cache)) || sc->length <= 0)
+	if (!ch || !(sc = sfx->cache.data) || sc->length <= 0)
+	{
+		LQ_MixerUnlock ();
 		return false;
+	}
 #ifdef LQ_SDL
 	playing = ch->pos - (double)(paintedtime - LQ_AudioSoundtime());
 #else
 	playing = ch->pos - (double)(paintedtime - soundtime);
 #endif
+	*audible = ch->leftvol || ch->rightvol;
+	LQ_MixerUnlock ();
 	span = sc->length - (sc->loopstart > 0 ? sc->loopstart : 0);
 	if (span <= 0)
 		return false;
 	while (playing < sc->length - span)
 		playing += span;
 	*position = playing / sc->speed;
-	*audible = ch->leftvol || ch->rightvol;
 	return true;
 }
 
@@ -872,27 +932,48 @@ void S_UpdateAmbientSounds (void)
 ============
 S_Update
 
-Called once each time through the main loop
+Called once each time through the main loop. LuminousQuake: hands the
+listener to the sound thread, which spatializes and mixes on its own; without
+one, mixes here.
 ============
 */
 void S_Update(vec3_t origin, vec3_t forward, vec3_t right, vec3_t up)
+{
+	int		i;
+
+	if (!sound_started || (snd_blocked > 0))
+		return;
+
+	for (i=0 ; i<NUM_AMBIENTS ; i++)	// not precached when precache is 0; the sound thread never loads
+		if (ambient_sfx[i] && !ambient_sfx[i]->cache.data)
+			S_LoadSound (ambient_sfx[i]);
+
+	LQ_MixerLock ();
+	VectorCopy(origin, listener_origin);
+	VectorCopy(forward, listener_forward);
+	VectorCopy(right, listener_right);
+	VectorCopy(up, listener_up);
+	listener_entity = cl.viewentity;
+	snd_clock = cl.time;
+	LQ_SoundPathsGather(listener_origin);
+	
+// update general area ambient sound sources
+	S_UpdateAmbientSounds ();
+	snd_respatialize = true;
+	LQ_MixerUnlock ();
+
+	if (!LQ_MixerRunning ())
+		S_MixerStep (-1);
+	S_FlushPrints ();
+}
+
+// sound thread: volumes for every channel from where the listener is now
+static void S_Respatialize (void)
 {
 	int			i, j;
 	int			total;
 	channel_t	*ch;
 	channel_t	*combine;
-
-	if (!sound_started || (snd_blocked > 0))
-		return;
-
-	VectorCopy(origin, listener_origin);
-	VectorCopy(forward, listener_forward);
-	VectorCopy(right, listener_right);
-	VectorCopy(up, listener_up);
-	LQ_SoundPathsUpdate(listener_origin);
-	
-// update general area ambient sound sources
-	S_UpdateAmbientSounds ();
 
 	combine = NULL;
 
@@ -903,6 +984,18 @@ void S_Update(vec3_t origin, vec3_t forward, vec3_t right, vec3_t up)
 		if (!ch->sfx)
 			continue;
 		SND_Spatialize(ch);         // respatialize channel
+		if (ch->fresh)
+		{
+			ch->fresh = 0;
+			ch->heard = ch->leftvol || ch->rightvol;
+			if (snd_trace.value)
+				SND_TraceStart (ch);
+			if (!ch->heard && !snd_shut)
+			{
+				ch->sfx = NULL;		// not audible at all; a shut-off sound plays on silently
+				continue;
+			}
+		}
 		if (ch->leftvol || ch->rightvol)
 			ch->heard = 1;
 		else if (!ch->heard && ch->end <= paintedtime && i < NUM_AMBIENTS + MAX_DYNAMIC_CHANNELS)
@@ -962,11 +1055,44 @@ void S_Update(vec3_t origin, vec3_t forward, vec3_t right, vec3_t up)
 				total++;
 			}
 		
-		Con_Printf ("----(%i)----\n", total);
+		SND_Print ("----(%i)----\n", total);
 	}
+}
 
-// mix some sound
-	S_Update_();
+static void S_ListPaths (void);
+
+/* Mixing comes first: a slow path search can only make a distant sound's
+   route late, never starve the device. */
+void S_MixerStep (double search_seconds)
+{
+	LQ_MixerLock ();
+	LQ_PathsLock ();
+	if (sound_started && snd_blocked <= 0)
+	{
+		LQ_SoundPathsTake ();
+		if (snd_respatialize || snd_paths_new)
+			S_Respatialize ();
+		snd_respatialize = snd_paths_new = false;
+		if (snd_list_paths)
+		{
+			S_ListPaths ();
+			snd_list_paths = false;
+		}
+		S_Update_ ();
+	}
+	LQ_PathsUnlock ();
+	LQ_MixerUnlock ();
+
+	LQ_PathsLock ();
+	if (LQ_SoundPathsWork (search_seconds))
+		snd_paths_new = true;
+	LQ_PathsUnlock ();
+}
+
+// the map's memory is about to be freed: the path search lets go of it
+void S_ForgetWorld (void)
+{
+	LQ_SoundPathsForget ();
 }
 
 void GetSoundtime(void)
@@ -1013,8 +1139,8 @@ void S_ExtraUpdate (void)
 	IN_Accumulate ();
 #endif
 
-	if (snd_noextraupdate.value)
-		return;		// don't pollute timings
+	if (snd_noextraupdate.value || LQ_MixerRunning ())
+		return;		// don't pollute timings; the sound thread mixes on its own
 	S_Update_();
 }
 
@@ -1135,7 +1261,7 @@ void S_SoundList(void)
 	total = 0;
 	for (sfx=known_sfx, i=0 ; i<num_sfx ; i++, sfx++)
 	{
-		sc = Cache_Check (&sfx->cache);
+		sc = sfx->cache.data;
 		if (!sc)
 			continue;
 		size = sc->length*sc->width*(sc->stereo+1);
@@ -1185,13 +1311,22 @@ void S_EndPrecaching (void)
 
 
 /* LuminousQuake: each sound within range, how far it is in a straight line
-   and through open air, and how loud that makes it. */
+   and through open air, and how loud that makes it. The sound thread lists
+   them at its next turn. */
 static void S_SoundPaths_f(void)
+{
+	LQ_MixerLock ();
+	snd_list_paths = true;
+	LQ_MixerUnlock ();
+}
+
+static void S_ListPaths (void)
 {
 	int			i, path;
 	channel_t	*ch;
 	vec3_t		delta;
 	vec_t		straight, travelled, open;
+	char		route[32];
 
 	for (i=NUM_AMBIENTS, ch=channels+NUM_AMBIENTS ; i<total_channels ; i++, ch++)
 	{
@@ -1202,8 +1337,9 @@ static void S_SoundPaths_f(void)
 		if (SND_DistanceGain (straight, ch->dist_mult) <= 0)
 			continue;
 		path = LQ_SoundPathDistance (ch->entnum, ch->origin, straight, &travelled, &open);
-		Con_Printf ("%-24s %5.0f straight, %s %3i/%3i open %.2f\n", ch->sfx->name, straight,
-			path < 0 ? "  shut off" : path > 0 ? va("%5.0f path", travelled) : "  no paths",
+		snprintf (route, sizeof(route), "%5.0f path", travelled);	// va's buffer belongs to the main thread
+		SND_Print ("%-24s %5.0f straight, %s %3i/%3i open %.2f\n", ch->sfx->name, straight,
+			path < 0 ? "  shut off" : path > 0 ? route : "  no paths",
 			ch->leftvol, ch->rightvol, open);
 	}
 }

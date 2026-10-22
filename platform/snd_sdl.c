@@ -32,14 +32,65 @@ static dma_t dma;
 static byte *ring;
 static size_t ring_bytes, read_byte;
 static uint64_t frames_read, epoch;
-static int paint_depth;
+static _Thread_local int paint_depth; /* the stream lock's depth on this thread */
 static qboolean subsystem, audio_focus = true;
 extern int sound_started;
 
+/* The sound thread (see sound.h): every MIXER_PERIOD_NS it mixes, then
+ * searches sound paths for up to MIXER_SEARCH seconds of what is left. The
+ * locks live for the whole run; SDL mutexes are recursive. */
+#define MIXER_PERIOD_NS (5 * SDL_NS_PER_MS)
+#define MIXER_SEARCH 0.003
+static SDL_Mutex *mixer_mutex, *paths_mutex;
+static SDL_Thread *mixer_thread;
+static SDL_AtomicInt mixer_stop;
+static _Thread_local int mixer_held, paths_held;
+
+void LQ_MixerLock(void) { if (mixer_mutex) { SDL_LockMutex(mixer_mutex); ++mixer_held; } }
+void LQ_MixerUnlock(void) { if (mixer_mutex && mixer_held) { --mixer_held; SDL_UnlockMutex(mixer_mutex); } }
+void LQ_PathsLock(void) { if (paths_mutex) { SDL_LockMutex(paths_mutex); ++paths_held; } }
+void LQ_PathsUnlock(void) { if (paths_mutex && paths_held) { --paths_held; SDL_UnlockMutex(paths_mutex); } }
+qboolean LQ_MixerRunning(void) { return mixer_thread != NULL; }
+
+static int SDLCALL MixerMain(void *unused)
+{
+    (void)unused;
+    SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_HIGH);
+    while (!SDL_GetAtomicInt(&mixer_stop)) {
+        Uint64 start = SDL_GetTicksNS(), spent;
+        S_MixerStep(MIXER_SEARCH);
+        spent = SDL_GetTicksNS() - start;
+        if (spent < MIXER_PERIOD_NS) SDL_DelayNS(MIXER_PERIOD_NS - spent);
+    }
+    return 0;
+}
+static void StartMixer(void)
+{
+    if (mixer_thread) return;
+    if (!mixer_mutex) mixer_mutex = SDL_CreateMutex();
+    if (!paths_mutex) paths_mutex = SDL_CreateMutex();
+    if (!mixer_mutex || !paths_mutex) {
+        Con_Printf("Sound thread unavailable: %s; mixing each frame\n", SDL_GetError()); return;
+    }
+    SDL_SetAtomicInt(&mixer_stop, 0);
+    mixer_thread = SDL_CreateThread(MixerMain, "LQ sound", NULL);
+    if (!mixer_thread) Con_Printf("Sound thread unavailable: %s; mixing each frame\n", SDL_GetError());
+}
+static void StopMixer(void)
+{
+    if (!mixer_thread) return;
+    SDL_SetAtomicInt(&mixer_stop, 1);
+    /* Fatal exits may come while this thread holds a lock the mixer waits on. */
+    while (paths_held) LQ_PathsUnlock();
+    while (mixer_held) LQ_MixerUnlock();
+    SDL_WaitThread(mixer_thread, NULL); mixer_thread = NULL;
+}
+
 /* The callback only consumes the already-mixed ring; it never touches gameplay
- * or loads assets. Main-thread writes hold the SDL stream lock, also held by
- * SDL while invoking the callback. SDL converts the fixed mixer format to the
- * output device's format and sample rate. */
+ * or loads assets. Writes to the ring, from the sound thread or the main
+ * thread, hold the SDL stream lock, also held by SDL while invoking the
+ * callback. SDL converts the fixed mixer format to the output device's format
+ * and sample rate. */
 void LQ_AudioConsume(byte *stream, int length)
 {
     while (length > 0) {
@@ -110,11 +161,13 @@ void LQ_AudioFocus(qboolean focus)
 {
     audio_focus = focus;
     if (!audio_stream) return;
+    LQ_MixerLock();
     SDL_PauseAudioStreamDevice(audio_stream);
     if (!focus) {
         S_ClearBuffer();
         SDL_ClearAudioStream(audio_stream);
     } else SDL_ResumeAudioStreamDevice(audio_stream);
+    LQ_MixerUnlock();
 }
 qboolean SNDDMA_Init(void)
 {
@@ -155,10 +208,12 @@ qboolean SNDDMA_Init(void)
     paintedtime = 0;
     if (audio_focus) SDL_ResumeAudioStreamDevice(audio_stream);
     Con_Printf("SDL3 audio stream: %d Hz stereo signed 16-bit\n", dma.speed);
+    StartMixer();
     return true;
 }
 void SNDDMA_Shutdown(void)
 {
+    StopMixer();
     if (audio_stream) {
         /* Fatal exits may interrupt mixing while this thread owns the lock. */
         if (paint_depth) { SDL_UnlockAudioStream(audio_stream); paint_depth = 0; }

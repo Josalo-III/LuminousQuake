@@ -91,6 +91,10 @@ void S_ExtraUpdate (void)
 {
 }
 
+void S_ForgetWorld (void)
+{
+}
+
 void S_LocalSound (char *s)
 {
 }
