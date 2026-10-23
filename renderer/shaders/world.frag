@@ -542,7 +542,7 @@ void main() {
     // shift so steps in the shift do not tear the frame or the filtering.
     vec3 frame_du = vec3(0.0), frame_dv = vec3(0.0);
     vec2 frame_dx = dFdx(uv), frame_dy = dFdy(uv), parallax = vec2(0.0);
-    if (surface.pack.y > 0.5 && (flags & 39) == 0) {
+    if (surface.pack.y > 0.5 && (flags & 3) == 0) {
         textureFrame(normalize(world_normal), uv, frame_du, frame_dv);
         if (surface.relief.x > 0.0) {
             parallax = parallaxShift(normalize(world_normal), frame_du, frame_dv, uv, frame_dx, frame_dy);
@@ -579,7 +579,7 @@ void main() {
             bool actor = (flags & 32) != 0;
             if (lights.parameters.y != 0u && ((flags & 4) == 0 || actor)) {
                 vec3 normal = normalize(world_normal);
-                vec3 shading = surface.pack.y > 0.5 && !actor ? bumpNormal(normal, frame_du, frame_dv, sample_uv, frame_dx, frame_dy) : normal;
+                vec3 shading = surface.pack.y > 0.5 ? bumpNormal(normal, frame_du, frame_dv, sample_uv, frame_dx, frame_dy) : normal;
                 vec3 illumination = vec3(0.0);
                 // Shadows are filtered only where they can be seen. A light
                 // below the faint level, or below the dominance ratio of the
@@ -716,12 +716,18 @@ void main() {
         if ((flags & 9) != 0) color = litEntry(index);
         // The pack's colour in place of the palette's, lit the same way; its
         // glow (alpha) emits as fullbrights do.
-        if (surface.pack.x > 0.5 && (flags & 13) == 0) {
+        if (surface.pack.x > 0.5 && (flags & 9) == 0) {
             vec4 hd = textureGrad(pack_color, sample_uv, frame_dx, frame_dy);
             // z matches the original texture's brightness (lq_pack_brightness);
             // the glow keeps the pack's own level.
             color = vec4(packAlbedo(hd.rgb, surface.pack.z) * lit_radiance + packAlbedo(hd.rgb, 1.0) * (hd.a * emission()), 1.0);
         }
+        written_linear = true;
+    } else if (lights.parameters.y != 0u && surface.pack.x > 0.5 && (flags & 4) != 0) {
+        // A self-lit pack model (flames, bolts, lasers): its colour shows as
+        // the palette's does, its glow emits.
+        vec4 hd = textureGrad(pack_color, uv, frame_dx, frame_dy);
+        color = vec4(packAlbedo(hd.rgb, surface.pack.z) + packAlbedo(hd.rgb, 1.0) * (hd.a * emission()), 1.0);
         written_linear = true;
     } else if (lights.parameters.y != 0u && index < 224.0) color.rgb *= direct_tint;
     if (sky_color.a > 0.0) { color = sky_color; written_linear = false; }

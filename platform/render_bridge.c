@@ -10,6 +10,7 @@
 #include "pack_archive.h"
 #include "scene_fixture.h"
 #include "gpu_entities.h"
+#include "pack_models.h"
 #include "effects.h"
 #include "fluorescent.h"
 #include "jobs.h"
@@ -87,6 +88,10 @@ static cvar_t lq_pack_parallax = {"lq_pack_parallax", "0.04", true};
 /* 1: each pack texture at its original's mean brightness, so maps lit for the
  * 8-bit textures keep their level; 0: the pack as its author made it. */
 static cvar_t lq_pack_brightness = {"lq_pack_brightness", "1", true};
+/* Luminous Options -> Pack models and Pack model skins: the texture pack's
+ * replacement meshes (MD3 or MDL, drawn only) and its skins for models it
+ * does not replace. */
+static cvar_t lq_pack_models = {"lq_pack_models", "1", true}, lq_pack_skins = {"lq_pack_skins", "1", true};
 /* The install's folder holding the pack, read beside the game's own search
  * path so only its textures are used: "auto" (the default) takes the first
  * pack found, "none" none. An empty value is "auto": the first build of this
@@ -231,6 +236,7 @@ void LQ_RenderBridgeRegister(void)
     Cvar_RegisterVariable(&lq_panel_shadows); Cvar_RegisterVariable(&lq_shadow_free);
     Cvar_RegisterVariable(&lq_pack_textures); Cvar_RegisterVariable(&lq_pack_bumps); Cvar_RegisterVariable(&lq_pack_parallax); Cvar_RegisterVariable(&lq_texture_pack);
     Cvar_RegisterVariable(&lq_pack_brightness);
+    Cvar_RegisterVariable(&lq_pack_models); Cvar_RegisterVariable(&lq_pack_skins);
     Cvar_RegisterVariable(&lq_fog); Cvar_RegisterVariable(&r_skyfog);
     Cvar_RegisterVariable(&lq_tone_shoulder); Cvar_RegisterVariable(&lq_tone_white);
     Cvar_RegisterVariable(&lq_emission); Cvar_RegisterVariable(&lq_sprite_emission);
@@ -334,7 +340,8 @@ static void ShadowFreeFinish(void *context, int cancelled)
 void LQ_RenderBridgeShutdown(void)
 {
     CancelSceneTasks();
-    LQ_EntitiesReset(); LQ_SceneFree(&map_scene); map_key = 0; SceneCacheFreeAll(); free(world_draws); world_draws = NULL;
+    LQ_EntitiesReset(); LQ_PackModelsClear();
+    LQ_SceneFree(&map_scene); map_key = 0; SceneCacheFreeAll(); free(world_draws); world_draws = NULL;
     free(interaction_draws); interaction_draws = NULL; memset(runtime_lights, 0, sizeof(runtime_lights));
     free(dynamic_probes); dynamic_probes = NULL;
     memset(spark_lights, 0, sizeof(spark_lights)); next_spark = 0;
@@ -429,6 +436,9 @@ void LQ_RenderBegin(void)
                 Con_Printf("Texture pack: none found (a .pk3 beside the app or in id1, or a folder of %s, with textures/*_norm images).\n",
                     com_basedir);
         }
+        /* The pack's models and skins for this map's models (kept from earlier
+         * maps with the same pack), whether or not the scene was cached. */
+        if (luminous) LQ_PackModelsLoad(texture_pack_path);
         if (!LQ_GPUUpload(gpu, &map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }
         if (luminous && !map_scene.draw_bounds && !LQ_SceneDrawBounds(&map_scene)) { LQ_FallbackRenderer("Cannot allocate draw bounds"); return; }
         world_draws = malloc(map_scene.draw_count*sizeof(*world_draws));

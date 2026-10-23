@@ -74,6 +74,10 @@ struct lq_gpu {
     SDL_GPUBuffer *frame_vertices, *frame_indices;
     SDL_GPUTransferBuffer *frame_transfer;
     SDL_GPUTexture *frame_textures[4096];
+    /* Luminous pack models and skins: a frame material's pack colour and
+     * normal map, by resource id, uploaded when it is first drawn. */
+    SDL_GPUTexture *frame_pack_color[4096], *frame_pack_normal[4096];
+    float frame_pack_gain[4096];
     lq_draw *frame_draws;
     uint32_t frame_vertex_bytes, frame_index_bytes, frame_transfer_bytes;
     uint32_t frame_draw_count, frame_draw_capacity;
@@ -619,7 +623,9 @@ static void ReleaseScene(lq_gpu *g)
 {
     for (unsigned i = 0; i < 4096; ++i) {
         if (g->frame_textures[i]) SDL_ReleaseGPUTexture(g->device, g->frame_textures[i]);
-        g->frame_textures[i] = NULL;
+        if (g->frame_pack_color[i]) SDL_ReleaseGPUTexture(g->device, g->frame_pack_color[i]);
+        if (g->frame_pack_normal[i]) SDL_ReleaseGPUTexture(g->device, g->frame_pack_normal[i]);
+        g->frame_textures[i] = g->frame_pack_color[i] = g->frame_pack_normal[i] = NULL;
     }
     g->frame_draw_count = 0;
     if (g->vertices) SDL_ReleaseGPUBuffer(g->device, g->vertices);
@@ -700,6 +706,17 @@ int LQ_GPUFrame(lq_gpu *g, const lq_frame *f, char *error, size_t size)
         if (!g->frame_textures[m->resource_id]) {
             g->frame_textures[m->resource_id] = UploadIndexed(g, &m->indices);
             if (!g->frame_textures[m->resource_id]) return Error(error, size, "GPU frame texture");
+            for (int k = 0; k < 2; ++k) {
+                const lq_image *image = k ? &m->pack_normal : &m->pack_color;
+                if (!image->pixels) continue;
+                if (image->channels != 4 || !image->width || !image->height || image->width > 8192 || image->height > 8192) {
+                    SDL_SetError("invalid frame pack image"); return Error(error, size, "GPU frame");
+                }
+                SDL_GPUTexture *t = UploadMipmapped(g, image, k);
+                if (!t) return Error(error, size, "GPU frame pack texture");
+                if (k) g->frame_pack_normal[m->resource_id] = t; else g->frame_pack_color[m->resource_id] = t;
+            }
+            g->frame_pack_gain[m->resource_id] = m->pack_gain;
         }
     }
     if (g->frame_draw_capacity < f->draw_count) {
@@ -1456,6 +1473,14 @@ static void DrawSurface(lq_gpu *g, SDL_GPUCommandBuffer *command, SDL_GPURenderP
             pack_normal = g->pack_normal[pack]; uniforms.pack[1] = 1;
             uniforms.relief[0] = v->pack_parallax; uniforms.relief[1] = g->pack_height[pack];
         }
+    } else if ((d->flags & LQ_SURFACE_MODEL) && d->material < 4096 && v->luminous_lighting &&
+            g->frame_pack_color[d->material]) {
+        /* A pack model or skin: its colour (with glow) always, since its
+         * mesh may have no palette skin; its normal map with Bump maps. */
+        pack_color = g->frame_pack_color[d->material]; uniforms.pack[0] = 1;
+        float gain = g->frame_pack_gain[d->material];
+        uniforms.pack[2] = v->pack_match && gain > 0 ? gain : 1;
+        if (v->pack_bumps && g->frame_pack_normal[d->material]) { pack_normal = g->frame_pack_normal[d->material]; uniforms.pack[1] = 1; }
     }
     SDL_GPUTextureSamplerBinding samplers[] = {
         {texture, g->repeat}, {g->colormap, g->point}, {g->lightmap, g->linear},

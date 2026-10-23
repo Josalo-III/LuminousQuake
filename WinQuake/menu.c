@@ -1617,6 +1617,8 @@ static const luminous_option_t luminous_options[] =
 	{"             Bump maps", "lq_pack_bumps", "Texture pack normal maps.", 0, 1, 0, 1, "off", "on"},
 	{"        Parallax depth", "lq_pack_parallax", "Bump depth, of texture size. 0 off.", 0, 0.08f, 0.01f, 0.04f, NULL, NULL},
 	{"       Pack brightness", "lq_pack_brightness", "Match: each texture at its original's.", 0, 1, 0, 1, "as made", "match"},
+	{"           Pack models", "lq_pack_models", "The pack's own models, drawn only.", 0, 1, 0, 1, "off", "on"},
+	{"      Pack model skins", "lq_pack_skins", "Pack skins on original models.", 0, 1, 0, 1, "off", "on"},
 	{"               Shadows", "lq_shadows", "Shadow cubes and their filtering.", 0, 1, 0, 1, "off", "on"},
 	{"         Panel shadows", "lq_panel_shadows", "Lit panels: one cube per group.", 0, 1, 0, 1, "per piece", "shared"},
 	{"    Skip clear shadows", "lq_shadow_free", "No lookup where none can fall.", 0, 1, 0, 1, "off", "on"},

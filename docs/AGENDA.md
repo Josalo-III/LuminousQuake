@@ -174,9 +174,15 @@ brightness matching (Pack brightness), pack colours following Quake's
 screen tints, the bump frame's sign, parallax (Parallax depth) with each
 texture's mean height held at the face, and Quake's `gamma` applied to the
 finished Luminous frame, as software Quake does. Texture packs read straight from a `.pk3` beside the app or in `id1`
-(October 21). Still to come: gloss specular, relief shadows, a
-parallax fade with distance, liquids, sky, models and `_bump` maps
-([status](MATERIAL_PACKS.md#implemented-first-stage-october-20)).
+(October 21). **Models, October 23**: the pack's replacement meshes (MD3, as
+nearly all of Rygel's are, or MDL) are drawn in place of the originals, for
+drawing only, and its skins (`progs/<model>.mdl_<n>`, with `_norm` and
+`_luma`) go on models it doesn't replace; Luminous Options → **Pack models**
+and **Pack model skins**. Evidence: E1M1 with Rygel's pack: "29 replaced, 1
+with pack skins, of 40", and the view shotgun is the pack's MD3 with the
+setting on and the original with it off. Still to come: gloss specular,
+relief shadows, a parallax fade with distance, liquids, sky and `_bump` maps
+([status](MATERIAL_PACKS.md#models-october-23)).
 
 ### 5. The existing Luminous queue
 

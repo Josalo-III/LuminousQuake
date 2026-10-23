@@ -5,6 +5,7 @@
 #include "gpu_entities.h"
 #include "effects.h"
 #include "render_bridge.h"
+#include "pack_models.h"
 extern float r_avertexnormals[162][3];
 extern cvar_t r_drawentities, r_drawviewmodel;
 extern entity_t *currententity;
@@ -20,6 +21,9 @@ static lq_material materials[4095];
 static struct { const void *model; uint32_t offset; int translated; byte colors[256]; } keys[4095];
 static uint32_t owned_start, particle_material;
 static int luminous_frame, solid_particles;
+/* Read once a frame: r_lerpmodels, r_lerpmove, and in Luminous the pack's
+ * replacement models (lq_pack_models) and skins (lq_pack_skins). */
+static int lerp_models, lerp_move, pack_models, pack_skins;
 static uint8_t particle_pixels[256];
 /* Frame blending and step easing, after FitzQuake (r_lerpmodels, r_lerpmove).
  * QuakeC animates and moves monsters in 0.1 s thinks. A model blends from its
@@ -32,7 +36,8 @@ static uint8_t particle_pixels[256];
 #define LERP_STALE 0.5 /* an entity unseen this long starts afresh */
 typedef struct {
     const model_t *model;
-    int pose, previous_pose; /* offsets of resolved poses in the model's data */
+    const void *mesh; /* the alias header or pack model the poses belong to */
+    int pose, previous_pose; /* offsets of resolved poses in the model's data, or pack model frames */
     double pose_start, move_start, seen;
     float pose_interval;
     vec3_t origin_from, origin_to, angles_from, angles_to;
@@ -104,10 +109,16 @@ void LQ_EntitiesBegin(const lq_scene *world)
     frame.vertex_count = frame.index_count = frame.draw_count = 0;
     luminous_frame = Cvar_VariableValue("lq_renderer") == 2;
     solid_particles = luminous_frame && Cvar_VariableValue("lq_particles") != 0;
+    lerp_models = Cvar_VariableValue("r_lerpmodels") != 0; lerp_move = Cvar_VariableValue("r_lerpmove") != 0;
+    pack_models = luminous_frame && Cvar_VariableValue("lq_pack_models") != 0;
+    pack_skins = luminous_frame && Cvar_VariableValue("lq_pack_skins") != 0;
     if (!frame.material_count) {
         if (world->material_count >= 4094) Sys_Error("Too many world materials");
         for (uint32_t i = 0; i < world->material_count; ++i) {
             materials[i] = world->materials[i]; materials[i].resource_id = i+1;
+            /* World pack images reach the GPU with the scene, not per frame. */
+            memset(&materials[i].pack_color, 0, sizeof(materials[i].pack_color));
+            memset(&materials[i].pack_normal, 0, sizeof(materials[i].pack_normal));
         }
         frame.material_count = owned_start = world->material_count;
         for (int i = 0; i < 256; ++i) particle_pixels[i] = i;
@@ -324,8 +335,111 @@ static void Transform(const float local[3], entity_t *e, const float forward[3],
 {
     for (int i = 0; i < 3; ++i) output[i] = e->origin[i]+forward[i]*local[0]-right[i]*local[1]+up[i]*local[2];
 }
+/* Blend toward `pose` (a key into `mesh`: an alias header's pose offset or a
+ * pack model's frame) over `interval`, and ease a step-mover toward its new
+ * place. Returns the blend weight; *previous is the pose blended from and
+ * *shown the entity where it is drawn. */
+static float Animate(entity_t *e, const void *mesh, int pose, float interval, int *previous, entity_t *shown)
+{
+    lerp_state *state = LerpState(e);
+    if (state && (state->model != e->model || state->mesh != mesh ||
+            cl.time - state->seen > LERP_STALE || cl.time < state->seen)) {
+        memset(state, 0, sizeof(*state));
+        state->model = e->model; state->mesh = mesh; state->pose = state->previous_pose = pose; state->pose_start = cl.time;
+        VectorCopy(e->origin, state->origin_to); VectorCopy(e->angles, state->angles_to);
+    }
+    if (state) state->seen = cl.time;
+    float blend = 1;
+    *previous = pose;
+    if (state && lerp_models && LerpKind(e->model) == LERP_BLEND) {
+        if (pose != state->pose) {
+            state->previous_pose = state->pose; state->pose = pose;
+            state->pose_start = cl.time; state->pose_interval = fmaxf(interval, 0.01f);
+        }
+        *previous = state->previous_pose;
+        if (*previous != pose) blend = (float)fmin(fmax((cl.time - state->pose_start) / state->pose_interval, 0), 1);
+    }
+    *shown = *e;
+    if (state && e->movestep && lerp_move) EasedPlacement(state, e, shown->origin, shown->angles);
+    else if (state) {
+        VectorCopy(e->origin, state->origin_to); VectorCopy(e->angles, state->angles_to);
+        state->moving = false;
+    }
+    return blend;
+}
+/* A single pose lasts until the server's next think when it said when that
+ * is (U_LERPFINISH), as FitzQuake reads it; otherwise 0.1 s. */
+static float PoseInterval(const entity_t *e)
+{ return e->lerpfinish > 0 ? (float)fmax(e->lerpfinish - cl.time, 0.01) : LERP_STEP; }
+static int IsEmissive(const model_t *model)
+{
+    return IsFlame(model) || !strcmp(model->name, "progs/bolt.mdl") ||
+        !strcmp(model->name, "progs/bolt2.mdl") || !strcmp(model->name, "progs/bolt3.mdl") ||
+        !strcmp(model->name, "progs/laser.mdl") || !strcmp(model->name, "progs/lavaball.mdl");
+}
+/* Luminous lights actors from runtime lights and probes. Flames and energy
+ * effects stay self-lit; a rocket cannot cast around its own light origin.
+ * Classic ignores these flags and keeps its original vertex shade. */
+static uint32_t ModelFlags(const entity_t *e, int weapon)
+{
+    int emissive = IsEmissive(e->model);
+    return LQ_SURFACE_MODEL | (weapon ? LQ_SURFACE_WEAPON : 0) | (emissive ? 0 : LQ_SURFACE_ACTOR) |
+        (emissive || (e->model->flags & EF_ROCKET) ? LQ_SURFACE_NOSHADOW : 0);
+}
+/* Protocol 999 entity scale, about the entity's origin. */
+static float EntityScale(const entity_t *e)
+{ return e->scale && e->scale != ENTSCALE_DEFAULT ? e->scale / (float)ENTSCALE_DEFAULT : 1; }
+/* A community pack's material: its images are the pack store's; only the
+ * palette image (`pixels`, the original skin or a placeholder) is copied. */
+static uint32_t PackMaterial(const lq_material *source, const byte *pixels, unsigned width, unsigned height)
+{
+    for (uint32_t i = owned_start; i < frame.material_count; ++i)
+        if (keys[i].model == source && keys[i].offset == UINT32_MAX) return i;
+    uint32_t i = Material(source, UINT32_MAX, pixels, width, height, NULL);
+    materials[i].pack_color = source->pack_color; materials[i].pack_normal = source->pack_normal;
+    materials[i].pack_gain = source->pack_gain;
+    return i;
+}
+/* Luminous: a pack's replacement mesh (MD3 or MDL), drawn in place of the
+ * original model, which the game keeps for everything else. */
+static void PackMesh(entity_t *e, const lq_pack_model *m, uint32_t flags)
+{
+    int pose = e->frame >= 0 && (uint32_t)e->frame < m->frame_count ? e->frame : 0, previous;
+    entity_t shown;
+    float blend = Animate(e, m, pose, PoseInterval(e), &previous, &shown);
+    if ((uint32_t)previous >= m->frame_count) previous = pose;
+    const float (*to)[3] = &m->positions[(size_t)pose * m->vertex_count];
+    const float (*from)[3] = &m->positions[(size_t)previous * m->vertex_count];
+    const float (*n1)[3] = &m->normals[(size_t)pose * m->vertex_count];
+    const float (*n0)[3] = &m->normals[(size_t)previous * m->vertex_count];
+    vec3_t forward, right, up; Basis(&shown, forward, right, up);
+    float size = EntityScale(e);
+    uint32_t skin = e->skinnum >= 0 && (uint32_t)e->skinnum < m->skin_count ? (uint32_t)e->skinnum : 0;
+    for (uint32_t s = 0; s < m->surface_count; ++s) {
+        const lq_pack_surface *surface = &m->surfaces[s];
+        const lq_material *source = &surface->skins[skin];
+        if (!source->pack_color.pixels) source = &surface->skins[0];
+        if (!source->pack_color.pixels || !surface->corner_count) continue;
+        Translucent(Draw(surface->corner_count, PackMaterial(source, source->indices.pixels, 1, 1), flags), Opacity(e));
+        for (uint32_t c = 0; c < surface->corner_count; ++c) {
+            uint32_t p = m->corners[surface->first_corner + c];
+            lq_vertex *v = &vertices[frame.vertex_count++]; memset(v, 0, sizeof(*v));
+            vec3_t local, n;
+            for (int k = 0; k < 3; ++k) {
+                local[k] = (from[p][k] + (to[p][k] - from[p][k]) * blend) * size;
+                n[k] = n0[p][k] + (n1[p][k] - n0[p][k]) * blend;
+            }
+            if (VectorNormalize(n) < 0.001f) VectorCopy(n1[p], n);
+            Transform(local, &shown, forward, right, up, v->position);
+            for (int k = 0; k < 3; ++k) v->normal[k] = n[0]*forward[k]-n[1]*right[k]+n[2]*up[k];
+            v->uv[0] = m->uv[p][0]; v->uv[1] = m->uv[p][1];
+        }
+    }
+}
 static void Alias(entity_t *e, int weapon)
 {
+    const lq_pack_model *pack = pack_models || pack_skins ? LQ_PackModel(e->model) : NULL;
+    if (pack && pack->replaces && pack_models) { PackMesh(e, pack, ModelFlags(e, weapon)); return; }
     aliashdr_t *header = Mod_Extradata(e->model);
     mdl_t *model = (mdl_t *)((byte *)header+header->model);
     int skin = e->skinnum >= 0 && e->skinnum < model->numskins ? e->skinnum : 0;
@@ -336,13 +450,17 @@ static void Alias(entity_t *e, int weapon)
         selected = &g->skindescs[GroupFrame((float *)((byte *)header+g->intervals), g->numskins, cl.time+e->syncbase)];
     }
     const byte *translation = e->colormap && e->colormap != host_colormap ? e->colormap : NULL;
-    uint32_t material = Material(e->model, selected->skin, (byte *)header+selected->skin,
-                                model->skinwidth, model->skinheight, translation);
+    /* Luminous: the pack's skin for a model it does not replace (player
+     * colours keep the original skin). */
+    const lq_material *pack_skin = pack && !pack->replaces && pack_skins && !translation &&
+        (uint32_t)skin < pack->skin_count && pack->surfaces[0].skins[skin].pack_color.pixels ?
+        &pack->surfaces[0].skins[skin] : NULL;
+    uint32_t material = pack_skin ?
+        PackMaterial(pack_skin, (byte *)header+selected->skin, model->skinwidth, model->skinheight) :
+        Material(e->model, selected->skin, (byte *)header+selected->skin, model->skinwidth, model->skinheight, translation);
     int pose = e->frame >= 0 && e->frame < model->numframes ? e->frame : 0;
     int offset = header->frames[pose].frame;
-    /* A single pose lasts until the server's next think when it said when
-     * that is (U_LERPFINISH), as FitzQuake reads it; otherwise 0.1 s. */
-    float interval = e->lerpfinish > 0 ? (float)fmax(e->lerpfinish - cl.time, 0.01) : LERP_STEP;
+    float interval = PoseInterval(e);
     if (header->frames[pose].type == ALIAS_GROUP) {
         maliasgroup_t *g = (maliasgroup_t *)((byte *)header+offset);
         const float *intervals = (float *)((byte *)header+g->intervals);
@@ -351,31 +469,9 @@ static void Alias(entity_t *e, int weapon)
         offset = g->frames[member].frame;
         interval = member ? intervals[member] - intervals[member-1] : intervals[0];
     }
-    /* Blend toward this pose, and ease a step-mover toward its new place. */
-    lerp_state *state = LerpState(e);
-    if (state && (state->model != e->model || cl.time - state->seen > LERP_STALE || cl.time < state->seen)) {
-        memset(state, 0, sizeof(*state));
-        state->model = e->model; state->pose = state->previous_pose = offset; state->pose_start = cl.time;
-        VectorCopy(e->origin, state->origin_to); VectorCopy(e->angles, state->angles_to);
-    }
-    if (state) state->seen = cl.time;
-    float blend = 1;
-    int previous = offset;
-    int kind = LerpKind(e->model);
-    if (state && Cvar_VariableValue("r_lerpmodels") != 0 && kind == LERP_BLEND) {
-        if (offset != state->pose) {
-            state->previous_pose = state->pose; state->pose = offset;
-            state->pose_start = cl.time; state->pose_interval = fmaxf(interval, 0.01f);
-        }
-        previous = state->previous_pose;
-        if (previous != offset) blend = (float)fmin(fmax((cl.time - state->pose_start) / state->pose_interval, 0), 1);
-    }
-    entity_t shown = *e;
-    if (state && e->movestep && Cvar_VariableValue("r_lerpmove") != 0) EasedPlacement(state, e, shown.origin, shown.angles);
-    else if (state) {
-        VectorCopy(e->origin, state->origin_to); VectorCopy(e->angles, state->angles_to);
-        state->moving = false;
-    }
+    int previous;
+    entity_t shown;
+    float blend = Animate(e, header, offset, interval, &previous, &shown);
     trivertx_t *points = (trivertx_t *)((byte *)header+offset);
     trivertx_t *from = (trivertx_t *)((byte *)header+previous);
     stvert_t *uv = (stvert_t *)((byte *)header+header->stverts);
@@ -392,20 +488,9 @@ static void Alias(entity_t *e, int weapon)
     ambient = fminf(ambient, 128); shade = fminf(shade, 192-ambient);
     for (int i = 1; i <= cl.maxclients; ++i)
         if (e == &cl_entities[i] && ambient < 8) { ambient = shade = 8; break; }
-    int flame = !strcmp(e->model->name, "progs/flame.mdl") || !strcmp(e->model->name, "progs/flame2.mdl");
-    int emissive = flame || !strcmp(e->model->name, "progs/bolt.mdl") ||
-        !strcmp(e->model->name, "progs/bolt2.mdl") || !strcmp(e->model->name, "progs/bolt3.mdl") ||
-        !strcmp(e->model->name, "progs/laser.mdl") || !strcmp(e->model->name, "progs/lavaball.mdl");
-    int luminous = luminous_frame;
-    if (flame || (luminous && emissive)) ambient = 256, shade = 0;
-    /* Luminous lights actors from runtime lights and probes. Flames and energy
-     * effects stay self-lit; a rocket cannot cast around its own light origin.
-     * Classic ignores these flags and keeps its original vertex shade. */
-    Translucent(Draw(model->numtris*3, material, LQ_SURFACE_MODEL | (weapon ? LQ_SURFACE_WEAPON : 0) |
-        (emissive ? 0 : LQ_SURFACE_ACTOR) |
-        (emissive || (e->model->flags & EF_ROCKET) ? LQ_SURFACE_NOSHADOW : 0)), Opacity(e));
-    /* Protocol 999 entity scale, about the entity's origin. */
-    float size = e->scale && e->scale != ENTSCALE_DEFAULT ? e->scale / (float)ENTSCALE_DEFAULT : 1;
+    if (IsFlame(e->model) || (luminous_frame && IsEmissive(e->model))) ambient = 256, shade = 0;
+    Translucent(Draw(model->numtris*3, material, ModelFlags(e, weapon)), Opacity(e));
+    float size = EntityScale(e);
     for (int i = 0; i < model->numtris; ++i) for (int j = 0; j < 3; ++j) {
         int p = triangles[i].vertindex[j];
         if (p < 0 || p >= model->numverts || points[p].lightnormalindex >= 162 || from[p].lightnormalindex >= 162)
@@ -473,7 +558,10 @@ static void Brush(entity_t *e, const lq_scene *world)
     model_t *model = e->model;
     if (model->surfaces != cl.worldmodel->surfaces) {
         /* Ammo/health boxes are standalone BSP models, not inline world
-         * surfaces. Their geometry and textures belong to their own model. */
+         * surfaces. Their geometry and textures belong to their own model,
+         * unless a pack replaces them (Rygel's are MD3s). */
+        const lq_pack_model *pack = pack_models ? LQ_PackModel(model) : NULL;
+        if (pack && pack->replaces) { PackMesh(e, pack, LQ_SURFACE_MODEL|LQ_SURFACE_ACTOR); return; }
         for (int i = 0; i < model->nummodelsurfaces; ++i) {
             msurface_t *s = &model->surfaces[model->firstmodelsurface+i];
             texture_t *texture = R_TextureAnimation(s->texinfo->texture);

@@ -202,7 +202,10 @@ version of the same thing.
 - **Models:** the replacement `.mdl` files are partly for DarkPlaces' own mod
   (`v_dprock.mdl`), and the readme's install steps edit that mod's folders.
   Loading a pack's `progs/*.mdl` changes models, not just their looks, so that
-  needs its own decision.
+  needs its own decision. Decided October 23: drawn only, in Luminous (see
+  [Models](#models-october-23)). 61 of the 65 are MD3s under `.mdl` and `.bsp`
+  names (all the item boxes, weapons, keys and powerups); armor, grenade,
+  lavaball and missile are MDLs.
 
 **Installed for development** (October 20): extracted to
 `quake-complete/Quake/rygel_ultra/`, a game folder of its own (git ignores
@@ -346,8 +349,8 @@ as `none`. The console now says which pack a map used, or why none.
   in the shift don't tear them. Lightmaps are not shifted. On E1M1's south
   corridor ceiling rivets now stand out and stretch toward the camera, as
   raised bumps do.
-- **Not yet:** liquids, sky, masked (`{`) textures, models and sprites keep
-  their original textures; `_gloss` specular, `_bump` height-only maps and
+- **Not yet:** liquids, sky, masked (`{`) textures and sprites keep their
+  original textures (models since October 23: [Models](#models-october-23)); `_gloss` specular, `_bump` height-only maps and
   relief shadows are later stages; parallax has no fade with distance yet.
 - **E1M1 with Rygel's ultra pack:** 81 of 86 textures replaced (81 colour, 79
   bump, 39 glow); about 9 s to load in the debug build, including bounce.
@@ -379,6 +382,37 @@ as `none`. The console now says which pack a map used, or why none.
   `--quake-gamma <g>` reproduces a player's `gamma`.
 - In the game (`+lq_texture_pack rygel_ultra`, no `-game`), E1M1 loads 81
   of 86 textures from the pack in 1.04 s.
+
+## Models (October 23)
+
+In Luminous, from the chosen texture pack (`platform/pack_models.c`), read at
+map load for each precached model and kept across maps while the pack stays
+the same:
+- **Replacement meshes** (Luminous Options → **Pack models**,
+  `lq_pack_models`): a pack file with the model's own name
+  (`progs/armor.mdl`, `maps/b_batt0.bsp`) read from the pack only, never the
+  game's folders, which hold the originals. DarkPlaces tells the format by
+  its header, and so does this: MD3 (`IDP3`) or MDL (`IDPO`). An MD3
+  surface's image is its shader name without extension, under `textures/`
+  and then as given; a surface without one is left out (`v_light.mdl`'s
+  bolt guides), and a model with none left (`eyes.mdl`) stays original. A
+  replacement MDL takes `progs/<model>.mdl_<n>` skins, or its own.
+- **Drawn only**: the game keeps the original model for collision, bounds,
+  flame lights, Software and Classic GPU. Frames follow the entity's frame
+  and blend as MDL poses do; skins follow its skin number.
+- **Skins for models the pack doesn't replace** (**Pack model skins**,
+  `lq_pack_skins`): `progs/<model>.mdl_<n>` on the original mesh, unless the
+  entity has player colours (`_pants`/`_shirt` aren't read).
+- Each pack image comes with its `_norm` (bump maps, by the Bump maps
+  switch) and `_glow` or `_luma`; colour is matched to the original model's
+  skin brightness by Pack brightness. Normal maps use the same screen-space
+  frame as world faces, so models need no tangents. No parallax on models.
+- Self-lit models (flames, bolts, lasers, lava balls) show the pack's colour
+  at palette brightness, with its glow emitting.
+
+E1M1 with Rygel's ultra pack: "Pack models: 29 replaced, 1 with pack skins,
+of 40 new to this map, in 0.24 s" (debug build); the view shotgun is the
+pack's MD3 with Pack models on and the original with it off.
 
 ## Luminous plan
 
@@ -413,7 +447,8 @@ as `none`. The console now says which pack a map used, or why none.
      texture: a quarter of an RGBA read, compressed or not.
 4. **Replacement diffuse and glow.** These bypass the palette and colormap path
    and need their own decision on colour grading.
-5. **Model skins.** Per-vertex tangents for MDL, `_pants`/`_shirt`.
+5. **Model skins.** Done October 23 without tangents ([Models](#models-october-23));
+   `_pants`/`_shirt` still open.
 6. **Controls.** Each feature gets a switch on Options → **Luminous Options**
    as it lands, for A/B comparison: replacement textures, bump maps,
    parallax, relief shadows, texture compression.

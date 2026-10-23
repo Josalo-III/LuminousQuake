@@ -108,7 +108,7 @@ if(LQ_BUILD_CLIENT)
     find_package(SDL3 3.4 CONFIG REQUIRED)
     add_executable(luminousquake platform/sys_portable.c
         platform/vid_sdl.c platform/in_sdl.c platform/snd_sdl.c platform/demo_sdl.c
-        platform/render_bridge.c platform/ui_scale.c platform/jobs_sdl.c platform/background_sdl.c platform/tick_clock_sdl.c platform/performance_sdl.c platform/gpu_entities.c renderer/quake_scene.c renderer/gpu_sdl.c
+        platform/render_bridge.c platform/ui_scale.c platform/jobs_sdl.c platform/background_sdl.c platform/tick_clock_sdl.c platform/performance_sdl.c platform/gpu_entities.c platform/pack_models.c renderer/quake_scene.c renderer/gpu_sdl.c
         WinQuake/snd_dma.c WinQuake/snd_mem.c WinQuake/snd_mix.c WinQuake/snd_path.c)
     target_compile_definitions(luminousquake PRIVATE LQ_SDL=1 SDL_MAIN_HANDLED)
     target_link_libraries(luminousquake PRIVATE SDL3::SDL3 lq_scene)
