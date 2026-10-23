@@ -18,10 +18,36 @@ and constraints. This page sets the order.
 server and client speak protocols 15, 666 and 999 (`sv_protocol`, default
 666), and the limits are raised. Arcane Dimensions starts `ad_tfuma` in all
 three renderers. All nine of its BSP2 maps sign on headless. Original id1
-demos play, and old saves load. Still open:
-- entity alpha, fog and skyboxes are received but not drawn;
-- `U_LERPFINISH` isn't yet used by frame blending;
-- Luminous bounce on a large map takes about 27 s at load;
+demos play, and old saves load.
+
+**Drawn October 23, 2026** (Classic GPU and Luminous; Software keeps
+entities opaque and draws neither fog nor skyboxes):
+- **Entity alpha**: translucent entities blend after everything solid,
+  farthest first, and cast no shadow; Luminous blends in linear light in the
+  float frame.
+- **Fog** from the map, `svc_fog` and the `fog` command, with fades: GL_EXP2
+  at density/64 as FitzQuake, `r_skyfog` 0.5 over the sky. Video Options →
+  **Fog** turns it off (`lq_fog`).
+- **Skyboxes** (`gfx/env/<name>rt`… `dn`, from worldspawn `sky`,
+  `svc_skybox`, or the new `sky`/`loadsky` commands), laid out as FitzQuake
+  and Quake 2 do.
+- **Entity scale**: the server sends the QuakeC `scale` field under
+  protocol 999 (`PRFL_EDICTSCALE`); all three renderers scale alias models.
+- **`U_LERPFINISH`** sets a single pose's blend interval.
+
+Evidence: `ad/start` at its spawn, Luminous and Classic GPU, 1280×960: the
+moonrise skybox (moon upright, stars) behind the courtyard, and AD's purple
+fog (0.04, 0.3 0.2 0.3) hazing the far walls, gone with `lq_fog 0`. No
+renderer fallback in either run. Not yet seen: a translucent entity up close
+(two guessed camera positions were inside walls), scale (no AD map found
+that sets it), and `U_LERPFINISH` in motion.
+
+Still open:
+- **Arcane Dimensions can't be started from the Dock**: the app has no way to
+  choose a mod, so AD needs `-game ad` from Terminal. A mod chooser (the
+  rerelease's Add-ons, or QuakeSpasm's `game` command) is needed before any
+  of this is playable by users;
+- Luminous bounce on a large map takes about 27 s at load (`ad/start`: 6.3 s);
 - AD hasn't been played by hand.
 
 Other 1996 hardware limits were raised the same day: pak files, the QuakeC
@@ -100,7 +126,7 @@ Luminous only. Classic GPU stays palette-exact.
   [Luminous colour](LUMINOUS_RENDERER.md#colour-linear-light-at-32-bits).
 - **Translucent blending in linear light — done October 18, 2026**, with the
   float frame below. Liquids, smoke and sprites blend there, before tone
-  mapping. Entity alpha is still not drawn (item 1). Screen tints stay a palette
+  mapping. Entity alpha joined them October 23 (item 1). Screen tints stay a palette
   wash, as in Software: kept October 20
   ([blending and tints](LUMINOUS_RENDERER.md#colour-linear-light-at-32-bits)).
 - **HDR — first version October 18, 2026.** The GPU renderers draw into a

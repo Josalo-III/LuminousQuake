@@ -16,7 +16,8 @@ enum { LQ_SURFACE_SKY = 1, LQ_SURFACE_WATER = 2, LQ_SURFACE_MODEL = 4,
        LQ_SURFACE_NOSHADOW = 256, /* self-lit projectiles must not occlude their own source */
        LQ_SURFACE_SOLID_EFFECT = 512, /* small lit 3D particles: effect colour, oriented normals */
        LQ_SURFACE_ERODE = 1024, /* smoke: noise cuts away the fraction uv.y of the surface */
-       LQ_SURFACE_SPRITE = 2048 /* Luminous filters it bilinearly; index 255 becomes partial coverage */ };
+       LQ_SURFACE_SPRITE = 2048, /* Luminous filters it bilinearly; index 255 becomes partial coverage */
+       LQ_SURFACE_TRANSLUCENT = 4096 /* entity alpha (protocols 666/999): blended by lq_draw.alpha, casts no shadow */ };
 /* pack_color and pack_normal are optional community-pack images
  * (LQ_QuakeSceneLoadPack), RGBA8: colour with its glow in alpha, and a
  * DarkPlaces _norm map (tangent normal, green up the image, height in alpha). */
@@ -35,6 +36,7 @@ typedef struct {
     /* Runtime-light slots whose shadow lookup on this face provably finds no
      * static blocker (LQ_SceneFindShadowFree); world faces only. */
     uint32_t shadow_free_bits[4];
+    float alpha; /* LQ_SURFACE_TRANSLUCENT frame draws: the entity's opacity, 0-1 */
 } lq_draw;
 /* Renderer-owned descriptions from BSP entity text, retained after QC discards
  * static lights. Intensity is the compiler's light value; with the formula,
@@ -290,6 +292,9 @@ typedef struct {
     float bounce_gain; /* Luminous artistic bounce multiplier; zero means 1 */
     float water_warp;
     float water_alpha; /* liquid opacity; zero or one draws liquids opaque */
+    /* FitzQuake fog: density (0 none; GL_EXP2 at density / 64 per unit), then
+     * colour 0-1; sky_fog is how much of it covers the sky (r_skyfog). */
+    float fog[4], sky_fog;
 } lq_view;
 void LQ_LightSourceDefaults(lq_light_source *source);
 int LQ_LightIsAccent(const lq_light_source *source);

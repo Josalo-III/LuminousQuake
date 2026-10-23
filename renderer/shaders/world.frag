@@ -20,6 +20,8 @@ layout(set=2,binding=12) uniform sampler2DArrayShadow shadow_maps3;
 layout(set=2,binding=13) uniform sampler2DArray shadow_depths3;
 // Community texture pack (Luminous): colour with its glow in alpha, and a
 // DarkPlaces _norm map (tangent normal, green up the image; height in alpha).
+// Sky surfaces take no pack images; with a skybox, pack_color holds its six
+// faces side by side (Metal allows 16 samplers, all in use).
 layout(set=2,binding=14) uniform sampler2D pack_color;
 layout(set=2,binding=15) uniform sampler2D pack_normal;
 layout(set=3,binding=0,std140) uniform Surface {
@@ -33,6 +35,7 @@ layout(set=3,binding=0,std140) uniform Surface {
     uvec4 shadow_free; // slots whose shadow lookup here provably finds no blocker (LQ_SceneFindShadowFree)
     vec4 pack; // x: draw the pack's colour; y: shade direct light by its normal map; z: colour gain
     vec4 relief; // x: parallax depth, as a fraction of the texture's size (0 off); y: height held at the face
+    vec4 entity; // x: a translucent entity's opacity (flag 4096)
 } surface;
 // Luminous runtime lights, pushed once per frame. Each slot owns a shadow cube.
 layout(set=3,binding=1,std140) uniform Lights {
@@ -57,6 +60,8 @@ layout(set=3,binding=1,std140) uniform Lights {
     vec4 limit[128]; // x: most brightness the light adds to a surface; 0 none (torch accents); yzw: shadow cube centre
     vec4 effects; // x: sprite fullbright emission (lq_sprite_emission); y: Quake's palette gamma
     vec4 palette_shift; // screen tints on pack colours: colour * (1 - w) + rgb
+    vec4 fog; // rgb: fog colour 0-1; w: density per unit (FitzQuake's / 64), 0 none
+    vec4 sky_fog; // x: share of fog over the sky; y: 1 with a skybox
 } lights;
 const float SHADOW_NEAR = 2.0;
 layout(location=0) in vec2 uv;
@@ -97,6 +102,27 @@ float emission() { return lights.parameters.y != 0u && lights.color_space.w > 0.
 vec3 packAlbedo(vec3 encoded, float gain) {
     vec3 c = encoded * pow(gain, 1.0 / DISPLAY_GAMMA);
     return displayDecode(c * (1.0 - lights.palette_shift.w) + lights.palette_shift.rgb);
+}
+// A colour from outside the palette (skybox, fog) as the palette's colours
+// reach the frame: through the screen tints, then Quake's gamma in Classic,
+// where the palette carries it (Luminous applies it in tone mapping).
+vec3 paletteLike(vec3 c) {
+    c = c * (1.0 - lights.palette_shift.w) + lights.palette_shift.rgb;
+    return lights.parameters.y != 0u ? c : pow(max(c, vec3(0.0)), vec3(lights.effects.y > 0.0 ? lights.effects.y : 1.0));
+}
+// A skybox face, as FitzQuake (after Quake 2) lays them out: rt +x, lf -x,
+// bk +y, ft -y, up +z, dn -z, each face's s running to the viewer's right and
+// t up the image.
+vec3 skyboxColor(vec3 d) {
+    vec3 a = abs(d);
+    float face, major;
+    vec2 st;
+    if (a.x >= a.y && a.x >= a.z) { major = a.x; face = d.x >= 0.0 ? 0.0 : 1.0; st = vec2(d.x >= 0.0 ? -d.y : d.y, d.z); }
+    else if (a.y >= a.z) { major = a.y; face = d.y >= 0.0 ? 2.0 : 3.0; st = vec2(d.y >= 0.0 ? d.x : -d.x, d.z); }
+    else { major = a.z; face = d.z >= 0.0 ? 4.0 : 5.0; st = vec2(-d.y, d.z >= 0.0 ? -d.x : d.x); }
+    float inset = 0.5 / float(textureSize(pack_color, 0).y);
+    vec2 uv = clamp(vec2(st.x, -st.y) / max(major, 1e-6) * 0.5 + 0.5, inset, 1.0 - inset);
+    return textureLod(pack_color, vec2((face + uv.x) / 6.0, uv.y), 0.0).rgb;
 }
 float spriteEmission() { return lights.parameters.y != 0u && lights.effects.x > 0.0 ? lights.effects.x : emission(); }
 vec4 litEntry(float entry) {
@@ -536,7 +562,8 @@ void main() {
         float back = texture(indices, vec2(back_uv.x * 0.5 + 0.5, back_uv.y)).r;
         float front = texture(indices, vec2(front_uv.x * 0.5, front_uv.y)).r;
         index_value = front > 0.001 ? front : back;
-        if (lights.parameters.y != 0u) sky_color = smoothSky(back_uv, front_uv);
+        if (lights.sky_fog.y > 0.5) sky_color = vec4(paletteLike(skyboxColor(world_position - surface.camera_origin.xyz)), 1.0);
+        else if (lights.parameters.y != 0u) sky_color = smoothSky(back_uv, front_uv);
     } else {
         bool liquid = (flags & 2) != 0;
         if (liquid)
@@ -710,9 +737,20 @@ void main() {
     // the tone-mapping pass brings it to the display. Classic writes its
     // palette colours as they are.
     if ((flags & 1024) != 0) color.a = smoke_alpha;
+    // Entity alpha: blended over the frame by its opacity (in linear light in Luminous).
+    if ((flags & 4096) != 0) color.a = (smooth_sprite ? color.a : 1.0) * surface.entity.x;
     if (lights.parameters.y != 0u && !written_linear) {
         // The smooth sky was re-encoded with the plain transfer.
         color.rgb = sky_color.a > 0.0 ? displayDecode(color.rgb) : paletteDecode(color.rgb);
         if (index >= 224.0 && sky_color.a <= 0.0 && (flags & 1) == 0) color.rgb *= emission();
+    }
+    // FitzQuake fog: GL_EXP2 over the distance from the eye, mixed in linear
+    // light in Luminous. The sky takes a fixed share of it (r_skyfog).
+    if (lights.fog.w > 0.0) {
+        vec3 fog = paletteLike(lights.fog.rgb);
+        if (lights.parameters.y != 0u) fog = displayDecode(fog);
+        float d = lights.fog.w * length(world_position - surface.camera_origin.xyz);
+        float amount = (flags & 1) != 0 ? lights.sky_fog.x : 1.0 - exp(-d * d);
+        color.rgb = mix(color.rgb, fog, clamp(amount, 0.0, 1.0));
     }
 }

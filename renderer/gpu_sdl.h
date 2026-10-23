@@ -53,5 +53,9 @@ void LQ_GPUTestPattern(lq_gpu *gpu, int on);
 void LQ_GPUTone(lq_gpu *gpu, float shoulder, float white, float emission, float sprite_emission);
 /* Whether frames are going out as HDR, and the headroom above SDR white. */
 int LQ_GPUDisplayHDR(const lq_gpu *gpu, float *headroom);
+/* A skybox: six RGBA8 faces (gfx/env/<name>rt, lf, bk, ft, up, dn: +x, -x,
+ * +y, -y, +z, -z in Quake's axes), drawn on sky surfaces in place of the
+ * map's sky texture. A face with no pixels is black; NULL removes the box. */
+int LQ_GPUSkybox(lq_gpu *gpu, const lq_image faces[6], char *error, size_t size);
 void LQ_GPUDestroy(lq_gpu *gpu);
 #endif

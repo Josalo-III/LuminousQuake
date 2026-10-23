@@ -337,7 +337,7 @@ R_AliasSetUpTransform
 void R_AliasSetUpTransform (int trivial_accept)
 {
 	int				i;
-	float			rotationmatrix[3][4], t2matrix[3][4];
+	float			rotationmatrix[3][4], t2matrix[3][4], size;
 	static float	tmatrix[3][4];
 	static float	viewmatrix[3][4];
 	vec3_t			angles;
@@ -351,13 +351,17 @@ void R_AliasSetUpTransform (int trivial_accept)
 	angles[YAW] = currententity->angles[YAW];
 	AngleVectors (angles, alias_forward, alias_right, alias_up);
 
-	tmatrix[0][0] = pmdl->scale[0];
-	tmatrix[1][1] = pmdl->scale[1];
-	tmatrix[2][2] = pmdl->scale[2];
+	// LuminousQuake: protocol 999 entity scale, about the entity's origin
+	size = currententity->scale && currententity->scale != ENTSCALE_DEFAULT ?
+		currententity->scale / (float)ENTSCALE_DEFAULT : 1;
 
-	tmatrix[0][3] = pmdl->scale_origin[0];
-	tmatrix[1][3] = pmdl->scale_origin[1];
-	tmatrix[2][3] = pmdl->scale_origin[2];
+	tmatrix[0][0] = pmdl->scale[0] * size;
+	tmatrix[1][1] = pmdl->scale[1] * size;
+	tmatrix[2][2] = pmdl->scale[2] * size;
+
+	tmatrix[0][3] = pmdl->scale_origin[0] * size;
+	tmatrix[1][3] = pmdl->scale_origin[1] * size;
+	tmatrix[2][3] = pmdl->scale_origin[2] * size;
 
 // TODO: can do this with simple matrix rearrangement
 

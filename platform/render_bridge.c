@@ -113,6 +113,9 @@ static void ChooseTexturePack(void)
 }
 static char loaded_pack[64]; /* lq_texture_pack when the loaded scene was built */
 /* Luminous tone mapping and emission, for tuning by eye (see LQ_GPUTone). */
+/* Map fog (Video Options -> Fog) in Classic GPU and Luminous, and the share
+ * of it over the sky, as QuakeSpasm's r_skyfog. */
+static cvar_t lq_fog = {"lq_fog", "1", true}, r_skyfog = {"r_skyfog", "0.5"};
 static cvar_t lq_tone_shoulder = {"lq_tone_shoulder", "0.8"}, lq_tone_white = {"lq_tone_white", "6"};
 static cvar_t lq_emission = {"lq_emission", "3"}, lq_sprite_emission = {"lq_sprite_emission", "3"};
 static struct { uint64_t key; lq_scene scene; uint32_t tubes; size_t bytes; double used; } scene_cache[SCENE_CACHE_ENTRIES];
@@ -228,6 +231,7 @@ void LQ_RenderBridgeRegister(void)
     Cvar_RegisterVariable(&lq_panel_shadows); Cvar_RegisterVariable(&lq_shadow_free);
     Cvar_RegisterVariable(&lq_pack_textures); Cvar_RegisterVariable(&lq_pack_bumps); Cvar_RegisterVariable(&lq_pack_parallax); Cvar_RegisterVariable(&lq_texture_pack);
     Cvar_RegisterVariable(&lq_pack_brightness);
+    Cvar_RegisterVariable(&lq_fog); Cvar_RegisterVariable(&r_skyfog);
     Cvar_RegisterVariable(&lq_tone_shoulder); Cvar_RegisterVariable(&lq_tone_white);
     Cvar_RegisterVariable(&lq_emission); Cvar_RegisterVariable(&lq_sprite_emission);
     Cmd_AddCommand("lq_lights", ListLights_f);
@@ -288,6 +292,8 @@ static lq_gpu *owner;
 static lq_view view;
 static unsigned palette_cache[256];
 static qboolean palette_valid;
+static char shown_sky[64]; /* the skybox on the GPU, "" for the map's sky texture */
+static qboolean sky_checked;
 int LQ_RenderBridgeActive(void) { return owner != NULL; }
 void LQ_RenderAfterCommands(void) { LQ_BackgroundPoll(); LQ_ApplyRenderer(); }
 
@@ -339,6 +345,7 @@ void LQ_RenderBridgeShutdown(void)
 }
 void LQ_RenderMapChanged(void) {
     CancelSceneTasks();
+    sky_checked = false;
     loaded = false; captured_scene = direct_frame = false;
     memset(spark_lights, 0, sizeof(spark_lights)); next_spark = 0;
     LQ_EntitiesReset(); SceneCacheStore(); free(world_draws); world_draws = NULL;
@@ -353,7 +360,7 @@ void LQ_RenderBegin(void)
     lq_gpu *gpu = LQ_PlayableGPU();
     if (!gpu) return;
     if (owner != gpu) {
-        owner = gpu; loaded = false; palette_valid = false;
+        owner = gpu; loaded = false; palette_valid = false; sky_checked = false;
         /* A placeholder permits opaque software menus before any map exists. */
         if (!LQ_SceneFixture(&scene) || !LQ_GPUUpload(gpu, &scene, error, sizeof(error))) {
             LQ_SceneFree(&scene); LQ_FallbackRenderer("GPU placeholder upload failed"); return;
@@ -439,6 +446,36 @@ void LQ_RenderBegin(void)
         if (!cached) Con_Printf("%s: copied live BSP world; map resources replaced.\n", luminous ? "Luminous (experimental)" : "Classic GPU");
     }
 }
+/* A skybox named by the map, the server or the sky command:
+ * gfx/env/<name>rt and its other five faces, from the game folders or the
+ * chosen texture pack (whose skyboxes DarkPlaces keeps in env/). */
+static void UpdateSkybox(void)
+{
+    static const char *const sides[6] = {"rt", "lf", "bk", "ft", "up", "dn"};
+    if (sky_checked && !strcmp(shown_sky, cl.skyboxname)) return;
+    sky_checked = true;
+    snprintf(shown_sky, sizeof(shown_sky), "%s", cl.skyboxname);
+    lq_image faces[6] = {{0}};
+    int found = 0;
+    char error[256], base[MAX_QPATH];
+    if (shown_sky[0]) {
+        const char *pack = luminous ? texture_pack_path : NULL; /* texture packs are Luminous's */
+        lq_archive *archive = LQ_QuakePackArchive(pack);
+        for (int f = 0; f < 6; ++f) {
+            snprintf(base, sizeof(base), "gfx/env/%s%s", shown_sky, sides[f]);
+            if (!LQ_QuakeLoadImage(pack, archive, base, &faces[f])) {
+                snprintf(base, sizeof(base), "env/%s%s", shown_sky, sides[f]);
+                LQ_QuakeLoadImage(pack, archive, base, &faces[f]);
+            }
+            found += faces[f].pixels != NULL;
+        }
+        LQ_ArchiveClose(archive);
+        if (found) Con_DPrintf("Skybox %s: %d of 6 faces.\n", shown_sky, found);
+        else Con_Printf("Skybox %s not found (gfx/env/%srt.tga and the rest); drawing the map's sky.\n", shown_sky, shown_sky);
+    }
+    if (!LQ_GPUSkybox(owner, found ? faces : NULL, error, sizeof(error))) Con_Printf("Skybox %s: %s\n", shown_sky, error);
+    for (int f = 0; f < 6; ++f) free(faces[f].pixels);
+}
 int LQ_RenderGPUView(void)
 {
     if (!owner || !loaded || Cvar_VariableValue("lcd_x") || Cvar_VariableValue("r_drawflat") ||
@@ -468,6 +505,7 @@ int LQ_RenderGPUView(void)
             }
         }
     }
+    UpdateSkybox();
     LQ_EntitiesBegin(&map_scene); LQ_EntitiesBuild(&map_scene); R_DrawParticles();
     V_SetContentsColor(r_viewleaf->contents);
     CaptureView();
@@ -646,8 +684,6 @@ static void LuminousLights(void)
     view.pack_textures = lq_pack_textures.value != 0; view.pack_bumps = lq_pack_bumps.value != 0;
     view.pack_match = lq_pack_brightness.value != 0;
     view.pack_parallax = lq_pack_parallax.value > 0 && lq_pack_parallax.value <= 0.2f ? lq_pack_parallax.value : 0;
-    view.palette_gamma = v_gamma.value;
-    memcpy(view.palette_shift, v_palette_shift, sizeof(view.palette_shift));
     LQ_BuildVisibleLightInteractions(&map_scene, runtime_lights, count, world_draws, interaction_draws);
     for (uint32_t i = 0; i < map_scene.draw_count; ++i)
         if (world_draws[i].index_count)
@@ -695,6 +731,11 @@ static void CaptureView(void)
         view.dynamic_lights[i][3] = cl_dlights[i].radius;
     }
     view.water_alpha = WaterAlpha();
+    /* The palette's gamma and screen tints, for colours from outside it
+     * (pack images, skyboxes, fog). */
+    view.palette_gamma = v_gamma.value;
+    memcpy(view.palette_shift, v_palette_shift, sizeof(view.palette_shift));
+    if (lq_fog.value) { CL_FogCurrent(view.fog); view.sky_fog = r_skyfog.value; }
     view.disable_culling = !lq_cull.value; view.disable_shadows = !lq_shadows.value;
     view.water_warp = direct_frame && r_waterwarp.value && r_viewleaf->contents <= CONTENTS_WATER;
     if (luminous && direct_frame && interaction_draws) LuminousLights();

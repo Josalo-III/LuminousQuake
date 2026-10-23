@@ -364,15 +364,20 @@ void CL_TimeDemo_f (void);
 void CL_ParseServerMessage (void);
 
 // LuminousQuake: FitzQuake fog, from svc_fog, the fog command and the
-// worldspawn "fog" key. Stored for the renderers; none draws it yet.
+// worldspawn "fog" key. Classic GPU and Luminous draw it; Software doesn't.
+// A change with a time fades from the fog shown then over that time.
 typedef struct
 {
 	float	density;		// 0 = no fog
 	float	color[3];		// 0-1
+	float	old_density, old_color[3];	// what a fade starts from
+	double	fade_start, fade_end;		// cl.time; equal when not fading
 } cl_fog_t;
 extern	cl_fog_t	cl_fog;
 void CL_ParseFog (void);
 void CL_Fog_f (void);
+void CL_Sky_f (void);
+void CL_FogCurrent (float fog[4]);	// density, red, green, blue now
 void CL_NewTranslation (int slot);
 
 //

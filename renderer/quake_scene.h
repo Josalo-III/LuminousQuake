@@ -16,6 +16,14 @@ int LQ_QuakeSceneVisibleDraws(const lq_scene *scene, const float camera[3], uint
  * parallel. counts gets colour, normal and glow images found.
  * Returns the number of materials given any image. */
 uint32_t LQ_QuakeSceneLoadPack(lq_scene *scene, const char *pack, lq_range_runner run, uint32_t counts[3]);
+/* An image named `base` (a path without extension) as .tga, .png then .jpg,
+ * from the game's search path, then the pack at `pack` (a folder, or the
+ * .pk3 opened as `archive`), decoded to RGBA8. Returns 0 when none decodes.
+ * LQ_QuakePackArchive opens `pack` when it is a .pk3 (else NULL); close it
+ * with LQ_ArchiveClose. */
+struct lq_archive;
+struct lq_archive *LQ_QuakePackArchive(const char *pack);
+int LQ_QuakeLoadImage(const char *pack, struct lq_archive *archive, const char *base, lq_image *out);
 void LQ_QuakeSceneShutdown(void);
 void LQ_QuakeLightstyles(float time, float values[256]);
 #endif

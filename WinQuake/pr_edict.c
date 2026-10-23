@@ -867,16 +867,8 @@ if (!strcmp(com_token, "light"))
 		{
 #ifdef LQ_PORTABLE
 			/* FitzQuake worldspawn keys, read by the client (CL_ParseWorldspawn) */
-			if (ent == sv.edicts && !strcmp(keyname, "fog"))
-			{
-				Con_Printf ("Map fog is not drawn yet; rendering without fog.\n");
+			if (ent == sv.edicts && (!strcmp(keyname, "fog") || !strcmp(keyname, "sky") || !strcmp(keyname, "skyname")))
 				continue;
-			}
-			if (ent == sv.edicts && (!strcmp(keyname, "sky") || !strcmp(keyname, "skyname")))
-			{
-				Con_Printf ("Map skybox %s is not drawn yet; using the map's sky texture.\n", com_token);
-				continue;
-			}
 #endif
 			Con_Printf ("'%s' is not a field\n", keyname);
 			continue;

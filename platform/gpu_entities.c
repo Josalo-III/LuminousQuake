@@ -66,6 +66,14 @@ static lq_draw *Draw(uint32_t count, uint32_t material, uint32_t flags)
     for (uint32_t i = 0; i < count; ++i) indices[frame.vertex_count+i] = frame.vertex_count+i;
     return d;
 }
+/* Entity alpha (protocols 666/999): opacity 0-1, 1 for the default. */
+static float Opacity(const entity_t *e) { return ENTALPHA_DECODE(e->alpha); }
+/* A translucent entity's draws blend over the frame by its opacity, after
+ * everything solid, and cast no shadow. */
+static void Translucent(lq_draw *d, float opacity)
+{
+    if (opacity < 1) { d->flags |= LQ_SURFACE_TRANSLUCENT; d->alpha = opacity; }
+}
 static uint32_t Material(const void *model, uint32_t offset, const byte *pixels,
                          unsigned width, unsigned height, const byte *translation)
 {
@@ -332,7 +340,9 @@ static void Alias(entity_t *e, int weapon)
                                 model->skinwidth, model->skinheight, translation);
     int pose = e->frame >= 0 && e->frame < model->numframes ? e->frame : 0;
     int offset = header->frames[pose].frame;
-    float interval = LERP_STEP;
+    /* A single pose lasts until the server's next think when it said when
+     * that is (U_LERPFINISH), as FitzQuake reads it; otherwise 0.1 s. */
+    float interval = e->lerpfinish > 0 ? (float)fmax(e->lerpfinish - cl.time, 0.01) : LERP_STEP;
     if (header->frames[pose].type == ALIAS_GROUP) {
         maliasgroup_t *g = (maliasgroup_t *)((byte *)header+offset);
         const float *intervals = (float *)((byte *)header+g->intervals);
@@ -391,9 +401,11 @@ static void Alias(entity_t *e, int weapon)
     /* Luminous lights actors from runtime lights and probes. Flames and energy
      * effects stay self-lit; a rocket cannot cast around its own light origin.
      * Classic ignores these flags and keeps its original vertex shade. */
-    Draw(model->numtris*3, material, LQ_SURFACE_MODEL | (weapon ? LQ_SURFACE_WEAPON : 0) |
+    Translucent(Draw(model->numtris*3, material, LQ_SURFACE_MODEL | (weapon ? LQ_SURFACE_WEAPON : 0) |
         (emissive ? 0 : LQ_SURFACE_ACTOR) |
-        (emissive || (e->model->flags & EF_ROCKET) ? LQ_SURFACE_NOSHADOW : 0));
+        (emissive || (e->model->flags & EF_ROCKET) ? LQ_SURFACE_NOSHADOW : 0)), Opacity(e));
+    /* Protocol 999 entity scale, about the entity's origin. */
+    float size = e->scale && e->scale != ENTSCALE_DEFAULT ? e->scale / (float)ENTSCALE_DEFAULT : 1;
     for (int i = 0; i < model->numtris; ++i) for (int j = 0; j < 3; ++j) {
         int p = triangles[i].vertindex[j];
         if (p < 0 || p >= model->numverts || points[p].lightnormalindex >= 162 || from[p].lightnormalindex >= 162)
@@ -402,7 +414,7 @@ static void Alias(entity_t *e, int weapon)
         vec3_t local, normal, n;
         const float *n0 = r_avertexnormals[from[p].lightnormalindex], *n1 = r_avertexnormals[points[p].lightnormalindex];
         for (int k = 0; k < 3; ++k) {
-            local[k] = (from[p].v[k] + (points[p].v[k] - from[p].v[k]) * blend) * model->scale[k] + model->scale_origin[k];
+            local[k] = ((from[p].v[k] + (points[p].v[k] - from[p].v[k]) * blend) * model->scale[k] + model->scale_origin[k]) * size;
             n[k] = n0[k] + (n1[k] - n0[k]) * blend;
         }
         if (VectorNormalize(n) < 0.001f) VectorCopy(n1, n);
@@ -438,8 +450,8 @@ static void Sprite(entity_t *e)
     const int corners[] = {0,1,2,0,2,3};
     const float coords[4][2] = {{s->left,s->up},{s->right,s->up},{s->right,s->down},{s->left,s->down}};
     int emissive = !strcmp(e->model->name, "progs/s_explod.spr") || !strcmp(e->model->name, "progs/s_light.spr");
-    Draw(6, material, LQ_SURFACE_MODEL|LQ_SURFACE_MASKED|LQ_SURFACE_SPRITE|
-        (emissive ? 0 : LQ_SURFACE_ACTOR|LQ_SURFACE_DIFFUSE_EFFECT));
+    Translucent(Draw(6, material, LQ_SURFACE_MODEL|LQ_SURFACE_MASKED|LQ_SURFACE_SPRITE|
+        (emissive ? 0 : LQ_SURFACE_ACTOR|LQ_SURFACE_DIFFUSE_EFFECT)), Opacity(e));
     for (int i = 0; i < 6; ++i) {
         int corner = corners[i]; lq_vertex *v = &vertices[frame.vertex_count++]; memset(v,0,sizeof(*v));
         for (int j = 0; j < 3; ++j) v->position[j] = e->origin[j]+right[j]*coords[corner][0]+up[j]*coords[corner][1];
@@ -466,7 +478,7 @@ static void Brush(entity_t *e, const lq_scene *world)
             msurface_t *s = &model->surfaces[model->firstmodelsurface+i];
             texture_t *texture = R_TextureAnimation(s->texinfo->texture);
             uint32_t material = Material(texture,0,(byte *)texture+texture->offsets[0],texture->width,texture->height,NULL);
-            Draw((s->numedges-2)*3,material,LQ_SURFACE_MODEL|LQ_SURFACE_ACTOR);
+            Translucent(Draw((s->numedges-2)*3,material,LQ_SURFACE_MODEL|LQ_SURFACE_ACTOR), Opacity(e));
             float shade = model->lightdata ? fminf(fmaxf((255-R_LightPoint(e->origin))*0.25f,0),63) : 0;
             for (int triangle = 1; triangle < s->numedges-1; ++triangle) for (int corner = 0; corner < 3; ++corner) {
                 int p = corner == 0 ? 0 : triangle+corner-1;
@@ -488,6 +500,7 @@ static void Brush(entity_t *e, const lq_scene *world)
         if (surface >= world->draw_count) Sys_Error("Invalid GPU brush surface");
         const lq_draw *source = &world->draws[surface];
         lq_draw *d = Draw(source->index_count, LQ_AnimatedMaterial(world, model->surfaces[surface].texinfo->texture), source->flags);
+        Translucent(d, Opacity(e));
         memcpy(d->styles, source->styles, 4);
         memset(d->light_bits, 0xff, sizeof(d->light_bits));
         float centre[3] = {0, 0, 0};
@@ -513,17 +526,40 @@ static void Brush(entity_t *e, const lq_scene *world)
         }
     }
 }
+static void Entity(entity_t *e, const lq_scene *world)
+{
+    if (e->model->type == mod_alias) Alias(e, 0);
+    else if (e->model->type == mod_sprite) Sprite(e);
+    else if (e->model->type == mod_brush) Brush(e, world);
+}
+static float Distance(const entity_t *e)
+{
+    vec3_t centre, delta;
+    for (int k = 0; k < 3; ++k) centre[k] = e->origin[k] + (e->model->mins[k] + e->model->maxs[k]) * 0.5f;
+    VectorSubtract(centre, r_origin, delta);
+    return DotProduct(delta, delta);
+}
+static int FartherFirst(const void *a, const void *b)
+{
+    float da = Distance(*(entity_t *const *)a), db = Distance(*(entity_t *const *)b);
+    return da < db ? 1 : da > db ? -1 : 0;
+}
 void LQ_EntitiesBuild(const lq_scene *world)
 {
+    /* Translucent entities come after the solid ones, farthest first, so each
+     * blends over what lies behind it. A fully transparent one draws nothing. */
+    static entity_t *translucent[MAX_VISEDICTS];
+    int blended = 0;
     if (r_drawentities.value) for (int i = 0; i < cl_numvisedicts; ++i) {
         entity_t *e = cl_visedicts[i];
-        if (!e->model || e == &cl_entities[cl.viewentity]) continue;
-        if (e->model->type == mod_alias) Alias(e, 0);
-        else if (e->model->type == mod_sprite) Sprite(e);
-        else if (e->model->type == mod_brush) Brush(e, world);
+        if (!e->model || e == &cl_entities[cl.viewentity] || e->alpha == ENTALPHA_ZERO) continue;
+        if (Opacity(e) < 1) translucent[blended++] = e;
+        else Entity(e, world);
     }
+    qsort(translucent, blended, sizeof(*translucent), FartherFirst);
+    for (int i = 0; i < blended; ++i) Entity(translucent[i], world);
     if (r_drawviewmodel.value && cl.viewent.model && !(cl.items & IT_INVISIBILITY) &&
-        cl.stats[STAT_HEALTH] > 0 && !cl.intermission) Alias(&cl.viewent, 1);
+        cl.stats[STAT_HEALTH] > 0 && !cl.intermission && cl.viewent.alpha != ENTALPHA_ZERO) Alias(&cl.viewent, 1);
     currententity = &cl_entities[0];
 }
 /* A smoke puff's size within its range: 0-1, strongly skewed small (the

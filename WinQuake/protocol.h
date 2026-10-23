@@ -112,6 +112,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	ENTALPHA_ENCODE(a)	(((a)==0)?ENTALPHA_DEFAULT:(int)floorf(((a)<0?0:(a)>1?1:(a))*254.0f+1.5f))
 #define	ENTALPHA_DECODE(a)	(((a)==ENTALPHA_DEFAULT)?1.0f:((float)(a)-1)/254.0f)
 #define	ENTSCALE_DEFAULT	16		// U_SCALE / B_SCALE: 16 is 1.0
+#define	ENTSCALE_ENCODE(a)	(((a)==0)?ENTSCALE_DEFAULT:(int)floorf(((a)<0.0625f?0.0625f:(a)>15.9375f?15.9375f:(a))*ENTSCALE_DEFAULT+0.5f))
 
 
 // defaults for clientinfo messages

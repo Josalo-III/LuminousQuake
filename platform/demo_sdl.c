@@ -414,6 +414,8 @@ static int TestPlatform(qboolean no_audio)
     VERIFY(Cvar_VariableValue("lq_particles") == 0);
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); /* smooth animation off */
     VERIFY(Cvar_VariableValue("r_lerpmodels") == 1 && Cvar_VariableValue("r_lerpmove") == 1);
+    vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); /* fog off */
+    VERIFY(Cvar_VariableValue("lq_fog") == 1);
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); /* HDR off */
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); /* HDR peak 1.5x */
     VERIFY(Cvar_VariableValue("lq_hdr") == 1 && Cvar_VariableValue("lq_hdr_peak") == 0);
@@ -422,6 +424,8 @@ static int TestPlatform(qboolean no_audio)
     VERIFY(Cvar_VariableValue("lq_hdr") == 0 && Cvar_FindVar("lq_hdr")->archive);
     VERIFY(fabsf(Cvar_VariableValue("lq_hdr_peak") - 1.5f) < 0.001f && Cvar_FindVar("lq_hdr_peak")->archive);
     Cvar_SetValue("lq_hdr", 1); Cvar_SetValue("lq_hdr_peak", 0);
+    VERIFY(Cvar_VariableValue("lq_fog") == 0 && Cvar_FindVar("lq_fog")->archive);
+    Cvar_SetValue("lq_fog", 1);
     VERIFY(fabsf(Cvar_VariableValue("r_wateralpha") - 0.4f) < 0.001f && Cvar_FindVar("r_wateralpha")->archive);
     VERIFY(Cvar_VariableValue("r_fluorescent") == 2 && Cvar_FindVar("r_fluorescent")->archive);
     VERIFY(Cvar_VariableValue("lq_particles") == 1 && Cvar_FindVar("lq_particles")->archive);

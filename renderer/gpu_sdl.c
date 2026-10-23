@@ -50,6 +50,9 @@ struct lq_gpu {
     SDL_GPUTexture **pack_color, **pack_normal, *pack_blank_color, *pack_flat_normal;
     float *pack_gain, *pack_height; /* per world material: lq_material.pack_gain and pack_height */
     SDL_GPUSampler *pack_sampler;
+    /* A skybox's six faces side by side (LQ_GPUSkybox), bound in the pack
+     * colour slot for sky surfaces, which take no pack images. */
+    SDL_GPUTexture *skybox;
     /* The overlay texture and its staging buffer persist and are rewritten
      * each frame; the copy is recorded in the frame's own command buffer. */
     SDL_GPUTransferBuffer *overlay_transfer;
@@ -132,6 +135,7 @@ typedef struct {
     uint32_t shadow_free[4]; /* slots whose shadow lookup on this face cannot find a blocker */
     float pack[4]; /* x: draw the texture pack's colour; y: shade by its normal map; z: colour gain */
     float relief[4]; /* x: parallax depth (0 off); y: the height held at the face */
+    float entity[4]; /* x: a translucent entity's opacity (LQ_SURFACE_TRANSLUCENT) */
 } lq_surface_uniforms;
 typedef struct {
     float position_range[LQ_MAX_RUNTIME_LIGHTS][4], color_strength[LQ_MAX_RUNTIME_LIGHTS][4];
@@ -152,6 +156,8 @@ typedef struct {
     float limit[LQ_MAX_RUNTIME_LIGHTS][4]; /* x: most brightness the light adds to a surface; 0 none */
     float effects[4]; /* x: sprite fullbright emission; y: Quake's palette gamma, for pack colours */
     float palette_shift[4]; /* screen tints on pack colours: colour * (1 - w) + rgb */
+    float fog[4]; /* rgb: fog colour 0-1; w: density per unit (FitzQuake's / 64), 0 none */
+    float sky_fog[4]; /* x: share of fog over the sky; y: 1 when a skybox replaces the sky texture */
 } lq_light_uniforms;
 typedef struct { float face_projection[16]; } lq_shadow_uniforms;
 #define LQ_SHADOW_NEAR 2.0f
@@ -714,7 +720,7 @@ int LQ_GPUFrame(lq_gpu *g, const lq_frame *f, char *error, size_t size)
     for (uint32_t i = 0; i < f->draw_count; ++i) {
         lq_draw d = f->draws[i];
         if (d.flags & ~(LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_MODEL|LQ_SURFACE_MASKED|LQ_SURFACE_WEAPON|LQ_SURFACE_ACTOR|LQ_SURFACE_DIFFUSE_EFFECT|LQ_SURFACE_SOLID_EFFECT|LQ_SURFACE_NOSHADOW|LQ_SURFACE_ERODE|LQ_SURFACE_SPRITE|
-                LQ_SURFACE_SUBMERGED) ||
+                LQ_SURFACE_SUBMERGED|LQ_SURFACE_TRANSLUCENT) || !(d.alpha >= 0 && d.alpha <= 1) ||
             d.material >= f->material_count || d.first_index > f->index_count ||
             d.index_count > f->index_count - d.first_index || !d.index_count || d.index_count % 3) {
             SDL_SetError("invalid frame triangle range"); return Error(error, size, "GPU frame draws");
@@ -727,9 +733,9 @@ int LQ_GPUFrame(lq_gpu *g, const lq_frame *f, char *error, size_t size)
             for (int k = 0; k < 3; ++k) { bounds[k] = fminf(bounds[k], p[k]); bounds[k+3] = fmaxf(bounds[k+3], p[k]); }
         }
         /* Actors and moving brush faces cast; the view weapon, particles,
-         * sprites, flames and liquids do not. */
+         * sprites, flames, liquids and translucent entities do not. */
         int brush = !(d.flags & LQ_SURFACE_MODEL), actor = (d.flags & LQ_SURFACE_ACTOR) != 0;
-        if ((brush || actor) && !(d.flags & (LQ_SURFACE_WEAPON|LQ_SURFACE_MASKED|LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_DIFFUSE_EFFECT|LQ_SURFACE_SOLID_EFFECT|LQ_SURFACE_NOSHADOW))) {
+        if ((brush || actor) && !(d.flags & (LQ_SURFACE_WEAPON|LQ_SURFACE_MASKED|LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_DIFFUSE_EFFECT|LQ_SURFACE_SOLID_EFFECT|LQ_SURFACE_NOSHADOW|LQ_SURFACE_TRANSLUCENT))) {
             struct lq_caster *c = &g->frame_casters[g->frame_caster_count++];
             c->draw = i;
             memcpy(c->min, g->frame_bounds[i], sizeof(c->min)); memcpy(c->max, g->frame_bounds[i] + 3, sizeof(c->max));
@@ -1113,6 +1119,7 @@ static void SurfaceUniforms(lq_surface_uniforms *uniforms, const lq_gpu *g,
     if (view->luminous_lighting && !bounds && !view->disable_shadow_free)
         for (int w = 0; w < 4; ++w) uniforms->shadow_free[w] = draw->shadow_free_bits[w] & ~g->movers[w];
     uniforms->face_light[0] = (float)lead;
+    uniforms->entity[0] = draw->flags & LQ_SURFACE_TRANSLUCENT ? draw->alpha : 1;
     uniforms->parameters[0] = view->time; uniforms->parameters[1] = (float)draw->flags;
     uniforms->parameters[2] = (float)g->smooth; uniforms->parameters[3] = (float)g->mipmaps;
     memcpy(uniforms->camera,view->origin,sizeof(view->origin)); uniforms->camera[3] = (float)g->anisotropy;
@@ -1177,6 +1184,12 @@ static void LightUniforms(lq_light_uniforms *uniforms, const lq_gpu *g, const lq
     uniforms->effects[0] = g->sprite_emission;
     uniforms->effects[1] = view->palette_gamma > 0 ? view->palette_gamma : 1;
     memcpy(uniforms->palette_shift, view->palette_shift, sizeof(uniforms->palette_shift));
+    if (view->fog[0] > 0) {
+        for (int k = 0; k < 3; ++k) uniforms->fog[k] = fminf(fmaxf(view->fog[k + 1], 0), 1);
+        uniforms->fog[3] = view->fog[0] / 64;
+        uniforms->sky_fog[0] = fminf(fmaxf(view->sky_fog, 0), 1);
+    }
+    uniforms->sky_fog[1] = g->skybox != NULL;
     uniforms->shadow_filter[0] = view->shadow_detail < 0 ? 0 : view->shadow_detail > 0 ? view->shadow_detail : LQ_SHADOW_DETAIL;
     uniforms->tuning[1] = g->bounce_ratio;
     uniforms->tuning[2] = view->luminous_lighting && g->bounce_ratio > 0 && !view->disable_bounce;
@@ -1432,6 +1445,7 @@ static void DrawSurface(lq_gpu *g, SDL_GPUCommandBuffer *command, SDL_GPURenderP
     SurfaceUniforms(&uniforms,g,v,d,lead);
     uniforms.parameters[1] = (float)(d->flags | extra_flags);
     SDL_GPUTexture *pack_color = g->pack_blank_color, *pack_normal = g->pack_flat_normal;
+    if ((d->flags & LQ_SURFACE_SKY) && g->skybox) pack_color = g->skybox;
     if (pack < g->texture_count && g->pack_color && v->luminous_lighting &&
             !(d->flags & (LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_MASKED))) {
         if (v->pack_textures && g->pack_color[pack]) {
@@ -1455,6 +1469,35 @@ static void DrawSurface(lq_gpu *g, SDL_GPUCommandBuffer *command, SDL_GPURenderP
     SDL_BindGPUFragmentSamplers(pass, 0, samplers, 16);
     SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
     SDL_DrawGPUIndexedPrimitives(pass, d->index_count, 1, d->first_index, 0, 0);
+}
+int LQ_GPUSkybox(lq_gpu *g, const lq_image faces[6], char *error, size_t size)
+{
+    if (!g) return 0;
+    if (g->skybox) { SDL_WaitForGPUIdle(g->device); SDL_ReleaseGPUTexture(g->device, g->skybox); }
+    g->skybox = NULL;
+    if (!faces) return 1;
+    /* Faces of different sizes are resampled to the largest. */
+    uint32_t side = 0;
+    for (int f = 0; f < 6; ++f) if (faces[f].pixels && faces[f].channels == 4) {
+        if (faces[f].width > side) side = faces[f].width;
+        if (faces[f].height > side) side = faces[f].height;
+    }
+    if (!side) return 1;
+    if (side > 2048) side = 2048; /* six faces side by side stay within 12288 */
+    lq_image atlas = {side * 6, side, 4, calloc((size_t)side * 6 * side, 4)};
+    if (!atlas.pixels) { SDL_SetError("out of memory"); return Error(error, size, "GPU skybox"); }
+    for (int f = 0; f < 6; ++f) {
+        const lq_image *face = &faces[f];
+        if (!face->pixels || face->channels != 4 || !face->width || !face->height) continue;
+        for (uint32_t y = 0; y < side; ++y) for (uint32_t x = 0; x < side; ++x) {
+            const uint8_t *p = face->pixels + ((size_t)(y * face->height / side) * face->width + x * face->width / side) * 4;
+            uint8_t *q = atlas.pixels + ((size_t)y * atlas.width + f * side + x) * 4;
+            q[0] = p[0]; q[1] = p[1]; q[2] = p[2]; q[3] = 255;
+        }
+    }
+    g->skybox = UploadImage(g, &atlas);
+    free(atlas.pixels);
+    return g->skybox ? 1 : Error(error, size, "GPU skybox upload");
 }
 int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, char *error, size_t size)
 {
@@ -1546,25 +1589,28 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
         for (uint32_t i = 0; i < g->frame_draw_count; ++i) {
             const lq_draw *d = &g->frame_draws[i];
             if (liquid && translucent != ((d->flags & LQ_SURFACE_WATER) != 0)) continue;
-            if ((d->flags & LQ_SURFACE_ERODE) || ((d->flags & LQ_SURFACE_SPRITE) && v->luminous_lighting))
-                continue; /* smoke, and Luminous's feathered sprites: blended last */
+            if ((d->flags & (LQ_SURFACE_ERODE|LQ_SURFACE_TRANSLUCENT)) || ((d->flags & LQ_SURFACE_SPRITE) && v->luminous_lighting))
+                continue; /* translucent entities, smoke and Luminous's feathered sprites: blended last */
             if (cull && !(d->flags & LQ_SURFACE_WEAPON) && !LQ_BoundsInClip(matrix, g->frame_bounds[i])) continue;
             viewport.max_depth = d->flags & LQ_SURFACE_WEAPON ? 0.3f : 1.0f;
             SDL_SetGPUViewport(pass, &viewport);
             DrawSurface(g, command, pass, v, d, 0, g->frame_textures[d->material], shadows, 0, FramePack(g, d));
         }
     }
-    {   /* Smoke and Luminous sprites last, blended by their alpha over
+    {   /* Translucent entities (farthest first, as LQ_EntitiesBuild orders
+         * them), smoke and Luminous sprites last, blended by their alpha over
          * everything solid and liquid. */
         SDL_GPUGraphicsPipeline *smoke = g->smoke[g->samples == 4 ? 2 : g->samples ? 1 : 0];
         int bound = 0;
         for (uint32_t i = 0; smoke && i < g->frame_draw_count; ++i) {
             const lq_draw *d = &g->frame_draws[i];
-            if (!(d->flags & LQ_SURFACE_ERODE) && !((d->flags & LQ_SURFACE_SPRITE) && v->luminous_lighting)) continue;
-            if (cull && !LQ_BoundsInClip(matrix, g->frame_bounds[i])) continue;
+            if (!(d->flags & (LQ_SURFACE_ERODE|LQ_SURFACE_TRANSLUCENT)) && !((d->flags & LQ_SURFACE_SPRITE) && v->luminous_lighting)) continue;
+            if (cull && !(d->flags & LQ_SURFACE_WEAPON) && !LQ_BoundsInClip(matrix, g->frame_bounds[i])) continue;
+            float depth = d->flags & LQ_SURFACE_WEAPON ? 0.3f : 1.0f;
+            if (bound && viewport.max_depth != depth) { viewport.max_depth = depth; SDL_SetGPUViewport(pass, &viewport); }
             if (!bound) {
                 SDL_BindGPUGraphicsPipeline(pass, smoke);
-                viewport.max_depth = 1; SDL_SetGPUViewport(pass, &viewport);
+                viewport.max_depth = depth; SDL_SetGPUViewport(pass, &viewport);
                 vertex = (SDL_GPUBufferBinding){g->frame_vertices, 0};
                 index = (SDL_GPUBufferBinding){g->frame_indices, 0};
                 SDL_BindGPUVertexBuffers(pass, 0, &vertex, 1);
@@ -1724,6 +1770,7 @@ void LQ_GPUDestroy(lq_gpu *g)
         if (g->shadow_dummy) SDL_ReleaseGPUTexture(g->device, g->shadow_dummy);
         if (g->pack_blank_color) SDL_ReleaseGPUTexture(g->device, g->pack_blank_color);
         if (g->pack_flat_normal) SDL_ReleaseGPUTexture(g->device, g->pack_flat_normal);
+        if (g->skybox) SDL_ReleaseGPUTexture(g->device, g->skybox);
         if (g->shadow_sampler) SDL_ReleaseGPUSampler(g->device, g->shadow_sampler);
         if (g->depth_sampler) SDL_ReleaseGPUSampler(g->device, g->depth_sampler);
         if (g->shadow_pipeline) SDL_ReleaseGPUGraphicsPipeline(g->device, g->shadow_pipeline);

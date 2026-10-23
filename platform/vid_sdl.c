@@ -261,6 +261,13 @@ void LQ_ApplyRenderer(void)
     } else if (gpu) LQ_FallbackRenderer("Software selected");
 }
 
+/* lq_capture <file.bmp>: saves the last frame shown, as --screenshot does at
+ * exit, so one test run can take several views. */
+static void Capture(void)
+{
+    if (Cmd_Argc() != 2) { Con_Printf("usage: lq_capture <file.bmp>\n"); return; }
+    Con_Printf(LQ_SaveFrame(Cmd_Argv(1)) ? "Saved %s\n" : "Could not save %s\n", Cmd_Argv(1));
+}
 void VID_Init(unsigned char *palette)
 {
     int width, height, win_width, win_height;
@@ -282,6 +289,7 @@ void VID_Init(unsigned char *palette)
         Cvar_RegisterVariable(&lq_shadow_detail);
         Cmd_AddCommand("vid_restart", Restart);
         Cmd_AddCommand("vid_togglefullscreen", ToggleFullscreen);
+        Cmd_AddCommand("lq_capture", Capture);
         vid_menudrawfn = VideoMenuDraw;
         vid_menukeyfn = VideoMenuKey;
         cvars_registered = true;
@@ -431,7 +439,7 @@ static const int resolutions[][2] = {
 };
 static int video_cursor, video_choice, video_fullscreen, video_vsync;
 static int video_filter, video_msaa, video_mipmaps, video_anisotropy, video_water, video_tubes, video_particles;
-static int video_lerp;
+static int video_lerp, video_fog;
 static int video_hdr, video_peak; /* lq_hdr; index into peak_levels */
 static float video_peak_custom; /* a lq_hdr_peak set from the console that no preset matches; kept until changed here */
 static const float peak_levels[] = {0, 1.5f, 2, 3, 4, 6, 10};
@@ -457,6 +465,7 @@ static void VideoMenuInit(void)
     video_tubes = r_fluorescent.value >= 0 && r_fluorescent.value < 5 ? (int)r_fluorescent.value : 1;
     video_particles = lq_particles.value != 0;
     video_lerp = r_lerpmodels.value != 0 || r_lerpmove.value != 0;
+    video_fog = Cvar_VariableValue("lq_fog") != 0;
     video_hdr = lq_hdr.value != 0;
     video_peak = 0; video_peak_custom = 0;
     for (int i = 1; i < 7; ++i) if (fabsf(lq_hdr_peak.value - peak_levels[i]) < 0.01f) video_peak = i;
@@ -483,37 +492,40 @@ static void VideoMenuDraw(void)
     M_Print(32, 110, "Tube camera"); M_Print(168, 110, tube_cameras[video_tubes]);
     M_Print(32, 120, "3D particles"); M_Print(168, 120, video_particles ? "on" : "off");
     M_Print(32, 130, "Smooth animation"); M_Print(168, 130, video_lerp ? "on" : "off");
-    M_Print(32, 140, "HDR"); M_Print(168, 140, video_hdr ? "auto" : "off");
-    M_Print(32, 150, "HDR peak"); M_Print(168, 150, video_peak ? va("%gx white", peak_levels[video_peak]) :
+    M_Print(32, 140, "Fog"); M_Print(168, 140, video_fog ? "map's" : "off");
+    M_Print(32, 150, "HDR"); M_Print(168, 150, video_hdr ? "auto" : "off");
+    M_Print(32, 160, "HDR peak"); M_Print(168, 160, video_peak ? va("%gx white", peak_levels[video_peak]) :
         video_peak_custom ? va("%gx white", video_peak_custom) : "as reported");
-    M_Print(32, 160, "Apply changes");
+    M_Print(32, 170, "Apply changes");
     M_DrawCharacter(16, 20 + video_cursor * 10, 12 + ((int)(realtime * 4) & 1));
-    M_Print(32, 174, va("Current: %u x %u", vid.width* (LQ_UIActive() ? LQ_UIScale() : 1), vid.height* (LQ_UIActive() ? LQ_UIScale() : 1)));
+    M_Print(32, 182, va("Current: %u x %u", vid.width* (LQ_UIActive() ? LQ_UIScale() : 1), vid.height* (LQ_UIActive() ? LQ_UIScale() : 1)));
     if (video_applied)
-        M_Print(32, 186, "Settings applied.");
+        M_Print(32, 192, "Settings applied.");
     else if (video_cursor == 7 && !video_mipmaps)
-        M_Print(32, 186, "Anisotropy needs mipmaps enabled.");
+        M_Print(32, 192, "Anisotropy needs mipmaps enabled.");
     else if (video_cursor == 8 && video_water)
-        M_Print(32, 186, "Unvised maps draw every room.");
+        M_Print(32, 192, "Unvised maps draw every room.");
     else if (video_cursor == 9)
-        M_Print(32, 186, "Luminous: how fluorescents film.");
+        M_Print(32, 192, "Luminous: how fluorescents film.");
     else if (video_cursor == 10)
-        M_Print(32, 186, "Luminous: solid chunks, drops.");
+        M_Print(32, 192, "Luminous: solid chunks, drops.");
     else if (video_cursor == 11)
-        M_Print(32, 186, "GPU: blend poses, ease steps.");
+        M_Print(32, 192, "GPU: blend poses, ease steps.");
     else if (video_cursor == 12)
-        M_Print(32, 186, "GPU: HDR when the display is.");
+        M_Print(32, 192, "GPU: fog from maps that set it.");
     else if (video_cursor == 13)
-        M_Print(32, 186, "Cap highlights if they clip.");
-    else M_Print(32, 186, "Left/right changes; Apply saves.");
+        M_Print(32, 192, "GPU: HDR when the display is.");
+    else if (video_cursor == 14)
+        M_Print(32, 192, "Cap highlights if they clip.");
+    else M_Print(32, 192, "Left/right changes; Apply saves.");
 }
 static void VideoMenuKey(int key)
 {
     VideoMenuInit();
     video_applied = false;
     if (key == K_ESCAPE) { video_menu_active = false; M_Menu_Options_f(); return; }
-    if (key == K_UPARROW) { video_cursor = (video_cursor + 14) % 15; return; }
-    if (key == K_DOWNARROW) { video_cursor = (video_cursor + 1) % 15; return; }
+    if (key == K_UPARROW) { video_cursor = (video_cursor + 15) % 16; return; }
+    if (key == K_DOWNARROW) { video_cursor = (video_cursor + 1) % 16; return; }
     if (key != K_LEFTARROW && key != K_RIGHTARROW && key != K_ENTER) return;
     if (video_cursor == 0) {
         int count = sizeof(resolutions) / sizeof(resolutions[0]);
@@ -532,8 +544,9 @@ static void VideoMenuKey(int key)
     else if (video_cursor == 9) video_tubes = (video_tubes + (key == K_LEFTARROW ? 4 : 1)) % 5;
     else if (video_cursor == 10) video_particles = !video_particles;
     else if (video_cursor == 11) video_lerp = !video_lerp;
-    else if (video_cursor == 12) video_hdr = !video_hdr;
-    else if (video_cursor == 13) { video_peak = (video_peak + (key == K_LEFTARROW ? 6 : 1)) % 7; video_peak_custom = 0; }
+    else if (video_cursor == 12) video_fog = !video_fog;
+    else if (video_cursor == 13) video_hdr = !video_hdr;
+    else if (video_cursor == 14) { video_peak = (video_peak + (key == K_LEFTARROW ? 6 : 1)) % 7; video_peak_custom = 0; }
     else if (key == K_ENTER) {
         Cvar_SetValue("vid_width", resolutions[video_choice][0]);
         Cvar_SetValue("vid_height", resolutions[video_choice][1]);
@@ -545,6 +558,7 @@ static void VideoMenuKey(int key)
         Cvar_SetValue("r_fluorescent", video_tubes);
         Cvar_SetValue("lq_particles", video_particles);
         Cvar_SetValue("r_lerpmodels", video_lerp); Cvar_SetValue("r_lerpmove", video_lerp);
+        Cvar_SetValue("lq_fog", video_fog);
         Cvar_SetValue("lq_hdr", video_hdr); Cvar_SetValue("lq_hdr_peak", video_peak_custom ? video_peak_custom : peak_levels[video_peak]);
         Cbuf_AddText("vid_restart\n");
         video_menu_active = false; video_applied = true;

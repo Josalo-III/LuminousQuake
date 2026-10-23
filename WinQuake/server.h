@@ -51,6 +51,7 @@ typedef struct
 	int			protocol;			// LuminousQuake: sv_protocol when the level started
 	unsigned int	protocolflags;	// PRFL_* bits for PROTOCOL_RMQ, else 0
 	int			alpha_ofs;			// QuakeC "alpha" field offset in floats, or -1
+	int			scale_ofs;			// QuakeC "scale" field offset (999 with PRFL_EDICTSCALE), or -1
 	char		name[64];			// map name
 #ifdef QUAKE2
 	char		startspot[64];
@@ -247,6 +248,7 @@ int SV_MaxModels (void);
 int SV_MaxSounds (void);
 void SV_SignonCut (void);
 byte SV_EntityAlpha (edict_t *ent);
+byte SV_EntityScale (edict_t *ent);
 int SV_SendSignonChunk (client_t *client);	// 0 if the client was dropped
 
 void SV_SetIdealPitch (void);

@@ -934,6 +934,36 @@ static int PackFile(const char *pack, lq_archive *archive, const char *map, cons
     }
     return 0;
 }
+lq_archive *LQ_QuakePackArchive(const char *pack)
+{
+    size_t length = pack ? strlen(pack) : 0;
+    return length > 4 && !Q_strcasecmp((char *)pack + length - 4, ".pk3") ? LQ_ArchiveOpen(pack) : NULL;
+}
+int LQ_QuakeLoadImage(const char *pack, lq_archive *archive, const char *base, lq_image *out)
+{
+    static const char *formats[] = {"tga", "png", "jpg"};
+    char path[MAX_OSPATH], full[MAX_OSPATH];
+    memset(out, 0, sizeof(*out));
+    for (int source = 0; source < 2; ++source) {
+        if (source == 1 && (!pack || !pack[0])) break;
+        for (int f = 0; f < 3; ++f) {
+            lq_archive_blob file = {0};
+            snprintf(path, sizeof(path), "%s.%s", base, formats[f]);
+            if (source == 1 && archive) {
+                if (!LQ_ArchiveReadRaw(archive, path, &file) || !LQ_ArchiveExpand(&file)) continue;
+            } else if (source == 0) {
+                int length = 0;
+                file.data = COM_LoadMallocFileQuiet(path, &length); file.size = (size_t)length;
+            } else if (snprintf(full, sizeof(full), "%s/%s", pack, path) < (int)sizeof(full))
+                file.data = LoadPathFile(full, &file.size);
+            if (!file.data) continue;
+            int decoded = LQ_PackDecode(file.data, file.size, out);
+            free(file.data);
+            if (decoded) return 1;
+        }
+    }
+    return 0;
+}
 static void PackDecode(void *opaque, size_t begin, size_t end)
 {
     pack_job *job = opaque;
@@ -961,8 +991,7 @@ uint32_t LQ_QuakeSceneLoadPack(lq_scene *s, const char *pack, lq_range_runner ru
     COM_FileBase(loaded_world->name, map);
     pack_files *files = calloc(s->material_count, sizeof(*files));
     if (!files) return 0;
-    size_t pack_length = pack ? strlen(pack) : 0;
-    lq_archive *archive = pack_length > 4 && !Q_strcasecmp((char *)pack + pack_length - 4, ".pk3") ? LQ_ArchiveOpen(pack) : NULL;
+    lq_archive *archive = LQ_QuakePackArchive(pack);
     uint32_t any = 0;
     for (uint32_t i = 0; i < s->material_count; ++i) {
         const lq_material *m = &s->materials[i];

@@ -72,8 +72,8 @@ For the next working session. The standing priorities are in
   - the 64-channel sound;
   - the console-key safeguard;
   - trail smoke at length.
-- AD: entity alpha, fog and skyboxes are received but not drawn.
-  `U_LERPFINISH` isn't used by frame blending yet; ask before wiring it in.
+- AD: entity alpha, fog, skyboxes and `U_LERPFINISH` are drawn since
+  October 23 (AGENDA item 1); AD still needs `-game ad` to start.
 - Luminous bounce takes 27 s at load on `ad_tfuma`, and its light-reach table
   overflows.
 
@@ -95,6 +95,10 @@ For the next working session. The standing priorities are in
 - **Viewer** (id1 only): `build/luminousquake-gpu -basedir … -map e1m3
   --luminous --fixed-camera --run-seconds 3 --camera "x y z pitch yaw"
   --screenshot out.bmp`.
+- **Several shots from one window**: `lq_capture <file.bmp>` saves the last
+  frame shown, so one run's `autoexec.cfg` can `setpos`, wait and capture
+  view after view (October 23). Switching `lq_renderer` within a run did not
+  take in time for a capture; start one run per renderer.
 - Use a new scratch folder per run; deleting folders with `rm -rf` is blocked.
 - **Before running anything that opens windows**, tell the user and batch the
   runs.

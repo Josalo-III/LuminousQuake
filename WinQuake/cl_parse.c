@@ -231,6 +231,7 @@ LuminousQuake: the FitzQuake worldspawn keys "fog" (density red green blue)
 and "sky" (a gfx/env skybox name); svc_fog and svc_skybox override them.
 ==================
 */
+static void CL_FogSettle (void);
 static void CL_ParseWorldspawn (void)
 {
 	char	key[128], *data;
@@ -257,6 +258,7 @@ static void CL_ParseWorldspawn (void)
 			sscanf (com_token, "%f %f %f %f", &v[0], &v[1], &v[2], &v[3]);
 			cl_fog.density = v[0] < 0 ? 0 : v[0];
 			cl_fog.color[0] = v[1]; cl_fog.color[1] = v[2]; cl_fog.color[2] = v[3];
+			CL_FogSettle ();
 		}
 		else if (!Q_strcmp (key, "sky") || !Q_strcmp (key, "skyname"))
 		{
@@ -855,24 +857,66 @@ void CL_ParseStaticSound (int version)
 =====================
 CL_ParseFog / CL_Fog_f
 
-LuminousQuake: FitzQuake fog. The renderers do not draw fog yet, so the
-values are only kept; a fade time is accepted and ignored.
+LuminousQuake: FitzQuake fog. A change given a time fades to the new fog
+over that many seconds, from whatever was shown when it arrived.
 =====================
 */
 cl_fog_t	cl_fog;
 
+void CL_FogCurrent (float fog[4])
+{
+	int		i;
+	float	f = 1;
+	if (cl_fog.fade_end > cl_fog.fade_start && cl.time < cl_fog.fade_end)
+		f = cl.time <= cl_fog.fade_start ? 0 : (float)((cl.time - cl_fog.fade_start) / (cl_fog.fade_end - cl_fog.fade_start));
+	fog[0] = cl_fog.old_density + (cl_fog.density - cl_fog.old_density) * f;
+	for (i=0 ; i<3 ; i++)
+		fog[1+i] = cl_fog.old_color[i] + (cl_fog.color[i] - cl_fog.old_color[i]) * f;
+}
+
+static void CL_FogFade (float time)
+{
+	float	now[4];
+	int		i;
+	CL_FogCurrent (now);
+	cl_fog.old_density = now[0];
+	for (i=0 ; i<3 ; i++)
+		cl_fog.old_color[i] = now[1+i];
+	cl_fog.fade_start = cl.time;
+	cl_fog.fade_end = cl.time + (time > 0 ? time : 0);
+}
+
+static void CL_FogSettle (void)
+{
+	int		i;
+	cl_fog.old_density = cl_fog.density;
+	for (i=0 ; i<3 ; i++)
+		cl_fog.old_color[i] = cl_fog.color[i];
+	cl_fog.fade_start = cl_fog.fade_end = 0;
+}
+
 void CL_ParseFog (void)
 {
 	int		i;
-	cl_fog.density = MSG_ReadByte () / 255.0f;
+	float	time;
+	byte	values[4];
+	for (i=0 ; i<4 ; i++)
+		values[i] = MSG_ReadByte ();
+	time = MSG_ReadShort () / 100.0f;	// fade time in hundredths of a second
+	CL_FogFade (time);
+	cl_fog.density = values[0] / 255.0f;
 	for (i=0 ; i<3 ; i++)
-		cl_fog.color[i] = MSG_ReadByte () / 255.0f;
-	(void)MSG_ReadShort ();	// fade time in hundredths of a second
+		cl_fog.color[i] = values[1+i] / 255.0f;
+	if (time <= 0)
+		CL_FogSettle ();
 }
 
 void CL_Fog_f (void)
 {
 	int		i, argc = Cmd_Argc ();
+	float	time = argc >= 6 ? Q_atof (Cmd_Argv (5)) : 0;
+	if (argc > 1)
+		CL_FogFade (time);
 	switch (argc)
 	{
 	case 1:
@@ -895,6 +939,28 @@ void CL_Fog_f (void)
 		cl_fog.color[i] = cl_fog.color[i] < 0 ? 0 : cl_fog.color[i] > 1 ? 1 : cl_fog.color[i];
 	if (cl_fog.density < 0)
 		cl_fog.density = 0;
+	if (time <= 0)
+		CL_FogSettle ();
+}
+
+/*
+=====================
+CL_Sky_f
+
+LuminousQuake: "sky <name>" (FitzQuake; "loadsky" in DarkPlaces) shows the
+skybox gfx/env/<name>{rt,bk,lf,ft,up,dn}; "sky" alone prints it, and an
+empty name ("sky \"\"") goes back to the map's sky texture.
+=====================
+*/
+void CL_Sky_f (void)
+{
+	if (Cmd_Argc () < 2)
+	{
+		Con_Printf ("sky: %s\n", cl.skyboxname[0] ? cl.skyboxname : "(the map's sky texture)");
+		return;
+	}
+	Q_strncpy (cl.skyboxname, Cmd_Argv (1), sizeof(cl.skyboxname) - 1);
+	cl.skyboxname[sizeof(cl.skyboxname) - 1] = 0;
 }
 
 #define SHOWNET(x) if(cl_shownet.value==2)Con_Printf ("%3i:%s\n", msg_readcount-1, x);

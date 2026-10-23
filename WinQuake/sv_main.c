@@ -549,6 +549,8 @@ void SV_WriteEntitiesToClient (edict_t	*clent, sizebuf_t *msg)
 		{
 			if (ent->baseline.alpha != ent->alpha)
 				bits |= U_ALPHA;
+			if (ent->baseline.scale != SV_EntityScale (ent))
+				bits |= U_SCALE;
 			if ((bits & U_FRAME) && ((int)ent->v.frame & 0xFF00))
 				bits |= U_FRAME2;
 			if ((bits & U_MODEL) && ((int)ent->v.modelindex & 0xFF00))
@@ -608,6 +610,8 @@ void SV_WriteEntitiesToClient (edict_t	*clent, sizebuf_t *msg)
 
 		if (bits & U_ALPHA)
 			MSG_WriteByte (msg, ent->alpha);
+		if (bits & U_SCALE)
+			MSG_WriteByte (msg, SV_EntityScale (ent));
 		if (bits & U_FRAME2)
 			MSG_WriteByte (msg, (int)ent->v.frame >> 8);
 		if (bits & U_MODEL2)
@@ -1056,6 +1060,21 @@ byte SV_EntityAlpha (edict_t *ent)
 
 /*
 ================
+SV_EntityScale
+
+LuminousQuake: the ENTSCALE encoding of an entity's QuakeC scale field,
+sent only by protocol 999 with PRFL_EDICTSCALE, as QuakeSpasm does.
+================
+*/
+byte SV_EntityScale (edict_t *ent)
+{
+	if (sv.scale_ofs < 0)
+		return ENTSCALE_DEFAULT;
+	return ENTSCALE_ENCODE(((float *)&ent->v)[sv.scale_ofs]);
+}
+
+/*
+================
 SV_SignonCut / SV_SendSignonChunk
 
 LuminousQuake: a large map's signon (baselines, statics, ambient sounds) no
@@ -1194,7 +1213,7 @@ void SV_CreateBaseline (void)
 				SV_ModelIndex(pr_strings + svent->v.model);
 		}
 		svent->baseline.alpha = SV_EntityAlpha (svent);
-		svent->baseline.scale = ENTSCALE_DEFAULT;
+		svent->baseline.scale = SV_EntityScale (svent);
 
 		// LuminousQuake: 666/999 send large models and frames and alpha;
 		// protocol 15 can't, so those baseline fields fall back
@@ -1215,6 +1234,8 @@ void SV_CreateBaseline (void)
 				bits |= B_LARGEFRAME;
 			if (svent->baseline.alpha != ENTALPHA_DEFAULT)
 				bits |= B_ALPHA;
+			if (svent->baseline.scale != ENTSCALE_DEFAULT)
+				bits |= B_SCALE;
 		}
 		
 	//
@@ -1243,6 +1264,8 @@ void SV_CreateBaseline (void)
 		}
 		if (bits & B_ALPHA)
 			MSG_WriteByte (&sv.signon, svent->baseline.alpha);
+		if (bits & B_SCALE)
+			MSG_WriteByte (&sv.signon, svent->baseline.scale);
 	}
 }
 
@@ -1383,10 +1406,11 @@ void SV_SpawnServer (char *server)
 		Con_Printf ("sv_protocol %s is not 15, 666 or 999; using 666\n", sv_protocol.string);
 		sv.protocol = PROTOCOL_FITZQUAKE;
 	}
-	sv.protocolflags = sv.protocol == PROTOCOL_RMQ ? PRFL_INT32COORD | PRFL_SHORTANGLE : 0;
+	sv.protocolflags = sv.protocol == PROTOCOL_RMQ ? PRFL_INT32COORD | PRFL_SHORTANGLE | PRFL_EDICTSCALE : 0;
 	{
-		ddef_t *alpha = ED_FindField ("alpha");
+		ddef_t *alpha = ED_FindField ("alpha"), *scale = ED_FindField ("scale");
 		sv.alpha_ofs = alpha && sv.protocol != PROTOCOL_NETQUAKE ? alpha->ofs : -1;
+		sv.scale_ofs = scale && (sv.protocolflags & PRFL_EDICTSCALE) ? scale->ofs : -1;
 	}
 
 // allocate server memory
