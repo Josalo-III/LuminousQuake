@@ -349,14 +349,19 @@ them. Principles, decided October 17, 2026:
   spawn, by an offline count (not timed). Mixing comes first on the
   thread. The search fills the time left, nearest cells first, because a
   distant sound's late update matters least.
-  **Built October 22, not yet played:** a sound thread (`platform/snd_sdl.c`)
+  **Done October 22–23; played by the user October 23:** the catwalk plays
+  without skipping. A sound thread (`platform/snd_sdl.c`)
   mixes every 5 ms, then searches for up to 3 ms. Sounds keep the last
   finished search until the next is done. The main thread hands over sounds
   and, once a frame, the listener and where each door and lift is. Loaded
   sounds stay in memory of their own, outside Quake's cache, for the session.
   `snd_trace` and `soundpaths` print a frame late, through the main thread.
   Only sealing movers within the search's reach are traced, and the muffle
-  pass traces none.
+  pass traces none. October 23: a level's sounds wait, silent, until the view
+  is in it. While a map loads the listener stands at the map's origin, and the
+  thread had mixed every looping sound near there through the Luminous build,
+  a second-long burst at start-up. The automated tests haven't been run on
+  the thread.
 
 ### 7. Online play, at least to the QuakeWorld standard
 

@@ -90,6 +90,7 @@ cvar_t _snd_mixahead = {"_snd_mixahead", "0.1", true};
    it sounds to start and stop and, once a frame, the listener. All of this is
    under the mixer lock. */
 static int		listener_entity;	// cl.viewentity
+static qboolean	listener_placed;	// the view is in the level; while it loads, the listener is at the origin
 static double	snd_clock;			// cl.time, for snd_trace
 static qboolean	snd_respatialize;	// the listener moved or a sound started
 static qboolean	snd_paths_new;		// sound thread only: a path search finished
@@ -501,6 +502,17 @@ void SND_Spatialize(channel_t *ch)
     vec3_t source_vec;
 
 	snd_shut = false;
+// LuminousQuake: while a map loads the listener stands at the map's origin, and
+// the sound thread mixes right through the load; the level's sounds wait,
+// silent, for the view. The listener's own sounds (menus) and sounds played
+// where it stands (the play command) still play.
+	if (!listener_placed && (ch->entnum != listener_entity || ch - channels >= MAX_DYNAMIC_CHANNELS + NUM_AMBIENTS)
+		&& !VectorCompare (ch->origin, listener_origin))
+	{
+		ch->leftvol = ch->rightvol = 0;
+		snd_shut = true;	// kept, as behind a closed door
+		return;
+	}
 // anything coming from the view entity will allways be full volume
 	if (ch->entnum == listener_entity)
 	{
@@ -893,7 +905,7 @@ void S_UpdateAmbientSounds (void)
 		return;
 
 	l = Mod_PointInLeaf (listener_origin, cl.worldmodel);
-	if (!l || !ambient_level.value)
+	if (!l || !ambient_level.value || !listener_placed)
 	{
 		for (ambient_channel = 0 ; ambient_channel< NUM_AMBIENTS ; ambient_channel++)
 			channels[ambient_channel].sfx = NULL;
@@ -954,6 +966,7 @@ void S_Update(vec3_t origin, vec3_t forward, vec3_t right, vec3_t up)
 	VectorCopy(right, listener_right);
 	VectorCopy(up, listener_up);
 	listener_entity = cl.viewentity;
+	listener_placed = cls.signon == SIGNONS;
 	snd_clock = cl.time;
 	LQ_SoundPathsGather(listener_origin);
 	
