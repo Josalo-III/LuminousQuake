@@ -275,6 +275,7 @@ typedef struct {
     uint32_t pack_textures, pack_bumps;
     uint32_t pack_match; /* scale pack colour to each original texture's brightness (pack_gain) */
     float pack_parallax; /* parallax depth from normal-map height, as a fraction of texture size; 0 off */
+    uint32_t pack_relief_shadows; /* the strongest light shadows the height field too (needs parallax) */
     /* What the game does to its palette, done to pack colours too: Quake's
      * gamma (the brightness slider; zero means 1), then before it the screen
      * tints as one mix, colour * (1 - w) + rgb on 0-1 values. */

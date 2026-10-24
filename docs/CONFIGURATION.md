@@ -133,9 +133,22 @@ Options → **Luminous Options** sets `lq_texture_pack`, `lq_pack_textures`, `lq
 point, and both glow gains, each taking effect at once (for comparisons;
 **Reset sliders** restores the parallax depth, tone and glow defaults).
 
+Options → **Video Options** also takes effect at once, except **Resolution**
+and **Fullscreen**, which need a video restart. Those ask first ("Changing this
+setting requires a video restart. Continue? (Y/N)") and restart on Y, as does
+Options → **Renderer**. Resolution and Renderer are chosen with left/right and
+asked for on Enter, so stepping through the choices doesn't restart at each
+step. Loading a map prints only the map's title, failures and the SDR/HDR
+line; the GPU renderers' details (bounce, texture pack, pack models, scene
+reuse, skybox) print with `developer 1`. VSync, the GPU filtering, anti-alias, mipmap and anisotropy settings,
+HDR and HDR peak change over at a `vid_restart` the menu queues for the next
+frame, without asking. Leaving Video Options saves the profile's config.
+
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `lq_renderer` | 0 | 0 Software, 1 Classic GPU, 2 Luminous; applies at `vid_restart` |
+| `lq_renderer` | 0 | 0 Software, 1 Classic GPU, 2 Luminous; applies at `vid_restart` (the Options menu restarts for you) |
+| `lq_fog` | 1 | GPU renderers: draw map fog (worldspawn `fog`, `svc_fog`, the `fog` command); 0 never. Video Options → **Fog** |
+| `r_skyfog` | 0.5 | How much of the fog covers the sky, for maps that don't set it with the worldspawn key `_skyfog` (QuakeSpasm's name) |
 | `lq_gamma` | 2.2 | Display gamma for all three renderers (Options → **Gamma**, 1.6–2.8). Higher darkens the mid-tones, lower lifts them; 2.2 shows Quake's palette as drawn. `gamma` (Brightness) still works alongside it; in Luminous it bends the finished frame, as software Quake's does, so it lifts dim areas most |
 | `lq_hdr` | 1 | GPU renderers: HDR output (macOS extended dynamic range) where the display is in HDR mode; 0 never. Video Options → **HDR** and **HDR peak** set it and `lq_hdr_peak` |
 | `lq_hdr_test` | 0 | 1 replaces the 3D view with an HDR test pattern: SDR white along the top, bands at 0.5–10× it below. Where the bands stop changing is your display's real peak, the value for `lq_hdr_peak` |
@@ -163,9 +176,11 @@ point, and both glow gains, each taking effect at once (for comparisons;
 | `lq_pack_textures` | 1 | Luminous: the texture pack's colour and glow in place of the 8-bit textures (saved) |
 | `lq_pack_bumps` | 1 | Luminous: the pack's normal maps shape direct light (saved) |
 | `lq_pack_parallax` | 0.04 | Luminous: parallax depth from the pack's normal-map height, as a fraction of the texture's size (DarkPlaces' offset-mapping scale); 0 off (saved) |
+| `lq_pack_relief_shadows` | 1 | Luminous: the height field shadows itself from each pixel's strongest light, at the parallax depth (so off with parallax); experimental (saved) |
 | `lq_pack_brightness` | 1 | Luminous: 1 scales each pack texture to its original's mean brightness (maps were lit for those); 0 shows the pack as made (saved) |
-| `lq_tone_shoulder` | 0.8 | Luminous: linear light below this is shown unchanged; above it highlights roll off (0.1–0.95) |
-| `lq_tone_white` | 6 | Luminous: light that reaches the display's ceiling (SDR white, or the HDR headroom); on HDR at least twice the headroom (1.5–64) |
+| `lq_tone_shoulder` | 0.8 | Luminous: where linear gives way to the highlight curve, as a fraction of the display's ceiling (SDR white, or the HDR headroom): light below it is shown unchanged, above it highlights roll off toward the ceiling (0.1–0.95). On a 2× HDR display 0.8 starts the curve at 1.6× SDR white |
+| `lq_tone_white` | 6 | Luminous: the light that reaches the display's ceiling, as a multiple of that ceiling (SDR white, or the HDR headroom), so the whole range acts at any headroom (1–64; the menu offers 1–12). 1 is the hardest knee: straight from the shoulder to the peak, then clipped. On a 2× HDR display 6 is 12× SDR white |
+| `lq_tone_ramp` | 0 | Luminous: 1 draws a band of known light levels (1/32 to 16× the ceiling, log scale; grey above, lava orange below) through the tone curve near the top of the frame, marked green at the shoulder, blue at the ceiling (SDR white or the HDR headroom) and red at the white point. Shown by itself while Tone: shoulder or Tone: white point is adjusted |
 | `lq_emission` | 3 | Luminous: how many times their palette colour fullbright texels emit, for the world and models (1–16) |
 | `lq_sprite_emission` | 3 | As `lq_emission`, for sprites such as explosions (1–16) |
 | `lq_scene_cache_mb` | 0 | Memory for keeping the last two maps' built scenes, so a restart skips rebuilding; 0 is a quarter of free RAM, -1 turns it off |
@@ -178,7 +193,9 @@ point, and both glow gains, each taking effect at once (for comparisons;
 | `max_edicts` | 8192 | Entities per level under 666/999; protocol 15 keeps 600 |
 
 Commands: `setpos x y z [pitch yaw]` (single-player only, moves you in
-noclip), `fog density [r g b]` (stored, not yet drawn), `vid_restart`,
+noclip), `fog density [r g b [time]]` (GPU renderers), `game [folder]`
+(QuakeSpasm's: names the game folder in use, or restarts LuminousQuake with
+another, as main menu → **Add-ons** does), `vid_restart`,
 `vid_togglefullscreen`, `lq_clock_report`, `lq_performance_report`.
 
 ### Classic settings that no longer exist

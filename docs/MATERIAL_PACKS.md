@@ -349,9 +349,25 @@ as `none`. The console now says which pack a map used, or why none.
   in the shift don't tear them. Lightmaps are not shifted. On E1M1's south
   corridor ceiling rivets now stand out and stretch toward the camera, as
   raised bumps do.
+- **Relief shadows (October 24)** <a id="relief-shadows-october-24"></a>:
+  Luminous Options → **Relief shadows** (`lq_pack_relief_shadows`, saved,
+  default on; needs Parallax depth above 0). From the point the view ray
+  found, the shader marches up through the normal map's alpha toward the
+  pixel's strongest light (the light the shadow-filtering pass already
+  picks), at parallax's depth and 4:1 slope limit, 6 steps facing the light
+  to 16 at grazing. Any texel above the ray blocks; the result is soft from
+  the closest miss (clearance under a third of the climb grades into
+  shadow). It multiplies that light's cube shadow, so shadow cubes still cast
+  everything between surfaces. It fades out between mip levels 2 and 4, where
+  bumps are under a pixel; the level is worked out from screen derivatives,
+  since the Metal 2.1 target has no `textureQueryLod`. Not yet: the sun as
+  the strongest light, more than one light, and a separate one-channel height
+  texture for speed. E1M3's start with the auto-chosen pack: the frame darkens
+  about 5% and the mortar under the torch deepens; the direction still
+  needs judging by eye with a moving light.
 - **Not yet:** liquids, sky, masked (`{`) textures and sprites keep their
-  original textures (models since October 23: [Models](#models-october-23)); `_gloss` specular, `_bump` height-only maps and
-  relief shadows are later stages; parallax has no fade with distance yet.
+  original textures (models since October 23: [Models](#models-october-23)); `_gloss` specular and `_bump` height-only maps
+  are later stages; parallax has no fade with distance yet.
 - **E1M1 with Rygel's ultra pack:** 81 of 86 textures replaced (81 colour, 79
   bump, 39 glow); about 9 s to load in the debug build, including bounce.
 - **E1M3 brightness (October 21).** Matched, the pack's walls in the view

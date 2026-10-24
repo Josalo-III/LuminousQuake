@@ -26,7 +26,9 @@ entities opaque and draws neither fog nor skyboxes):
   farthest first, and cast no shadow; Luminous blends in linear light in the
   float frame.
 - **Fog** from the map, `svc_fog` and the `fog` command, with fades: GL_EXP2
-  at density/64 as FitzQuake, `r_skyfog` 0.5 over the sky. Video Options →
+  at density/64 as FitzQuake. Over the sky, the map's `_skyfog` key where it
+  sets one (October 24; the 2021 rerelease maps do, spelled `"_skyfog "`
+  with a trailing space), otherwise `r_skyfog` 0.5. Video Options →
   **Fog** turns it off (`lq_fog`).
 - **Skyboxes** (`gfx/env/<name>rt`… `dn`, from worldspawn `sky`,
   `svc_skybox`, or the new `sky`/`loadsky` commands), laid out as FitzQuake
@@ -43,10 +45,20 @@ renderer fallback in either run. Not yet seen: a translucent entity up close
 that sets it), and `U_LERPFINISH` in motion.
 
 Still open:
-- **Arcane Dimensions can't be started from the Dock**: the app has no way to
-  choose a mod, so AD needs `-game ad` from Terminal. A mod chooser (the
-  rerelease's Add-ons, or QuakeSpasm's `game` command) is needed before any
-  of this is playable by users;
+- **Arcane Dimensions from the Dock — built October 24, not yet tried from
+  the Dock**: main menu → **Add-ons** (after Multiplayer) lists the
+  install's game folders (pak files, `progs.dat` or maps, and not a texture
+  pack), named from `modinfo.txt`, a short list of well-known names, or the
+  folder. Enter asks, then restarts LuminousQuake with that folder, as a
+  `-game` shortcut did (`Sys_RequestRelaunch`): the engine fixes its search
+  paths at startup, so switching in place would mean flushing every cache.
+  QuakeSpasm's `game <folder>` does the same from the console. A headless
+  `game hipnotic` restarted into the `rerelease/hipnotic` profile. The entry
+  is lettered from the menu's own artwork, cut at run time from id's
+  `gfx/mainmenu.lmp` (a from PLAYER, d from ORDERING, o, n, s from OPTIONS,
+  the hyphen from the t's crossbar). It is all small capitals, since the
+  menu has no capital A. A mod with its own menu art gets the console font
+  at twice size instead;
 - Luminous bounce on a large map takes about 27 s at load (`ad/start`: 6.3 s);
 - AD hasn't been played by hand.
 
@@ -156,6 +168,31 @@ Luminous only. Classic GPU stays palette-exact.
   October 20:** `lq_tone_shoulder` (0.8), `lq_tone_white` (6), `lq_emission`
   (3) and a separate `lq_sprite_emission` (3) for explosions and other sprites
   now set these live, for choosing new defaults on the Acer.
+  **October 24:** tuning on the Acer stalled because every menu dims the
+  scene, so a slider's effect can't be judged as it moves. Luminous Options
+  now shrinks to the one setting's line while left/right adjusts it, with no
+  fade. The first build of that still showed the scene dimmed. Cause: besides
+  the menu's own `Draw_FadeScreen`, the GPU overlay conversion
+  (`render_bridge.c`, `ConvertOverlayRows`) paints every undrawn overlay pixel
+  black at half opacity whenever `key_dest == key_menu`, and the Software UI
+  composite (`ui_scale.c`) skips the world behind any menu. Both now ask
+  `M_SceneUndimmed`. Not yet confirmed on the Acer. Then a tone ramp
+  (`lq_tone_ramp`, shown while a tone slider moves): known levels through
+  the curve, marked green at the shoulder, blue at the ceiling, red at the
+  white point. Its first version scaled with the white point, so the red
+  marker never moved; it now spans a fixed 1/8–16× SDR white. And the
+  shoulder became a fraction of the ceiling: as a level in SDR-white units it
+  started the curve below SDR white even on a 2× HDR display, and its
+  0.5–0.95 range couldn't reach the upper half of the display's range. The
+  white point likewise became a multiple of the ceiling: on HDR it had a
+  floor of twice the headroom, which left most of its slider dead where the
+  display reports a large headroom (the ramp, at a 2× cap, showed the marker
+  moving: x 912, 1095, 1202 for 4, 8, 12). The ramp then follows the
+  ceiling (1/32 to 16× it), and the white point goes down to 1, where it
+  meets the ceiling. **Tuning by eye is deferred until the MacBook's XDR
+  panel is replaced** (ordered October 24, due within the week). Until then,
+  the Acer must be mirrored to it, so macOS reports the XDR's 10× headroom
+  and `lq_hdr_peak 2` stands in for the Acer's real peak.
 - This comes before material packs, because specular and normal-mapped light
   look wrong when computed in gamma space.
 
@@ -177,11 +214,13 @@ finished Luminous frame, as software Quake does. Texture packs read straight fro
 (October 21). **Models, October 23**: the pack's replacement meshes (MD3, as
 nearly all of Rygel's are, or MDL) are drawn in place of the originals, for
 drawing only, and its skins (`progs/<model>.mdl_<n>`, with `_norm` and
-`_luma`) go on models it doesn't replace; Luminous Options → **Pack models**
+`_luma`) go on models it doesn't replace; Luminous Options → **Relief
+shadows** (October 24, first version: [status](MATERIAL_PACKS.md#relief-shadows-october-24));
+Luminous Options → **Pack models**
 and **Pack model skins**. Evidence: E1M1 with Rygel's pack: "29 replaced, 1
 with pack skins, of 40", and the view shotgun is the pack's MD3 with the
 setting on and the original with it off. Still to come: gloss specular,
-relief shadows, a parallax fade with distance, liquids, sky and `_bump` maps
+a parallax fade with distance, liquids, sky and `_bump` maps
 ([status](MATERIAL_PACKS.md#models-october-23)).
 
 ### 5. The existing Luminous queue

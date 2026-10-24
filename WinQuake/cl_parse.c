@@ -227,16 +227,22 @@ void CL_KeepaliveMessage (void)
 ==================
 CL_ParseWorldspawn
 
-LuminousQuake: the FitzQuake worldspawn keys "fog" (density red green blue)
-and "sky" (a gfx/env skybox name); svc_fog and svc_skybox override them.
+LuminousQuake: the FitzQuake worldspawn keys "fog" (density red green blue),
+"_skyfog" (how much of that fog covers the sky) and "sky" (a gfx/env skybox
+name); svc_fog and svc_skybox override the fog and the skybox.
+
+Keys are taken with a leading underscore or without, and with trailing
+spaces trimmed: the 2021 rerelease maps spell the key "_skyfog " that way.
 ==================
 */
 static void CL_FogSettle (void);
 static void CL_ParseWorldspawn (void)
 {
 	char	key[128], *data;
+	int		length;
 
 	memset (&cl_fog, 0, sizeof(cl_fog));
+	cl_fog.sky = -1;	// no "_skyfog" key: r_skyfog decides
 	if (!cl.worldmodel || !cl.worldmodel->entities)
 		return;
 	data = COM_Parse (cl.worldmodel->entities);
@@ -249,6 +255,8 @@ static void CL_ParseWorldspawn (void)
 			return;
 		Q_strncpy (key, com_token[0] == '_' ? com_token + 1 : com_token, sizeof(key) - 1);
 		key[sizeof(key) - 1] = 0;
+		for (length = Q_strlen (key) ; length && (key[length-1] == ' ' || key[length-1] == '\t') ; length--)
+			key[length-1] = 0;
 		data = COM_Parse (data);
 		if (!data)
 			return;
@@ -259,6 +267,11 @@ static void CL_ParseWorldspawn (void)
 			cl_fog.density = v[0] < 0 ? 0 : v[0];
 			cl_fog.color[0] = v[1]; cl_fog.color[1] = v[2]; cl_fog.color[2] = v[3];
 			CL_FogSettle ();
+		}
+		else if (!Q_strcmp (key, "skyfog"))
+		{
+			float	amount = Q_atof (com_token);
+			cl_fog.sky = amount < 0 ? 0 : amount > 1 ? 1 : amount;
 		}
 		else if (!Q_strcmp (key, "sky") || !Q_strcmp (key, "skyname"))
 		{
@@ -872,6 +885,13 @@ void CL_FogCurrent (float fog[4])
 	fog[0] = cl_fog.old_density + (cl_fog.density - cl_fog.old_density) * f;
 	for (i=0 ; i<3 ; i++)
 		fog[1+i] = cl_fog.old_color[i] + (cl_fog.color[i] - cl_fog.old_color[i]) * f;
+}
+
+/* How much of the fog colour covers the sky: the map's "_skyfog" when it set
+ * one, otherwise the fallback the renderer passes (r_skyfog). */
+float CL_SkyFog (float fallback)
+{
+	return cl_fog.sky >= 0 ? cl_fog.sky : fallback;
 }
 
 static void CL_FogFade (float time)

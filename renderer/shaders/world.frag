@@ -34,7 +34,7 @@ layout(set=3,binding=0,std140) uniform Surface {
     vec4 face_light; // x: 1 + the slot brightest everywhere on this face (found on the CPU); 0 unknown
     uvec4 shadow_free; // slots whose shadow lookup here provably finds no blocker (LQ_SceneFindShadowFree)
     vec4 pack; // x: draw the pack's colour; y: shade direct light by its normal map; z: colour gain
-    vec4 relief; // x: parallax depth, as a fraction of the texture's size (0 off); y: height held at the face
+    vec4 relief; // x: parallax depth, as a fraction of the texture's size (0 off); y: height held at the face; z: relief shadows
     vec4 entity; // x: a translucent entity's opacity (flag 4096)
 } surface;
 // Luminous runtime lights, pushed once per frame. Each slot owns a shadow cube.
@@ -435,6 +435,41 @@ vec2 parallaxShift(vec3 n, vec3 du, vec3 dv, vec2 coord, vec2 dx, vec2 dy) {
     if (last_gap > 0.0 && under > 0.0) shift = mix(shift, last_shift, under / (under + last_gap));
     return shift;
 }
+// Relief shadows (Luminous's own; DarkPlaces never marches toward a light):
+// from the point the view ray found, march up through the height field
+// toward the pixel's strongest light. The ray rises from the point's own
+// height to the top of the range at parallax's depth and slope, so a pack
+// shadows itself with the depth its author tuned. A texel above the ray
+// blocks; the result is soft from the closest miss, the least clearance over
+// the distance marched, so ridges grade into their shadows. More steps where
+// the light grazes; faded out by mip level, where bumps are below a pixel.
+// Shadow cubes still cast every shadow between surfaces.
+float reliefShadow(vec3 n, vec3 du, vec3 dv, vec2 coord, vec2 dx, vec2 dy, vec3 to_light) {
+    float facing = dot(to_light, n);
+    float lu = dot(du, du), lv = dot(dv, dv);
+    if (facing <= 0.0 || lu <= 0.0 || lv <= 0.0) return 1.0;
+    // The mip level, as the sampler picks it (no textureQueryLod in MSL 2.1).
+    vec2 size = vec2(textureSize(pack_normal, 0));
+    float lod = 0.5 * log2(max(max(dot(dx * size, dx * size), dot(dy * size, dy * size)), 1e-8));
+    float fade = 1.0 - smoothstep(2.0, 4.0, lod);
+    if (fade <= 0.0) return 1.0;
+    float depth = surface.relief.x * inversesqrt(sqrt(lu * lv));
+    // Texture shift per unit of height risen toward the light, held to a 4:1
+    // slope as parallax is.
+    vec2 rise = vec2(dot(to_light, du), dot(to_light, dv)) * (depth / max(facing, 0.25));
+    float start = textureGrad(pack_normal, coord, dx, dy).a;
+    if (start >= 0.999) return 1.0;
+    int steps = int(mix(16.0, 6.0, facing));
+    float layer = (1.0 - start) / float(steps), clearance = 1.0;
+    for (int i = 1; i <= 16 && i <= steps; ++i) {
+        float climbed = layer * float(i);
+        float height = textureGrad(pack_normal, coord + rise * climbed, dx, dy).a;
+        clearance = min(clearance, (start + climbed - height) / climbed);
+        if (clearance <= 0.0) break;
+    }
+    // Clear by a third of the climb or more is fully lit.
+    return mix(1.0, smoothstep(0.0, 0.33, clearance), fade);
+}
 // `shading` is the bumped normal where a normal map applies: it sets the
 // incidence, while the face's own normal still decides which side lights it.
 float lightReach(uint i, vec3 normal, vec3 shading, bool diffuse_effect, bool liquid, float opacity, bool submerged, out vec3 direction) {
@@ -542,11 +577,13 @@ void main() {
     // shift so steps in the shift do not tear the frame or the filtering.
     vec3 frame_du = vec3(0.0), frame_dv = vec3(0.0);
     vec2 frame_dx = dFdx(uv), frame_dy = dFdy(uv), parallax = vec2(0.0);
+    bool relief_on = false;
     if (surface.pack.y > 0.5 && (flags & 3) == 0) {
         textureFrame(normalize(world_normal), uv, frame_du, frame_dv);
         if (surface.relief.x > 0.0) {
             parallax = parallaxShift(normalize(world_normal), frame_du, frame_dv, uv, frame_dx, frame_dy);
             sample_uv += parallax;
+            relief_on = surface.relief.z > 0.5;
         }
     }
     // Unlit surfaces (sky, opaque liquids) take colormap row 32, the palette's
@@ -591,7 +628,7 @@ void main() {
                 // excuse others that are blocked too.
                 float strongest = 0.0, brightest = 0.0, brightest_shadow = 1.0;
                 uint lead = 0xffffffffu;
-                vec3 toward;
+                vec3 toward, lead_toward = normal;
                 // A face whose brightest light is the same everywhere names it
                 // (see KnownLead in gpu_sdl.c), and the search is skipped.
                 uint known = uint(surface.face_light.x + 0.5);
@@ -600,6 +637,7 @@ void main() {
                     vec3 c = lights.color_strength[lead].rgb;
                     brightest = lightReach(lead, normal, shading, diffuse_effect, liquid, opacity, submerged, toward) * max(c.r, max(c.g, c.b));
                     brightest_shadow = lightShadow(lead,diffuse_effect ? toward : normal,brightest,diffuse_effect);
+                    lead_toward = toward;
                     strongest = brightest * brightest_shadow;
                 } else if (lights.color_space.z > 0.0) {
                     for (uint word = 0u; word < 4u; ++word)
@@ -613,8 +651,14 @@ void main() {
                     if (lead != 0xffffffffu) {
                         lightReach(lead, normal, shading, diffuse_effect, liquid, opacity, submerged, toward);
                         brightest_shadow = lightShadow(lead,diffuse_effect ? toward : normal,brightest,diffuse_effect);
+                        lead_toward = toward;
                         strongest = brightest * brightest_shadow;
                     }
+                }
+                // Relief shadows: the strongest light only (see reliefShadow).
+                if (relief_on && lead != 0xffffffffu && brightest_shadow > 0.0 && !diffuse_effect) {
+                    brightest_shadow *= reliefShadow(normal, frame_du, frame_dv, sample_uv, frame_dx, frame_dy, lead_toward);
+                    strongest = brightest * brightest_shadow;
                 }
                 for (uint word = 0u; word < 4u; ++word)
                 for (uint bits = surface.light_bits[word]; bits != 0u; bits &= bits - 1u) {

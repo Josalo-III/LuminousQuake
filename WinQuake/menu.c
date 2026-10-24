@@ -30,7 +30,30 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 void (*vid_menudrawfn)(void);
 void (*vid_menukeyfn)(int key);
 
-enum {m_none, m_main, m_singleplayer, m_load, m_save, m_multiplayer, m_setup, m_net, m_options, m_video, m_luminous, m_keys, m_help, m_quit, m_serialconfig, m_modemconfig, m_lanconfig, m_gameoptions, m_search, m_slist} m_state;
+enum {m_none, m_main, m_singleplayer, m_load, m_save, m_multiplayer, m_setup, m_net, m_options, m_video, m_luminous, m_confirm, m_addons, m_keys, m_help, m_quit, m_serialconfig, m_modemconfig, m_lanconfig, m_gameoptions, m_search, m_slist} m_state;
+
+// LuminousQuake: while a Luminous setting is being adjusted its page shrinks
+// to one line at the bottom (M_Luminous_Draw) with nothing dimmed or drawn
+// behind it, so the change shows on the scene as it is.
+static int	m_restart_prevstate;	// the page under a yes/no question (M_Confirm)
+static qboolean	luminous_tuning;	// left/right adjusted a setting: show the strip only
+static int M_LuminousRow (const char *cvar);
+
+static int	luminous_cursor;
+
+// True while a tone slider is being adjusted: the renderer shows its ramp.
+qboolean M_ShowToneRamp (void)
+{
+	return M_SceneUndimmed () && luminous_cursor > 0 &&
+		(luminous_cursor == M_LuminousRow ("lq_tone_shoulder") || luminous_cursor == M_LuminousRow ("lq_tone_white"));
+}
+
+// True while the open menu wants the scene shown undimmed. The GPU overlay
+// and the Software UI composite dim everything behind any menu otherwise.
+qboolean M_SceneUndimmed (void)
+{
+	return key_dest == key_menu && m_state == m_luminous && luminous_tuning;
+}
 
 void M_Menu_Main_f (void);
 	void M_Menu_SinglePlayer_f (void);
@@ -276,7 +299,143 @@ void M_ToggleMenu_f (void)
 /* MAIN MENU */
 
 int	m_main_cursor;
-#define	MAIN_ITEMS	5
+#define	MAIN_ITEMS	6	// LuminousQuake: Add-ons after Multiplayer
+
+void M_Menu_Addons_f (void);
+static void M_Confirm (const char *first, const char *second, const char *third, qboolean video, void (*apply) (void));
+extern byte	*draw_chars;
+
+/* LuminousQuake: text in the console font at twice its size, as a picture,
+ * for menu entries that have no artwork (Add-ons). The gold half of the font,
+ * as the menus' own text uses. */
+static qpic_t *M_BigText (const char *text)
+{
+	static int	storage[(sizeof(qpic_t) + 16 * 16 * 16) / sizeof(int) + 1];
+	qpic_t	*pic = (qpic_t *)storage;
+	int		length = Q_strlen ((char *)text), i, x, y;
+
+	if (length > 16)
+		length = 16;
+	pic->width = length * 16;
+	pic->height = 16;
+	for (i = 0 ; i < length ; i++)
+	{
+		int		num = ((byte)text[i] | 128) & 255, row = num >> 4, col = num & 15;
+
+		for (y = 0 ; y < 16 ; y++)
+			for (x = 0 ; x < 16 ; x++)
+			{
+				byte	texel = draw_chars[((row << 3) + (y >> 1)) * 128 + (col << 3) + (x >> 1)];
+				pic->data[y * pic->width + i * 16 + x] = texel ? texel : 255;	// 0 is clear in conchars, 255 in pictures
+			}
+	}
+	return pic;
+}
+
+/* LuminousQuake: "Add-ons" in the main menu's own lettering, cut at run time
+ * from id's gfx/mainmenu.lmp: a from PLAYER, d from ORDERING, o, n and s from
+ * OPTIONS, the hyphen from a segment of the t's crossbar. The menu has no capital A, so the
+ * word is all small capitals, on the small letters' baseline (row 14 of 20).
+ * Only id's picture is cut (240 x 112, CRC 0xb57a, the same in the rerelease,
+ * retail and shareware); a mod's own menu art gets the console font. */
+typedef struct
+{
+	char	ch;
+	short	x0, x1, y0, y1;	// the letter's box in mainmenu.lmp, x1 and y1 exclusive
+} menu_glyph_t;
+
+static const menu_glyph_t addons_glyphs[] =
+{
+	{'a', 151, 170, 1, 15}, {'d', 134, 153, 63, 76}, {'d', 134, 153, 63, 76}, {'-', 45, 53, 43, 46},
+	{'o', 67, 89, 43, 56}, {'n', 89, 106, 43, 56}, {'s', 106, 124, 43, 56},
+};
+
+// The a touches the y beside it (the y's arm above, their feet below): its
+// last column on each row of the picture. A flourish left of it (x 143-150)
+// is left out by its box. The hyphen is one segment of the t's crossbar,
+// between the dark dividers that split the bar into three.
+static int M_GlyphLimit (const menu_glyph_t *g, int y)
+{
+	if (g->ch != 'a')
+		return g->x1 - 1;
+	return y <= 5 ? 165 : y <= 11 ? 167 : 169;
+}
+
+static qpic_t *M_AddonsWord (void)
+{
+	static int	storage[(sizeof(qpic_t) + 160 * 20) / sizeof(int) + 1];
+	static int	state;	// 0 not tried, 1 built, -1 not id's picture
+	qpic_t	*word = (qpic_t *)storage, *menu;
+	int		i, x, y, at = 0;
+
+	if (state)
+		return state > 0 ? word : NULL;
+	state = -1;
+	menu = Draw_CachePic ("gfx/mainmenu.lmp");
+	if (menu->width != 240 || menu->height != 112)
+		return NULL;
+	{
+		unsigned short	crc;
+		CRC_Init (&crc);
+		for (i = 0 ; i < 240 * 112 ; i++)
+			CRC_ProcessByte (&crc, menu->data[i]);
+		if (CRC_Value (crc) != 0xb57a)
+			return NULL;
+	}
+	word->width = 160;
+	word->height = 20;
+	memset (word->data, 255, 160 * 20);
+	for (i = 0 ; i < (int)(sizeof(addons_glyphs) / sizeof(addons_glyphs[0])) ; i++)
+	{
+		const menu_glyph_t	*g = &addons_glyphs[i];
+		int		first = g->x1, last = g->x0 - 1;
+		int		top = g->ch == '-' ? 7 : 14 - (g->y1 - 1 - g->y0);
+
+		// the letter's own columns, without empty ones at either side
+		for (y = g->y0 ; y < g->y1 ; y++)
+			for (x = g->x0 ; x <= M_GlyphLimit (g, y) ; x++)
+				if (menu->data[y * 240 + x] != 255)
+				{
+					if (x < first) first = x;
+					if (x > last) last = x;
+				}
+		if (last < first || at + last - first + 1 > 160)
+			return NULL;
+		for (y = g->y0 ; y < g->y1 ; y++)
+			for (x = first ; x <= last && x <= M_GlyphLimit (g, y) ; x++)
+				if (menu->data[y * 240 + x] != 255)
+					word->data[(top + y - g->y0) * 160 + at + x - first] = menu->data[y * 240 + x];
+		at += last - first + 2;	// one clear column between letters
+	}
+	word->width = at - 1;
+	// rows are 160 wide in storage; repack to the word's width
+	for (y = 1 ; y < 20 ; y++)
+		memmove (word->data + y * word->width, word->data + y * 160, word->width);
+	state = 1;
+	return word;
+}
+
+/* LuminousQuake: rows of a picture as a picture of their own, so the main
+ * menu's artwork can open a gap for Add-ons. Two slots, one per piece. */
+static qpic_t *M_PicRows (qpic_t *source, int first, int count, int slot)
+{
+	static qpic_t	*pieces[2];
+	static size_t	sizes[2];
+	size_t	bytes = sizeof(qpic_t) + (size_t)source->width * count;
+
+	if (bytes > sizes[slot])
+	{
+		free (pieces[slot]);
+		pieces[slot] = malloc (bytes);
+		sizes[slot] = pieces[slot] ? bytes : 0;
+		if (!pieces[slot])
+			Sys_Error ("M_PicRows: out of memory");
+	}
+	pieces[slot]->width = source->width;
+	pieces[slot]->height = count;
+	memcpy (pieces[slot]->data, source->data + source->width * first, (size_t)source->width * count);
+	return pieces[slot];
+}
 
 
 void M_Menu_Main_f (void)
@@ -300,7 +459,19 @@ void M_Main_Draw (void)
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.lmp") );
 	p = Draw_CachePic ("gfx/ttl_main.lmp");
 	M_DrawPic ( (320-p->width)/2, 4, p);
-	M_DrawTransPic (72, 32, Draw_CachePic ("gfx/mainmenu.lmp") );
+	p = Draw_CachePic ("gfx/mainmenu.lmp");
+	if (p->height > 40)
+	{	// LuminousQuake: Add-ons goes between Multiplayer and Options, 20 rows each
+		M_DrawTransPic (72, 32, M_PicRows (p, 0, 40, 0));
+		qpic_t	*word = M_AddonsWord ();
+		if (word)
+			M_DrawTransPic (72 + 2, 32 + 40, word);	// the rows' own left edge and band
+		else
+			M_DrawTransPic (74, 32 + 40 + 2, M_BigText ("ADD-ONS"));
+		M_DrawTransPic (72, 32 + 60, M_PicRows (p, 40, p->height - 40, 1));
+	}
+	else
+		M_DrawTransPic (72, 32, p);
 
 	f = (int)(host_time * 10)%6;
 
@@ -346,18 +517,277 @@ void M_Main_Key (int key)
 			break;
 
 		case 2:
-			M_Menu_Options_f ();
+			M_Menu_Addons_f ();
 			break;
 
 		case 3:
-			M_Menu_Help_f ();
+			M_Menu_Options_f ();
 			break;
 
 		case 4:
+			M_Menu_Help_f ();
+			break;
+
+		case 5:
 			M_Menu_Quit_f ();
 			break;
 		}
 	}
+}
+
+//=============================================================================
+/* ADD-ONS MENU (LuminousQuake) */
+
+/* The game folders of this installation: the base game, the mission packs
+ * and community mods. Choosing one restarts LuminousQuake with it, as a
+ * shortcut with -game did (Sys_RequestRelaunch), after asking. A folder
+ * counts when it holds pak files, a progs.dat or maps, and is not a texture
+ * pack (rygel_ultra has maps of its own). Names come from modinfo.txt
+ * (DarkPlaces), a short list of well-known ones, or the folder. */
+
+#define	MAX_ADDONS		64
+#define	ADDONS_VISIBLE	15
+
+typedef struct
+{
+	char	dir[64], name[64];
+} addon_t;
+
+static addon_t	addons[MAX_ADDONS];
+static int		addon_count, addon_cursor, addon_top;
+static char		addon_chosen[64];
+
+static const struct { const char *dir, *name; } addon_names[] =
+{
+	{GAMENAME, "Quake"},
+	{"hipnotic", "Scourge of Armagon"},
+	{"rogue", "Dissolution of Eternity"},
+	{"dopa", "Dimension of the Past"},
+	{"mg1", "Dimension of the Machine"},
+	{"ctf", "Capture the Flag"},
+	{"ad", "Arcane Dimensions"},
+	{"quoth", "Quoth"},
+	{"malice", "Malice"},
+	{"xmen", "X-Men: Ravages of Apocalypse"},
+	{"aopfm_v2", "Abyss of Pandemonium"},
+};
+
+static qboolean M_AddonEndsWith (const char *name, const char *suffix)
+{
+	int		n = Q_strlen ((char *)name), m = Q_strlen ((char *)suffix);
+	return n >= m && !Q_strcasecmp ((char *)name + n - m, (char *)suffix);
+}
+
+static qboolean M_AddonIsGame (const char *dir)
+{
+	static char	names[256][64];
+	char	path[MAX_OSPATH];
+	int		count, i;
+
+	snprintf (path, sizeof(path), "%s/%s", com_basedir, dir);
+	count = Sys_ListDirectory (path, names, 256);
+	for (i = 0 ; i < count ; i++)
+	{
+		if (!Q_strncasecmp (names[i], "pak", 3) && M_AddonEndsWith (names[i], ".pak"))
+			return true;
+		if (!Q_strcasecmp (names[i], "progs.dat"))
+			return true;
+	}
+	snprintf (path, sizeof(path), "%s/%s/maps", com_basedir, dir);
+	count = Sys_ListDirectory (path, names, 256);
+	for (i = 0 ; i < count ; i++)
+		if (M_AddonEndsWith (names[i], ".bsp"))
+			return true;
+	return false;
+}
+
+static void M_AddonName (addon_t *addon)
+{
+	char	path[MAX_OSPATH], *end;
+	FILE	*f;
+	int		i;
+
+	for (i = 0 ; i < (int)(sizeof(addon_names) / sizeof(addon_names[0])) ; i++)
+		if (!Q_strcasecmp (addon->dir, (char *)addon_names[i].dir))
+		{
+			snprintf (addon->name, sizeof(addon->name), "%s", addon_names[i].name);
+			return;
+		}
+	snprintf (addon->name, sizeof(addon->name), "%s", addon->dir);
+	snprintf (path, sizeof(path), "%s/%s/modinfo.txt", com_basedir, addon->dir);
+	f = fopen (path, "r");
+	if (!f)
+		return;
+	if (fgets (path, sizeof(path), f))
+	{
+		for (end = path + strlen (path) ; end > path && (end[-1] == '\n' || end[-1] == '\r' || end[-1] == ' ') ; end--)
+			end[-1] = 0;
+		if (path[0])
+			snprintf (addon->name, sizeof(addon->name), "%s", path);
+	}
+	fclose (f);
+}
+
+static int M_AddonCompare (const void *a, const void *b)
+{
+	const addon_t	*x = a, *y = b;
+	if (!Q_strcasecmp ((char *)x->dir, GAMENAME))
+		return -1;
+	if (!Q_strcasecmp ((char *)y->dir, GAMENAME))
+		return 1;
+	return Q_strcasecmp ((char *)x->name, (char *)y->name);
+}
+
+// The game folder in use, as the menu names it: id1 for the base game.
+static const char *M_CurrentGame (void)
+{
+	const char	*slash = strrchr (com_gamedir, '/');
+	return slash ? slash + 1 : com_gamedir;
+}
+
+static void M_AddonsRebuild (void)
+{
+	static char	names[256][64];
+	char	packs[32][64];
+	const char	*places[32];
+	int		count, pack_count, i, j;
+
+	pack_count = LQ_TexturePacks (packs, places, 32);
+	count = Sys_ListDirectory (com_basedir, names, 256);
+	addon_count = 0;
+	snprintf (addons[addon_count].dir, sizeof(addons[0].dir), "%s", GAMENAME);
+	M_AddonName (&addons[addon_count++]);
+	for (i = 0 ; i < count && addon_count < MAX_ADDONS ; i++)
+	{
+		qboolean	pack = false;
+
+		if (!Q_strcasecmp (names[i], GAMENAME) || names[i][0] == '.')
+			continue;
+		for (j = 0 ; j < pack_count ; j++)
+			if (!Q_strcasecmp (names[i], packs[j]))
+				pack = true;
+		if (pack || !M_AddonIsGame (names[i]))
+			continue;
+		snprintf (addons[addon_count].dir, sizeof(addons[0].dir), "%s", names[i]);
+		M_AddonName (&addons[addon_count++]);
+	}
+	qsort (addons, addon_count, sizeof(addons[0]), M_AddonCompare);
+}
+
+void M_Menu_Addons_f (void)
+{
+	int		i;
+
+	key_dest = key_menu;
+	m_state = m_addons;
+	m_entersound = true;
+	M_AddonsRebuild ();
+	addon_cursor = 0;
+	for (i = 0 ; i < addon_count ; i++)
+		if (!Q_strcasecmp (addons[i].dir, (char *)M_CurrentGame ()))
+			addon_cursor = i;
+	addon_top = addon_cursor >= ADDONS_VISIBLE ? addon_cursor - ADDONS_VISIBLE + 1 : 0;
+}
+
+void M_Addons_Draw (void)
+{
+	int		i, y;
+	qpic_t	*title = M_AddonsWord ();
+
+	if (!title)
+		title = M_BigText ("ADD-ONS");
+
+	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.lmp"));
+	M_DrawTransPic ((320 - title->width) / 2, 8, title);
+	for (i = addon_top, y = 32 ; i < addon_count && i < addon_top + ADDONS_VISIBLE ; i++, y += 8)
+	{
+		if (!Q_strcasecmp (addons[i].dir, (char *)M_CurrentGame ()))
+			M_PrintWhite (64, y, va("%.30s", addons[i].name));	// the one playing
+		else
+			M_Print (64, y, va("%.30s", addons[i].name));
+	}
+	if (addon_count)
+		M_DrawCharacter (48, 32 + (addon_cursor - addon_top) * 8, 12 + ((int)(realtime * 4) & 1));
+	if (addon_count && !Q_strcasecmp (addons[addon_cursor].dir, (char *)M_CurrentGame ()))
+		M_Print (16, 160, "Playing now.");
+	else if (addon_count)
+		M_Print (16, 160, "Enter restarts LuminousQuake with it.");
+	if (addon_count)
+		M_Print (16, 168, va("Folder: %.28s", addons[addon_cursor].dir));
+	M_Print (16, 184, "Mods go in folders beside id1.");
+}
+
+static void M_AddonsRestart (void)
+{
+	Sys_RequestRelaunch (addon_chosen);
+}
+
+void M_Addons_Key (int key)
+{
+	switch (key)
+	{
+	case K_ESCAPE:
+		M_Menu_Main_f ();
+		return;
+	case K_UPARROW:
+		S_LocalSound ("misc/menu1.wav");
+		if (--addon_cursor < 0)
+			addon_cursor = addon_count - 1;
+		break;
+	case K_DOWNARROW:
+		S_LocalSound ("misc/menu1.wav");
+		if (++addon_cursor >= addon_count)
+			addon_cursor = 0;
+		break;
+	case K_ENTER:
+		if (!addon_count || !Q_strcasecmp (addons[addon_cursor].dir, (char *)M_CurrentGame ()))
+			return;
+		snprintf (addon_chosen, sizeof(addon_chosen), "%s", addons[addon_cursor].dir);
+		M_Confirm (va("Restart with %.19s?", addons[addon_cursor].name),
+			(sv.active || (cls.state == ca_connected && !cls.demoplayback)) ? "The game in progress ends;" : "",
+			(sv.active || (cls.state == ca_connected && !cls.demoplayback)) ? "save it first to keep it." : "",
+			false, M_AddonsRestart);
+		return;
+	default:
+		return;
+	}
+	if (addon_cursor < addon_top)
+		addon_top = addon_cursor;
+	if (addon_cursor >= addon_top + ADDONS_VISIBLE)
+		addon_top = addon_cursor - ADDONS_VISIBLE + 1;
+}
+
+/* game [folder]: QuakeSpasm's command. Without a folder it names the one in
+ * use; with one it restarts LuminousQuake with it, as the Add-ons menu does.
+ * "game id1" returns to the base game; hipnotic and rogue get their flags. */
+static void M_Game_f (void)
+{
+	char	path[MAX_OSPATH], names[1][64];
+	const char	*dir;
+
+	if (Cmd_Argc () < 2)
+	{
+		Con_Printf ("game: %s (\"game <folder>\" restarts with another; the Add-ons menu lists them)\n", M_CurrentGame ());
+		return;
+	}
+	dir = Cmd_Argv (1);
+	if (strstr (dir, "..") || strchr (dir, '/') || strchr (dir, '\\') || strchr (dir, ':') || Q_strlen ((char *)dir) >= MAX_QPATH)
+	{
+		Con_Printf ("game: %s is not a folder name\n", dir);
+		return;
+	}
+	snprintf (path, sizeof(path), "%s/%s", com_basedir, dir);
+	if (Sys_ListDirectory (path, names, 1) < 0)
+	{
+		Con_Printf ("game: no folder %s in %s\n", dir, com_basedir);
+		return;
+	}
+	if (!Q_strcasecmp ((char *)dir, (char *)M_CurrentGame ()))
+	{
+		Con_Printf ("game: already %s\n", dir);
+		return;
+	}
+	Sys_RequestRelaunch (dir);
 }
 
 //=============================================================================
@@ -1077,6 +1507,21 @@ void M_Menu_Options_f (void)
 }
 
 
+// The Renderer row is browsed with left/right and asked for on Enter, so
+// going from Software to Luminous doesn't restart video at each step.
+static int	m_renderer_pending = -1;	// -1: showing the renderer in use
+
+static int M_RendererShown (void)
+{
+	return m_renderer_pending >= 0 ? m_renderer_pending : M_RendererChoice ();
+}
+
+static void M_ApplyRenderer (void)
+{
+	Cvar_SetValue ("lq_renderer", (float)m_renderer_pending);
+	m_renderer_pending = -1;
+}
+
 void M_AdjustSliders (int dir)
 {
 	S_LocalSound ("misc/menu3.wav");
@@ -1172,8 +1617,10 @@ void M_AdjustSliders (int dir)
 		Cvar_SetValue ("lookstrafe", !lookstrafe.value);
 		break;
 
-	case 14:	// renderer preference (applies when the renderer is restarted)
-		Cvar_SetValue ("lq_renderer", (M_RendererChoice () + dir + 3) % 3);
+	case 14:	// renderer: browsed here; Enter asks, then the video restart applies it
+		m_renderer_pending = (M_RendererShown () + dir + 3) % 3;
+		if (m_renderer_pending == M_RendererChoice ())
+			m_renderer_pending = -1;
 		break;
 
 #ifdef _WIN32
@@ -1272,21 +1719,22 @@ void M_Options_Draw (void)
 	M_DrawCheckbox (220, 136, lookstrafe.value);
 
 	M_Print (16, 144, "              Renderer");
-	if (M_RendererChoice () == 2)
+	if (M_RendererShown () == 2)
 		M_Print (220, 144, "Luminous");
-	else if (M_RendererChoice () == 1)
+	else if (M_RendererShown () == 1)
 		M_Print (220, 144, "Classic GPU");
 	else
 		M_Print (220, 144, "Software");
 	if (options_cursor == 14)
 	{
-		if (M_RendererChoice () == 0)
+		if (M_RendererShown () == 0)
 			M_Print (16, 176, "Software gameplay is available.");
-		else if (M_RendererChoice () == 1)
+		else if (M_RendererShown () == 1)
 			M_Print (16, 176, "Classic GPU world, actors/effects.");
 		else
 			M_Print (16, 176, "Experimental: runtime light/shadow.");
-		M_Print (16, 184, "Restart or use vid_restart to apply.");
+		M_Print (16, 184, m_renderer_pending >= 0 ? "Enter switches; restarts video." :
+			"Left/right to choose another.");
 	}
 
 	if (vid_menudrawfn)
@@ -1311,6 +1759,7 @@ void M_Options_Key (int k)
 	switch (k)
 	{
 	case K_ESCAPE:
+		m_renderer_pending = -1;
 		M_Menu_Main_f ();
 		break;
 
@@ -1328,6 +1777,10 @@ void M_Options_Key (int k)
 		case 2:
 			Cbuf_AddText ("exec default.cfg\nkeys_wasd\n");	// LuminousQuake: new profiles' layout
 			break;
+		case 14:
+			if (m_renderer_pending >= 0)
+				M_ConfirmVidRestart (M_ApplyRenderer);
+			break;
 		case 15:
 			M_Menu_Video_f ();
 			break;
@@ -1342,6 +1795,7 @@ void M_Options_Key (int k)
 
 	case K_UPARROW:
 		S_LocalSound ("misc/menu1.wav");
+		m_renderer_pending = -1;	// a renderer browsed and left goes back
 		options_cursor--;
 		if (options_cursor < 0)
 			options_cursor = OPTIONS_ITEMS-1;
@@ -1349,6 +1803,7 @@ void M_Options_Key (int k)
 
 	case K_DOWNARROW:
 		S_LocalSound ("misc/menu1.wav");
+		m_renderer_pending = -1;
 		options_cursor++;
 		if (options_cursor >= OPTIONS_ITEMS)
 			options_cursor = 0;
@@ -1603,7 +2058,9 @@ void M_Video_Key (int key)
 
 /* Switches and sliders for comparing Luminous features: each takes effect at
  * once, so a setting can be flipped back and forth while looking at a scene.
- * Texture-pack settings join as those features arrive. */
+ * Texture-pack settings join as those features arrive. Everything here is
+ * Luminous's alone: the bridge sends the tone and glow values to Classic GPU
+ * too, but its shaders ignore them (tonemap.frag, emission() in world.frag). */
 typedef struct
 {
 	const char	*label, *cvar, *help;
@@ -1616,14 +2073,15 @@ static const luminous_option_t luminous_options[] =
 	{"     High-res textures", "lq_pack_textures", "The pack's colour and glow.", 0, 1, 0, 1, "off", "on"},
 	{"             Bump maps", "lq_pack_bumps", "Texture pack normal maps.", 0, 1, 0, 1, "off", "on"},
 	{"        Parallax depth", "lq_pack_parallax", "Bump depth, of texture size. 0 off.", 0, 0.08f, 0.01f, 0.04f, NULL, NULL},
+	{"        Relief shadows", "lq_pack_relief_shadows", "Bumps shadowed by the brightest light.", 0, 1, 0, 1, "off", "on"},
 	{"       Pack brightness", "lq_pack_brightness", "Match: each texture at its original's.", 0, 1, 0, 1, "as made", "match"},
 	{"           Pack models", "lq_pack_models", "The pack's own models, drawn only.", 0, 1, 0, 1, "off", "on"},
 	{"      Pack model skins", "lq_pack_skins", "Pack skins on original models.", 0, 1, 0, 1, "off", "on"},
 	{"               Shadows", "lq_shadows", "Shadow cubes and their filtering.", 0, 1, 0, 1, "off", "on"},
 	{"         Panel shadows", "lq_panel_shadows", "Lit panels: one cube per group.", 0, 1, 0, 1, "per piece", "shared"},
 	{"    Skip clear shadows", "lq_shadow_free", "No lookup where none can fall.", 0, 1, 0, 1, "off", "on"},
-	{"        Tone: shoulder", "lq_tone_shoulder", "Light below this is unchanged.", 0.5f, 0.95f, 0.05f, 0.8f, NULL, NULL},
-	{"     Tone: white point", "lq_tone_white", "Light that reaches the peak.", 2, 12, 0.5f, 6, NULL, NULL},
+	{"        Tone: shoulder", "lq_tone_shoulder", "Of the peak: below it, unchanged.", 0.5f, 0.95f, 0.05f, 0.8f, NULL, NULL},
+	{"     Tone: white point", "lq_tone_white", "Times the peak: light that reaches it.", 1, 12, 0.5f, 6, NULL, NULL},
 	{"     Fullbright glow x", "lq_emission", "Lava, flames, lit panels.", 1, 8, 0.5f, 3, NULL, NULL},
 	{"      Explosion glow x", "lq_sprite_emission", "Explosions and other sprites.", 1, 8, 0.5f, 3, NULL, NULL},
 };
@@ -1631,7 +2089,16 @@ static const luminous_option_t luminous_options[] =
 #define	LUMINOUS_TABLE	((int)(sizeof(luminous_options) / sizeof(luminous_options[0])))
 #define	LUMINOUS_ITEMS	(LUMINOUS_TABLE + 2)
 
-static int	luminous_cursor;
+// The menu row (cursor position) of a table setting, by its cvar.
+static int M_LuminousRow (const char *cvar)
+{
+	int		i;
+	for (i = 0 ; i < LUMINOUS_TABLE ; i++)
+		if (!Q_strcmp ((char *)luminous_options[i].cvar, (char *)cvar))
+			return i + 1;
+	return -1;
+}
+
 static char	luminous_packs[32][64];	// texture packs found (LQ_TexturePacks)
 static const char	*luminous_places[32];	// where each one is
 static int	luminous_pack_count;
@@ -1641,6 +2108,7 @@ void M_Menu_Luminous_f (void)
 	key_dest = key_menu;
 	m_state = m_luminous;
 	m_entersound = true;
+	luminous_tuning = false;
 	luminous_pack_count = LQ_TexturePacks (luminous_packs, luminous_places, 32);
 }
 
@@ -1683,6 +2151,21 @@ void M_Luminous_Draw (void)
 	int		i, y;
 	const luminous_option_t	*o;
 
+	if (luminous_tuning)	// the setting being adjusted, alone, over the scene
+	{
+		o = &luminous_options[luminous_cursor - 1];
+		M_Print (16, 176, (char *)o->label);
+		if (!o->step)
+			M_Print (220, 176, (char *)(M_LuminousValue (o) != 0 ? o->on : o->off));
+		else
+		{
+			M_DrawSlider (220, 176, (M_LuminousValue (o) - o->low) / (o->high - o->low));
+			M_Print (320 - 8*4, 176, va("%.2g", M_LuminousValue (o)));
+		}
+		M_Print (16, 184, M_ShowToneRamp () ? "Green shoulder, blue peak, red white." :
+			"Up, down or Esc: the whole page.");
+		return;
+	}
 	M_Print ((320 - 16*8)/2, 4, "LUMINOUS OPTIONS");
 	{
 		int		at = M_LuminousPackIndex ();
@@ -1733,6 +2216,12 @@ void M_Luminous_Key (int key)
 	int		dir, i;
 	float	v;
 
+	if (luminous_tuning && key != K_LEFTARROW && key != K_RIGHTARROW && key != K_ENTER)
+	{
+		luminous_tuning = false;	// back to the whole page, on the same setting
+		S_LocalSound ("misc/menu1.wav");
+		return;
+	}
 	switch (key)
 	{
 	case K_ESCAPE:
@@ -1769,6 +2258,7 @@ void M_Luminous_Key (int key)
 		return;
 	}
 	o = &luminous_options[luminous_cursor - 1];
+	luminous_tuning = true;
 	v = M_LuminousValue (o);
 	if (!o->step)
 		v = v != 0 ? 0 : 1;
@@ -1782,6 +2272,78 @@ void M_Luminous_Key (int key)
 		v = (float)((int)(v / o->step + 0.5f)) * o->step;	// stay on the steps
 	}
 	Cvar_SetValue ((char *)o->cvar, v);
+}
+
+//=============================================================================
+/* CONFIRMATION (LuminousQuake) */
+
+/* A yes/no question over the page that asked it. A few settings cannot be
+ * changed while the video system is up: the renderer itself, the resolution
+ * and fullscreen. Rather than leave "use vid_restart" to the player, the
+ * setting asks here and restarts on Y, so only the settings that need it carry
+ * the warning. The Add-ons page asks here before restarting with a mod. */
+
+static void	(*m_confirm_apply) (void);
+static qboolean	m_confirm_video;	// Y also queues vid_restart
+static char	m_confirm_lines[3][33];
+
+static void M_Confirm (const char *first, const char *second, const char *third, qboolean video, void (*apply) (void))
+{
+	if (m_state == m_confirm)
+		return;
+	Q_strncpy (m_confirm_lines[0], (char *)first, 32); m_confirm_lines[0][32] = 0;
+	Q_strncpy (m_confirm_lines[1], (char *)second, 32); m_confirm_lines[1][32] = 0;
+	Q_strncpy (m_confirm_lines[2], (char *)(third ? third : ""), 32); m_confirm_lines[2][32] = 0;
+	m_confirm_video = video;
+	m_confirm_apply = apply;
+	m_restart_prevstate = m_state;
+	key_dest = key_menu;
+	m_state = m_confirm;
+	m_entersound = true;
+}
+
+void M_ConfirmVidRestart (void (*apply) (void))
+{
+	M_Confirm ("Changing this setting requires", "a video restart. Continue?", NULL, true, apply);
+}
+
+void M_Confirm_Draw (void)
+{
+	m_state = m_restart_prevstate;	// the page stays behind the box
+	m_recursiveDraw = true;
+	M_Draw ();
+	m_state = m_confirm;
+
+	M_DrawTextBox (16, 72, 32, 5);
+	M_Print (24, 80, m_confirm_lines[0]);
+	M_Print (24, 88, m_confirm_lines[1]);
+	M_Print (24, 96, m_confirm_lines[2]);
+	M_Print (24, 112, "             Y / N");
+}
+
+void M_Confirm_Key (int key)
+{
+	switch (key)
+	{
+	case 'Y':
+	case 'y':
+		m_state = m_restart_prevstate;
+		m_entersound = true;
+		if (m_confirm_apply)
+			m_confirm_apply ();
+		m_confirm_apply = NULL;
+		if (m_confirm_video)
+			Cbuf_AddText ("vid_restart\n");
+		break;
+
+	case K_ESCAPE:
+	case 'n':
+	case 'N':
+		m_state = m_restart_prevstate;
+		m_entersound = true;
+		m_confirm_apply = NULL;
+		break;
+	}
 }
 
 //=============================================================================
@@ -3264,6 +3826,8 @@ void M_Init (void)
 	Cmd_AddCommand ("togglemenu", M_ToggleMenu_f);
 
 	Cmd_AddCommand ("menu_main", M_Menu_Main_f);
+	Cmd_AddCommand ("menu_addons", M_Menu_Addons_f);	// LuminousQuake
+	Cmd_AddCommand ("game", M_Game_f);	// LuminousQuake, as QuakeSpasm
 	Cmd_AddCommand ("menu_singleplayer", M_Menu_SinglePlayer_f);
 	Cmd_AddCommand ("menu_load", M_Menu_Load_f);
 	Cmd_AddCommand ("menu_save", M_Menu_Save_f);
@@ -3293,7 +3857,7 @@ void M_Draw (void)
 			S_ExtraUpdate ();
 			VID_LockBuffer ();
 		}
-		else
+		else if (!(m_state == m_luminous && luminous_tuning))	// adjusting: the scene untouched
 			Draw_FadeScreen ();
 
 		scr_fullupdate = 0;
@@ -3350,6 +3914,14 @@ void M_Draw (void)
 
 	case m_luminous:
 		M_Luminous_Draw ();
+		break;
+
+	case m_confirm:
+		M_Confirm_Draw ();
+		break;
+
+	case m_addons:
+		M_Addons_Draw ();
 		break;
 
 	case m_help:
@@ -3446,6 +4018,14 @@ void M_Keydown (int key)
 
 	case m_luminous:
 		M_Luminous_Key (key);
+		return;
+
+	case m_confirm:
+		M_Confirm_Key (key);
+		return;
+
+	case m_addons:
+		M_Addons_Key (key);
 		return;
 
 	case m_help:

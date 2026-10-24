@@ -45,6 +45,7 @@ int LQ_GPUReadPixels(lq_gpu *gpu, uint8_t **pixels, uint32_t *width, uint32_t *h
 void LQ_GPUDisplay(lq_gpu *gpu, float gamma, int hdr, float peak);
 /* lq_hdr_test: replace the 3D view with bands at known light levels (0.5-10x SDR white). */
 void LQ_GPUTestPattern(lq_gpu *gpu, int on);
+void LQ_GPUToneRamp(lq_gpu *gpu, int on); /* known light levels through the tone curve, with markers */
 /* Luminous tone mapping and emission: the shoulder below which linear light is
  * left alone (0.8), the white point that reaches the display's ceiling (6 on
  * SDR; on HDR the larger of it and twice the headroom), and the gains at which

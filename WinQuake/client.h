@@ -370,6 +370,7 @@ typedef struct
 {
 	float	density;		// 0 = no fog
 	float	color[3];		// 0-1
+	float	sky;			// the map's "_skyfog"; < 0 when it sets none
 	float	old_density, old_color[3];	// what a fade starts from
 	double	fade_start, fade_end;		// cl.time; equal when not fading
 } cl_fog_t;
@@ -378,6 +379,7 @@ void CL_ParseFog (void);
 void CL_Fog_f (void);
 void CL_Sky_f (void);
 void CL_FogCurrent (float fog[4]);	// density, red, green, blue now
+float CL_SkyFog (float fallback);	// how much fog covers the sky
 void CL_NewTranslation (int slot);
 
 //

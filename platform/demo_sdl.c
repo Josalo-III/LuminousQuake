@@ -391,59 +391,62 @@ static int TestPlatform(qboolean no_audio)
         VERIFY(LQ_AudioFrames() > before);
     }
     memset(&event, 0, sizeof(event)); event.type = SDL_EVENT_QUIT;
-    /* The menu stages resolution changes; Apply must use the real restart path. */
+    /* Video Options: settings apply at once; the resolution is browsed, then
+     * asked for on Enter, and fullscreen asks before restarting. */
     VERIFY(vid_menudrawfn && vid_menukeyfn);
     vid_menudrawfn();
     int old_width = vid.width, old_height = vid.height;
-    vid_menukeyfn(K_RIGHTARROW);
+    vid_menukeyfn(K_RIGHTARROW); /* 960 x 540, browsed */
     VERIFY(vid.width == (unsigned)old_width && vid.height == (unsigned)old_height);
+    VERIFY(Cvar_VariableValue("vid_width") == old_width);
+    vid_menukeyfn(K_ENTER); M_Keydown('n'); Cbuf_Execute(); /* declined: nothing changes */
+    VERIFY(vid.width == (unsigned)old_width && Cvar_VariableValue("vid_width") == old_width);
+    vid_menukeyfn(K_ENTER); M_Keydown('y'); Cbuf_Execute(); /* accepted: the real restart path */
+    VERIFY(vid.width == 960 && vid.height == 540);
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW);
-    VERIFY(Cvar_VariableValue("fov") == 90);
-    vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_DOWNARROW);
-    vid_menukeyfn(K_RIGHTARROW); /* smooth filtering, staged */
+    VERIFY(Cvar_VariableValue("fov") == 95);
+    vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); M_Keydown(K_ESCAPE); /* fullscreen declined */
+    VERIFY(Cvar_VariableValue("vid_fullscreen") == 0);
+    vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_DOWNARROW);
+    vid_menukeyfn(K_RIGHTARROW); /* smooth filtering */
+    VERIFY(Cvar_VariableValue("gpu_filter") == 1);
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); /* 2x MSAA */
-    VERIFY(Cvar_VariableValue("gpu_filter") == 0 && Cvar_VariableValue("gpu_msaa") == 0);
+    VERIFY(Cvar_VariableValue("gpu_msaa") == 2);
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); vid_menukeyfn(K_RIGHTARROW); /* trilinear */
+    VERIFY(Cvar_VariableValue("gpu_mipmaps") == 2);
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_LEFTARROW); /* 16x anisotropy */
-    VERIFY(Cvar_VariableValue("gpu_mipmaps") == 0 && Cvar_VariableValue("gpu_anisotropy") == 1);
+    VERIFY(Cvar_VariableValue("gpu_anisotropy") == 16);
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_LEFTARROW); /* 40% opaque liquids */
-    VERIFY(Cvar_VariableValue("r_wateralpha") == 1);
+    VERIFY(fabsf(Cvar_VariableValue("r_wateralpha") - 0.4f) < 0.001f);
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); /* NTSC tube camera */
-    VERIFY(Cvar_VariableValue("r_fluorescent") == 1);
+    VERIFY(Cvar_VariableValue("r_fluorescent") == 2);
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); /* 3D particles */
-    VERIFY(Cvar_VariableValue("lq_particles") == 0);
+    VERIFY(Cvar_VariableValue("lq_particles") == 1);
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); /* smooth animation off */
-    VERIFY(Cvar_VariableValue("r_lerpmodels") == 1 && Cvar_VariableValue("r_lerpmove") == 1);
+    VERIFY(Cvar_VariableValue("r_lerpmodels") == 0 && Cvar_VariableValue("r_lerpmove") == 0);
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); /* fog off */
-    VERIFY(Cvar_VariableValue("lq_fog") == 1);
+    VERIFY(Cvar_VariableValue("lq_fog") == 0);
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); /* HDR off */
     vid_menukeyfn(K_DOWNARROW); vid_menukeyfn(K_RIGHTARROW); /* HDR peak 1.5x */
-    VERIFY(Cvar_VariableValue("lq_hdr") == 1 && Cvar_VariableValue("lq_hdr_peak") == 0);
-    vid_menukeyfn(K_DOWNARROW);
-    vid_menukeyfn(K_ENTER); Cbuf_Execute();
     VERIFY(Cvar_VariableValue("lq_hdr") == 0 && Cvar_FindVar("lq_hdr")->archive);
     VERIFY(fabsf(Cvar_VariableValue("lq_hdr_peak") - 1.5f) < 0.001f && Cvar_FindVar("lq_hdr_peak")->archive);
     Cvar_SetValue("lq_hdr", 1); Cvar_SetValue("lq_hdr_peak", 0);
-    VERIFY(Cvar_VariableValue("lq_fog") == 0 && Cvar_FindVar("lq_fog")->archive);
+    VERIFY(Cvar_FindVar("lq_fog")->archive);
     Cvar_SetValue("lq_fog", 1);
-    VERIFY(fabsf(Cvar_VariableValue("r_wateralpha") - 0.4f) < 0.001f && Cvar_FindVar("r_wateralpha")->archive);
-    VERIFY(Cvar_VariableValue("r_fluorescent") == 2 && Cvar_FindVar("r_fluorescent")->archive);
-    VERIFY(Cvar_VariableValue("lq_particles") == 1 && Cvar_FindVar("lq_particles")->archive);
-    VERIFY(Cvar_VariableValue("r_lerpmodels") == 0 && Cvar_FindVar("r_lerpmodels")->archive);
-    VERIFY(Cvar_VariableValue("r_lerpmove") == 0 && Cvar_FindVar("r_lerpmove")->archive);
+    VERIFY(Cvar_FindVar("r_wateralpha")->archive && Cvar_FindVar("r_fluorescent")->archive);
+    VERIFY(Cvar_FindVar("lq_particles")->archive);
+    VERIFY(Cvar_FindVar("r_lerpmodels")->archive && Cvar_FindVar("r_lerpmove")->archive);
     Cvar_SetValue("r_wateralpha", 1); Cvar_SetValue("r_fluorescent", 1); Cvar_SetValue("lq_particles", 0);
     Cvar_SetValue("r_lerpmodels", 1); Cvar_SetValue("r_lerpmove", 1);
     VERIFY(vid.width == 960 && vid.height == 540);
     VERIFY(Cvar_FindVar("vid_width")->archive && Cvar_FindVar("vid_height")->archive);
-    VERIFY(Cvar_VariableValue("fov") == 95 && Cvar_FindVar("fov")->archive);
-    VERIFY(Cvar_VariableValue("gpu_filter") == 1 && Cvar_VariableValue("gpu_msaa") == 2);
-    VERIFY(Cvar_VariableValue("gpu_mipmaps") == 2 && Cvar_FindVar("gpu_mipmaps")->archive);
-    VERIFY(Cvar_VariableValue("gpu_anisotropy") == 16 && Cvar_FindVar("gpu_anisotropy")->archive);
+    VERIFY(Cvar_FindVar("fov")->archive);
+    VERIFY(Cvar_FindVar("gpu_mipmaps")->archive && Cvar_FindVar("gpu_anisotropy")->archive);
     /* Reach 1080p through the same selector used by the player. */
-    for (int i = 0; i < 14; ++i) vid_menukeyfn(K_UPARROW);	/* Apply is row 14 */
+    for (int i = 0; i < 14; ++i) vid_menukeyfn(K_UPARROW);	/* HDR peak is row 14 */
     for (int i = 0; i < 12; ++i) vid_menukeyfn(K_RIGHTARROW);
-    for (int i = 0; i < 14; ++i) vid_menukeyfn(K_DOWNARROW);
-    vid_menukeyfn(K_ENTER); Cbuf_Execute();
+    vid_menukeyfn(K_ENTER); M_Keydown('y'); Cbuf_Execute();
+    key_dest = key_game;
     VERIFY(vid.width == 1920 && vid.height == 1080);
     Cvar_SetValue("vid_width", 640); Cvar_SetValue("vid_height", 480);
     Cbuf_AddText("vid_restart\n"); Cbuf_Execute();
@@ -462,7 +465,7 @@ static int TestPlatform(qboolean no_audio)
     Cbuf_AddText("vid_restart\n"); Cbuf_Execute();
     VERIFY(vid.aspect == 1 && vid.width == 1920 && vid.height == 1080);
     LQ_UIBegin(); VERIFY(LQ_UIScale() == 2 && vid.width == 960 && vid.height == 540); LQ_UIEnd();
-    puts("PASS video menu stages, applies and archives resolution");
+    puts("PASS video menu applies at once, confirms restarts and archives");
     LQ_HandleEvent(&event); VERIFY(LQ_QuitRequested()); LQ_ResetQuit();
     puts("PASS SDL focus/key releases, text/modifiers, resize, palette, video restart, cache alignment, audio fallback/mixer/ring, quit");
     return 0;

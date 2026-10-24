@@ -13,6 +13,7 @@ layout(set=2,binding=0) uniform sampler2D scene;
 layout(set=3,binding=0,std140) uniform Display {
     vec4 tone;   // x: 1 for Luminous, 2 for the final HDR decode; y: gamma / 2.2, z: ceiling, w: white point
     vec4 target; // x: 1 to let values pass SDR white (HDR), y: gamma, z: shoulder, w: Quake's gamma (Luminous)
+    vec4 ramp;   // x: 1 shows the tone ramp (lq_tone_ramp); y, z: its band's top and bottom (0-1 down the frame)
 } display;
 layout(location=0) in vec2 uv;
 layout(location=0) out vec4 color;
@@ -37,8 +38,24 @@ void main() {
     }
     if (display.tone.x > 1.5) { color = vec4(pow(c, vec3(2.2)), 1.0); return; }
     vec3 light;
+    // The tone ramp: a band of known light levels in place of the scene, put
+    // through the same curve, so the shoulder's effect can be judged while it
+    // is adjusted. Left to right, 1/32 to 16 times the ceiling on a log scale:
+    // the display's range, which the settings don't move, so the shoulder and
+    // white point markers travel across it; the upper half grey, the
+    // lower half lava orange to show the hue
+    // kept as highlights roll off. Markers: green at the shoulder, blue at
+    // the ceiling (SDR white, or the HDR headroom), red at the white point.
+    float ramp_lo = log2(max(display.tone.z, 1.0)) - 5.0, ramp_hi = ramp_lo + 9.0;
+    bool ramp = display.tone.x > 0.5 && display.ramp.x > 0.5 && uv.y >= display.ramp.y && uv.y < display.ramp.z;
+    if (ramp) {
+        float half_band = (uv.y - display.ramp.y) / (display.ramp.z - display.ramp.y);
+        vec3 hue = half_band < 0.5 ? vec3(1.0) : vec3(1.0, 0.45, 0.12);
+        // Linear light at the level for this column, before the curve.
+        light = hue * exp2(mix(ramp_lo, ramp_hi, uv.x));
+    }
     if (display.tone.x > 0.5) {
-        light = pow(c, vec3(display.tone.y));
+        if (!ramp) light = pow(c, vec3(display.tone.y));
         float peak = max(light.r, max(light.g, light.b));
         if (peak > display.target.z)
             light *= shoulder(peak, display.target.z, display.tone.z, display.tone.w) / peak;
@@ -51,5 +68,14 @@ void main() {
         light = pow(min(c, vec3(1.0)), vec3(display.target.y));
     }
     light = display.target.x > 0.5 ? max(light, vec3(0.0)) : clamp(light, 0.0, 1.0);
+    if (ramp) {
+        float width = 2.0 * fwidth(uv.x);
+        float at_shoulder = (log2(max(display.target.z, 1e-6)) - ramp_lo) / (ramp_hi - ramp_lo);
+        float at_ceiling = (log2(max(display.tone.z, 1e-6)) - ramp_lo) / (ramp_hi - ramp_lo);
+        float at_white = (log2(max(display.tone.w, 1e-6)) - ramp_lo) / (ramp_hi - ramp_lo);
+        if (abs(uv.x - at_shoulder) < width) light = vec3(0.0, 1.0, 0.0);
+        else if (abs(uv.x - at_ceiling) < width) light = vec3(0.0, 0.35, 1.0);
+        else if (abs(uv.x - at_white) < width) light = vec3(1.0, 0.0, 0.0);
+    }
     color = vec4(pow(light, vec3(1.0 / 2.2)), 1.0);
 }

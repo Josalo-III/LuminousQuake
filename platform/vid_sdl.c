@@ -256,7 +256,7 @@ void LQ_ApplyRenderer(void)
         gpu = LQ_GPUCreate(window, 0, error, sizeof(error));
         if (!gpu) { LQ_FallbackRenderer(error); return; }
         GPUOptions(); gpu_mode = (int)choice;
-        Con_Printf(choice == 2 ? "Luminous (experimental): runtime lights, soft shadows, bounce, probes and weapon lights.\n" :
+        Con_DPrintf(choice == 2 ? "Luminous (experimental): runtime lights, soft shadows, bounce, probes and weapon lights.\n" :
             "Classic GPU enabled: GPU world, actors, brushes and effects.\n");
     } else if (gpu) LQ_FallbackRenderer("Software selected");
 }
@@ -448,7 +448,9 @@ static const float water_levels[] = {1, 0.8f, 0.6f, 0.4f};
 static const int anisotropy_levels[] = {1,2,4,8,16};
 static float video_fov;
 static qboolean video_menu_active;
-static qboolean video_applied; /* confirms Apply until the next key */
+static qboolean video_changed; /* a setting changed here: the config is saved on leaving */
+static int video_pending_fullscreen;
+void M_ConfirmVidRestart(void (*apply)(void));
 static void VideoMenuInit(void)
 {
     if (video_menu_active) return;
@@ -475,8 +477,54 @@ static void VideoMenuInit(void)
     if (!isfinite(video_fov) || video_fov < 10 || video_fov > 170) video_fov = 90;
     video_menu_active = true;
 }
+/* Everything here applies at once except the resolution and fullscreen,
+ * which need the video system restarted: those ask first (M_ConfirmVidRestart)
+ * and restart on Y. The resolution is browsed with left/right and asked for
+ * on Enter, so stepping through the list doesn't restart at every step.
+ * Settings the GPU holds (VSync, filtering, MSAA, mipmaps, anisotropy, HDR)
+ * change over at a vid_restart queued for the next frame, as Apply did: the
+ * key handler never touches the GPU or the swapchain itself. */
+static int VideoCurrentResolution(void)
+{
+    for (int i = 0; i < (int)(sizeof(resolutions) / sizeof(resolutions[0])); ++i)
+        if (vid_width.value == resolutions[i][0] && vid_height.value == resolutions[i][1]) return i;
+    return -1;
+}
+static void VideoApplyResolution(void)
+{
+    Cvar_SetValue("vid_width", resolutions[video_choice][0]);
+    Cvar_SetValue("vid_height", resolutions[video_choice][1]);
+}
+static void VideoApplyFullscreen(void)
+{
+    Cvar_SetValue("vid_fullscreen", video_pending_fullscreen);
+    video_fullscreen = video_pending_fullscreen;
+}
+static qboolean video_resync; /* reread the menu's values once a queued restart has run */
+/* Sets every setting from the menu's values. gpu: one the GPU holds, so a
+ * vid_restart is queued to change it over, and the values are read back
+ * afterwards, since the GPU may refuse some (MSAA it lacks, say). */
+static void VideoApply(qboolean gpu)
+{
+    Cvar_SetValue("fov", video_fov);
+    Cvar_SetValue("vid_vsync", video_vsync);
+    Cvar_SetValue("gpu_filter", video_filter); Cvar_SetValue("gpu_msaa", video_msaa == 2 ? 4 : video_msaa == 1 ? 2 : 0);
+    Cvar_SetValue("gpu_mipmaps", video_mipmaps); Cvar_SetValue("r_wateralpha", water_levels[video_water]);
+    Cvar_SetValue("gpu_anisotropy", anisotropy_levels[video_anisotropy]);
+    Cvar_SetValue("r_fluorescent", video_tubes);
+    Cvar_SetValue("lq_particles", video_particles);
+    Cvar_SetValue("r_lerpmodels", video_lerp); Cvar_SetValue("r_lerpmove", video_lerp);
+    Cvar_SetValue("lq_fog", video_fog);
+    Cvar_SetValue("lq_hdr", video_hdr); Cvar_SetValue("lq_hdr_peak", video_peak_custom ? video_peak_custom : peak_levels[video_peak]);
+    if (gpu) { Cbuf_AddText("vid_restart\n"); video_resync = true; }
+    video_changed = true;
+}
 static void VideoMenuDraw(void)
 {
+    if (video_resync) {  /* a resolution browsed but not yet asked for stays shown */
+        int choice = video_choice;
+        video_menu_active = false; VideoMenuInit(); video_choice = choice; video_resync = false;
+    }
     VideoMenuInit();
     M_Print(88, 4, "VIDEO OPTIONS");
     M_Print(32, 20, "Resolution");
@@ -496,11 +544,12 @@ static void VideoMenuDraw(void)
     M_Print(32, 150, "HDR"); M_Print(168, 150, video_hdr ? "auto" : "off");
     M_Print(32, 160, "HDR peak"); M_Print(168, 160, video_peak ? va("%gx white", peak_levels[video_peak]) :
         video_peak_custom ? va("%gx white", video_peak_custom) : "as reported");
-    M_Print(32, 170, "Apply changes");
     M_DrawCharacter(16, 20 + video_cursor * 10, 12 + ((int)(realtime * 4) & 1));
     M_Print(32, 182, va("Current: %u x %u", vid.width* (LQ_UIActive() ? LQ_UIScale() : 1), vid.height* (LQ_UIActive() ? LQ_UIScale() : 1)));
-    if (video_applied)
-        M_Print(32, 192, "Settings applied.");
+    if (video_cursor == 0 && video_choice != VideoCurrentResolution())
+        M_Print(32, 192, "Enter uses it; restarts video.");
+    else if (video_cursor == 0 || video_cursor == 2)
+        M_Print(32, 192, "Changing it restarts video.");
     else if (video_cursor == 7 && !video_mipmaps)
         M_Print(32, 192, "Anisotropy needs mipmaps enabled.");
     else if (video_cursor == 8 && video_water)
@@ -517,25 +566,39 @@ static void VideoMenuDraw(void)
         M_Print(32, 192, "GPU: HDR when the display is.");
     else if (video_cursor == 14)
         M_Print(32, 192, "Cap highlights if they clip.");
-    else M_Print(32, 192, "Left/right changes; Apply saves.");
+    else M_Print(32, 192, "Changes apply at once.");
 }
 static void VideoMenuKey(int key)
 {
     VideoMenuInit();
-    video_applied = false;
-    if (key == K_ESCAPE) { video_menu_active = false; M_Menu_Options_f(); return; }
-    if (key == K_UPARROW) { video_cursor = (video_cursor + 15) % 16; return; }
-    if (key == K_DOWNARROW) { video_cursor = (video_cursor + 1) % 16; return; }
+    if (key == K_ESCAPE) {
+        video_menu_active = false;
+        if (video_changed) { Host_WriteConfiguration(); video_changed = false; }
+        M_Menu_Options_f(); return;
+    }
+    if (key == K_UPARROW || key == K_DOWNARROW) {
+        int current = VideoCurrentResolution();
+        if (current >= 0) video_choice = current;  /* a resolution browsed and left goes back */
+        video_cursor = (video_cursor + (key == K_UPARROW ? 14 : 1)) % 15;
+        return;
+    }
     if (key != K_LEFTARROW && key != K_RIGHTARROW && key != K_ENTER) return;
     if (video_cursor == 0) {
         int count = sizeof(resolutions) / sizeof(resolutions[0]);
-        video_choice = (video_choice + (key == K_LEFTARROW ? -1 : 1) + count) % count;
-    } else if (video_cursor == 1) {
+        if (key != K_ENTER) video_choice = (video_choice + (key == K_LEFTARROW ? -1 : 1) + count) % count;
+        else if (video_choice != VideoCurrentResolution()) M_ConfirmVidRestart(VideoApplyResolution);
+        return;
+    }
+    if (video_cursor == 2) {
+        video_pending_fullscreen = !video_fullscreen;
+        M_ConfirmVidRestart(VideoApplyFullscreen);
+        return;
+    }
+    if (video_cursor == 1) {
         video_fov += key == K_LEFTARROW ? -5 : 5;
         if (video_fov < 10) video_fov = 10;
         if (video_fov > 170) video_fov = 170;
-    } else if (video_cursor == 2) video_fullscreen = !video_fullscreen;
-    else if (video_cursor == 3) video_vsync = !video_vsync;
+    } else if (video_cursor == 3) video_vsync = !video_vsync;
     else if (video_cursor == 4) video_filter = !video_filter;
     else if (video_cursor == 5) video_msaa = (video_msaa + (key == K_LEFTARROW ? 2 : 1)) % 3;
     else if (video_cursor == 6) video_mipmaps = (video_mipmaps + (key == K_LEFTARROW ? 2 : 1)) % 3;
@@ -547,20 +610,5 @@ static void VideoMenuKey(int key)
     else if (video_cursor == 12) video_fog = !video_fog;
     else if (video_cursor == 13) video_hdr = !video_hdr;
     else if (video_cursor == 14) { video_peak = (video_peak + (key == K_LEFTARROW ? 6 : 1)) % 7; video_peak_custom = 0; }
-    else if (key == K_ENTER) {
-        Cvar_SetValue("vid_width", resolutions[video_choice][0]);
-        Cvar_SetValue("vid_height", resolutions[video_choice][1]);
-        Cvar_SetValue("fov", video_fov);
-        Cvar_SetValue("vid_fullscreen", video_fullscreen); Cvar_SetValue("vid_vsync", video_vsync);
-        Cvar_SetValue("gpu_filter", video_filter); Cvar_SetValue("gpu_msaa", video_msaa == 2 ? 4 : video_msaa == 1 ? 2 : 0);
-        Cvar_SetValue("gpu_mipmaps", video_mipmaps); Cvar_SetValue("r_wateralpha", water_levels[video_water]);
-        Cvar_SetValue("gpu_anisotropy", anisotropy_levels[video_anisotropy]);
-        Cvar_SetValue("r_fluorescent", video_tubes);
-        Cvar_SetValue("lq_particles", video_particles);
-        Cvar_SetValue("r_lerpmodels", video_lerp); Cvar_SetValue("r_lerpmove", video_lerp);
-        Cvar_SetValue("lq_fog", video_fog);
-        Cvar_SetValue("lq_hdr", video_hdr); Cvar_SetValue("lq_hdr_peak", video_peak_custom ? video_peak_custom : peak_levels[video_peak]);
-        Cbuf_AddText("vid_restart\n");
-        video_menu_active = false; video_applied = true;
-    }
+    VideoApply((video_cursor >= 3 && video_cursor <= 7) || video_cursor >= 13);
 }

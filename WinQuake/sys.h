@@ -59,6 +59,10 @@ double Sys_FloatTime (void);
 char *Sys_ConsoleInput (void);
 
 void Sys_Sleep (void);
+
+// LuminousQuake: the Add-ons menu and the game command
+int Sys_ListDirectory (const char *path, char names[][64], int capacity);
+void Sys_RequestRelaunch (const char *game);	// restart with this game folder
 // called to yield for a little bit so as
 // not to hog cpu when paused or debugging
 

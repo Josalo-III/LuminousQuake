@@ -3,6 +3,8 @@
 #include <windows.h>
 #include <direct.h>
 #include <conio.h>
+#include <process.h>
+#include <io.h>
 #else
 #define _POSIX_C_SOURCE 200809L
 #include <time.h>
@@ -12,6 +14,7 @@
 #include <execinfo.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <dirent.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
@@ -159,6 +162,94 @@ void Sys_Error(char *fmt, ...)
     /* Initialization failures must not call shutdown through incomplete state. */
     exit(EXIT_FAILURE);
 }
+/* LuminousQuake: the names in a directory (files and folders, without . and
+ * ..), for the Add-ons menu. Returns how many, or -1 when it can't be read. */
+int Sys_ListDirectory(const char *path, char names[][64], int capacity)
+{
+    int count = 0;
+#ifdef _WIN32
+    char pattern[MAX_OSPATH];
+    WIN32_FIND_DATAA found;
+    HANDLE search;
+    if (snprintf(pattern, sizeof(pattern), "%s/*", path) >= (int)sizeof(pattern)) return -1;
+    search = FindFirstFileA(pattern, &found);
+    if (search == INVALID_HANDLE_VALUE) return -1;
+    do {
+        if (!strcmp(found.cFileName, ".") || !strcmp(found.cFileName, "..") || strlen(found.cFileName) >= 64) continue;
+        if (count < capacity) snprintf(names[count++], 64, "%s", found.cFileName);
+    } while (FindNextFileA(search, &found));
+    FindClose(search);
+#else
+    DIR *directory = opendir(path);
+    struct dirent *entry;
+    if (!directory) return -1;
+    while ((entry = readdir(directory)) && count < capacity) {
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..") || strlen(entry->d_name) >= 64) continue;
+        snprintf(names[count++], 64, "%s", entry->d_name);
+    }
+    closedir(directory);
+#endif
+    return count;
+}
+
+/* LuminousQuake: switching mods restarts the program with the chosen game
+ * folder, as a shortcut with -game did: the engine fixes its search paths at
+ * startup. Requested from the menu or the game command, done between frames. */
+static char **launch_argv;
+static int launch_argc;
+static char relaunch_game[MAX_QPATH];
+static qboolean relaunch_pending;
+void Sys_RequestRelaunch(const char *game)
+{
+    snprintf(relaunch_game, sizeof(relaunch_game), "%s", game);
+    relaunch_pending = true;
+}
+static void Relaunch(void)
+{
+    static char *args[MAX_NUM_ARGVS + 8];
+    int count = 0, i;
+    qboolean interactive = false;
+    relaunch_pending = false;
+#if defined(LQ_SDL) && defined(__APPLE__)
+    interactive = LQ_MacFinderLaunch() != 0;
+#endif
+    if (!launch_argv || !launch_argv[0]) { Con_Printf("Cannot restart: no program path.\n"); return; }
+#ifdef _WIN32
+    if (_access(launch_argv[0], 0)) {
+#else
+    if (access(launch_argv[0], X_OK)) {
+#endif
+        Con_Printf("Cannot restart %s: %s\n", launch_argv[0], strerror(errno)); return;
+    }
+    args[count++] = launch_argv[0];
+    for (i = 1; i < launch_argc && count < MAX_NUM_ARGVS; ++i) {
+        const char *arg = launch_argv[i];
+        if (!strcmp(arg, "-game")) { ++i; continue; }  /* the old game folder */
+        if (!strcmp(arg, "-hipnotic") || !strcmp(arg, "-rogue") || !strcmp(arg, "--interactive")) continue;
+        if (arg[0] == '+') {  /* startup commands (+map e1m1) belong to the old game */
+            while (i + 1 < launch_argc && launch_argv[i + 1][0] != '+' && launch_argv[i + 1][0] != '-') ++i;
+            continue;
+        }
+        args[count++] = (char *)arg;
+    }
+    if (!Q_strcasecmp(relaunch_game, "hipnotic")) args[count++] = "-hipnotic";
+    else if (!Q_strcasecmp(relaunch_game, "rogue")) args[count++] = "-rogue";
+    else if (Q_strcasecmp(relaunch_game, GAMENAME)) { args[count++] = "-game"; args[count++] = relaunch_game; }
+    if (interactive) args[count++] = "--interactive";  /* a Dock launch stays one: menu, alerts */
+    args[count] = NULL;
+    Host_Shutdown();
+#ifdef LQ_SDL
+    PlatformExit();
+#endif
+    fflush(stdout); fflush(stderr);
+#ifdef _WIN32
+    _execv(args[0], (const char *const *)args);
+#else
+    execv(args[0], args);
+#endif
+    Sys_Error("Cannot restart %s: %s", args[0], strerror(errno));
+}
+
 void Sys_Quit(void)
 {
     if (initialized) Host_Shutdown();
@@ -355,6 +446,7 @@ int main(int argc, char **argv)
     engine_argv[engine_argc++] = "-dedicated";
 #endif
     engine_argv[engine_argc] = NULL;
+    launch_argv = engine_argv; launch_argc = engine_argc;
     COM_InitArgv(engine_argc, engine_argv);
     if (COM_CheckParm("-record") || COM_CheckParm("-playback"))
         Sys_Error("Legacy low-level VCR recording/playback is not supported by this portable build; ordinary demos are separate");
@@ -434,6 +526,7 @@ int main(int argc, char **argv)
 #endif
         Host_Frame(now - previous);
         previous = now;
+        if (relaunch_pending) Relaunch();
         if (!profile_reset && profile_warmup >= 0 && now - run_start >= profile_warmup) {
             LQ_ProfileReset(); profile_reset = true;
         }

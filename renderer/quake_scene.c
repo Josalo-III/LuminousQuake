@@ -289,7 +289,7 @@ static int Spawn(model_t *world, lq_scene *scene)
             if (style < 0 || style >= 255 ||
                 sscanf(origin,"%f %f %f",&light.origin[0],&light.origin[1],&light.origin[2]) != 3 ||
                 !isfinite(light.origin[0]) || !isfinite(light.origin[1]) || !isfinite(light.origin[2])) {
-                Con_Printf("Light inventory: skipping invalid source entity %u.\n",light.entity_index);
+                Con_DPrintf("Light inventory: skipping invalid source entity %u.\n",light.entity_index);
             } else {
                 char extra; float intensity = 0;
                 if (light.light_value[0] && (sscanf(light.light_value,"%f %c",&intensity,&extra) != 1 || !isfinite(intensity))) {
@@ -403,7 +403,7 @@ static int Spawn(model_t *world, lq_scene *scene)
         ++templates;
         if (!light->flags) kept += ExpandSurfaceLight(world, scene, light, &extras[i], sources + kept, 4096 - kept, &faces);
     }
-    if (kept == 4096) Con_Printf("Light inventory: surface lights stop at the 4096-source limit.\n");
+    if (kept == 4096) Con_DPrintf("Light inventory: surface lights stop at the 4096-source limit.\n");
     free(scene->light_sources); free(extras);
     lq_light_source *fitted = realloc(sources, (kept ? kept : 1) * sizeof(*sources));
     scene->light_sources = fitted ? fitted : sources; scene->light_source_count = kept;

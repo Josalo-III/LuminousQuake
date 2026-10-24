@@ -95,7 +95,7 @@ void LQ_UIEnd(void)
     /* Preserve full-resolution world pixels wherever the UI did not draw. */
     lq_ui_rows rows = {canvas, background, LQ_RenderUICoverage(), vid.buffer, width,
         (size_t)vid.rowbytes, width, height, (unsigned)scale, console_height, hud_height,
-        key_dest == key_menu};
+        key_dest == key_menu && !M_SceneUndimmed()};
     LQ_JobsRunRange(height, 16, CompositeRows, &rows);
     active = 0;
 }

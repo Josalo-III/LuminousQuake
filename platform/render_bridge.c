@@ -85,6 +85,9 @@ static cvar_t lq_pack_textures = {"lq_pack_textures", "1", true}, lq_pack_bumps 
 /* Parallax depth as a fraction of the texture's size (DarkPlaces' offset
  * mapping scale is 0.04); zero turns parallax off. */
 static cvar_t lq_pack_parallax = {"lq_pack_parallax", "0.04", true};
+/* Relief shadows: the height field shadows itself from each pixel's strongest
+ * light, at the parallax depth (so off with parallax). Experimental. */
+static cvar_t lq_pack_relief_shadows = {"lq_pack_relief_shadows", "1", true};
 /* 1: each pack texture at its original's mean brightness, so maps lit for the
  * 8-bit textures keep their level; 0: the pack as its author made it. */
 static cvar_t lq_pack_brightness = {"lq_pack_brightness", "1", true};
@@ -119,10 +122,15 @@ static void ChooseTexturePack(void)
 static char loaded_pack[64]; /* lq_texture_pack when the loaded scene was built */
 /* Luminous tone mapping and emission, for tuning by eye (see LQ_GPUTone). */
 /* Map fog (Video Options -> Fog) in Classic GPU and Luminous, and the share
- * of it over the sky, as QuakeSpasm's r_skyfog. */
+ * of it over the sky: the map's "_skyfog" key, or r_skyfog where it sets
+ * none, as QuakeSpasm does. */
 static cvar_t lq_fog = {"lq_fog", "1", true}, r_skyfog = {"r_skyfog", "0.5"};
 static cvar_t lq_tone_shoulder = {"lq_tone_shoulder", "0.8"}, lq_tone_white = {"lq_tone_white", "6"};
 static cvar_t lq_emission = {"lq_emission", "3"}, lq_sprite_emission = {"lq_sprite_emission", "3"};
+/* A band of known light levels through the tone curve, marked at the shoulder
+ * (green), the ceiling (blue) and the white point (red); shown too while a
+ * tone slider is adjusted. */
+static cvar_t lq_tone_ramp = {"lq_tone_ramp", "0"};
 static struct { uint64_t key; lq_scene scene; uint32_t tubes; size_t bytes; double used; } scene_cache[SCENE_CACHE_ENTRIES];
 static uint64_t map_key; /* the loaded map_scene's key, 0 when none */
 static qboolean list_lights;
@@ -234,12 +242,12 @@ void LQ_RenderBridgeRegister(void)
 {
     Cvar_RegisterVariable(&lq_scene_cache_mb); Cvar_RegisterVariable(&lq_cull); Cvar_RegisterVariable(&lq_shadows);
     Cvar_RegisterVariable(&lq_panel_shadows); Cvar_RegisterVariable(&lq_shadow_free);
-    Cvar_RegisterVariable(&lq_pack_textures); Cvar_RegisterVariable(&lq_pack_bumps); Cvar_RegisterVariable(&lq_pack_parallax); Cvar_RegisterVariable(&lq_texture_pack);
+    Cvar_RegisterVariable(&lq_pack_textures); Cvar_RegisterVariable(&lq_pack_bumps); Cvar_RegisterVariable(&lq_pack_parallax); Cvar_RegisterVariable(&lq_pack_relief_shadows); Cvar_RegisterVariable(&lq_texture_pack);
     Cvar_RegisterVariable(&lq_pack_brightness);
     Cvar_RegisterVariable(&lq_pack_models); Cvar_RegisterVariable(&lq_pack_skins);
     Cvar_RegisterVariable(&lq_fog); Cvar_RegisterVariable(&r_skyfog);
     Cvar_RegisterVariable(&lq_tone_shoulder); Cvar_RegisterVariable(&lq_tone_white);
-    Cvar_RegisterVariable(&lq_emission); Cvar_RegisterVariable(&lq_sprite_emission);
+    Cvar_RegisterVariable(&lq_emission); Cvar_RegisterVariable(&lq_sprite_emission); Cvar_RegisterVariable(&lq_tone_ramp);
     Cmd_AddCommand("lq_lights", ListLights_f);
 }
 static qboolean SceneCacheTake(uint64_t key)
@@ -329,7 +337,7 @@ static void ShadowFreeFinish(void *context, int cancelled)
 {
     shadow_free_task *task = context;
     if (!cancelled && task->done && task->count.pairs)
-        Con_Printf("Luminous: %llu of %llu light-face pairs (%.0f%%; %.0f%% of their face area) need no shadow lookup, "
+        Con_DPrintf("Luminous: %llu of %llu light-face pairs (%.0f%%; %.0f%% of their face area) need no shadow lookup, "
             "proved in %.1f s in the background; their lookups are skipped.\n", (unsigned long long)task->count.clear,
             (unsigned long long)task->count.pairs, 100.0 * task->count.clear / task->count.pairs,
             task->count.area > 0 ? 100.0 * task->count.clear_area / task->count.area : 0, task->seconds);
@@ -391,7 +399,7 @@ void LQ_RenderBegin(void)
         luminous = Cvar_VariableValue("lq_renderer") == 2;
         uint64_t key = SceneKey();
         qboolean cached = SceneCacheTake(key);
-        if (cached) Con_Printf("%s: reused the scene built when this map was last loaded.\n",
+        if (cached) Con_DPrintf("%s: reused the scene built when this map was last loaded.\n",
             luminous ? "Luminous" : "Classic GPU");
         else if (!LQ_QuakeSceneFromWorld(&map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }
         map_key = key;
@@ -415,7 +423,7 @@ void LQ_RenderBegin(void)
             double started = Sys_FloatTime();
             lq_bounce_tracer tracer = LQ_GPUBounceTracer(gpu);
             if (LQ_SceneComputeBounceTraced(&map_scene, 64, LQ_JobsRunRange, &tracer, error, sizeof(error)))
-                Con_Printf("Luminous bounce: %u samples, %u bounces, sky light %.0f %.0f %.0f, in %.2f s (%s rays).\n",
+                Con_DPrintf("Luminous bounce: %u samples, %u bounces, sky light %.0f %.0f %.0f, in %.2f s (%s rays).\n",
                     map_scene.sample_count, map_scene.bounces,
                     map_scene.sky_light[0], map_scene.sky_light[1], map_scene.sky_light[2], Sys_FloatTime() - started,
                     tracer.passes ? "GPU" : "CPU");
@@ -425,15 +433,15 @@ void LQ_RenderBegin(void)
             started = Sys_FloatTime();
             uint32_t found[3], packed = LQ_QuakeSceneLoadPack(&map_scene, texture_pack_path, LQ_JobsRunRange, found);
             if (packed)
-                Con_Printf("Texture pack%s%s: %u of %u textures replaced (%u colour, %u bump, %u glow) in %.2f s.\n",
+                Con_DPrintf("Texture pack%s%s: %u of %u textures replaced (%u colour, %u bump, %u glow) in %.2f s.\n",
                     texture_pack[0] ? " " : "", texture_pack,
                     packed, map_scene.material_count, found[0], found[1], found[2], Sys_FloatTime() - started);
             else if (texture_pack[0])
-                Con_Printf("Texture pack %s: nothing for this map's textures in %s.\n", texture_pack, texture_pack_path);
+                Con_DPrintf("Texture pack %s: nothing for this map's textures in %s.\n", texture_pack, texture_pack_path);
             else if (!Q_strcasecmp(lq_texture_pack.string, "none"))
-                Con_Printf("Texture pack: none (lq_texture_pack none).\n");
+                Con_DPrintf("Texture pack: none (lq_texture_pack none).\n");
             else
-                Con_Printf("Texture pack: none found (a .pk3 beside the app or in id1, or a folder of %s, with textures/*_norm images).\n",
+                Con_DPrintf("Texture pack: none found (a .pk3 beside the app or in id1, or a folder of %s, with textures/*_norm images).\n",
                     com_basedir);
         }
         /* The pack's models and skins for this map's models (kept from earlier
@@ -453,7 +461,7 @@ void LQ_RenderBegin(void)
             if (!++scene_tasks) scene_tasks = 1;
             if (task) { task->scene = map_scene; LQ_BackgroundSubmit(scene_tasks, ShadowFreeRun, ShadowFreeFinish, task); }
         }
-        if (!cached) Con_Printf("%s: copied live BSP world; map resources replaced.\n", luminous ? "Luminous (experimental)" : "Classic GPU");
+        if (!cached) Con_DPrintf("%s: copied live BSP world; map resources replaced.\n", luminous ? "Luminous (experimental)" : "Classic GPU");
     }
 }
 /* A skybox named by the map, the server or the sky command:
@@ -481,7 +489,7 @@ static void UpdateSkybox(void)
         }
         LQ_ArchiveClose(archive);
         if (found) Con_DPrintf("Skybox %s: %d of 6 faces.\n", shown_sky, found);
-        else Con_Printf("Skybox %s not found (gfx/env/%srt.tga and the rest); drawing the map's sky.\n", shown_sky, shown_sky);
+        else Con_DPrintf("Skybox %s not found (gfx/env/%srt.tga and the rest); drawing the map's sky.\n", shown_sky, shown_sky);
     }
     if (!LQ_GPUSkybox(owner, found ? faces : NULL, error, sizeof(error))) Con_Printf("Skybox %s: %s\n", shown_sky, error);
     for (int f = 0; f < 6; ++f) free(faces[f].pixels);
@@ -694,6 +702,7 @@ static void LuminousLights(void)
     view.pack_textures = lq_pack_textures.value != 0; view.pack_bumps = lq_pack_bumps.value != 0;
     view.pack_match = lq_pack_brightness.value != 0;
     view.pack_parallax = lq_pack_parallax.value > 0 && lq_pack_parallax.value <= 0.2f ? lq_pack_parallax.value : 0;
+    view.pack_relief_shadows = lq_pack_relief_shadows.value != 0;
     LQ_BuildVisibleLightInteractions(&map_scene, runtime_lights, count, world_draws, interaction_draws);
     for (uint32_t i = 0; i < map_scene.draw_count; ++i)
         if (world_draws[i].index_count)
@@ -745,7 +754,7 @@ static void CaptureView(void)
      * (pack images, skyboxes, fog). */
     view.palette_gamma = v_gamma.value;
     memcpy(view.palette_shift, v_palette_shift, sizeof(view.palette_shift));
-    if (lq_fog.value) { CL_FogCurrent(view.fog); view.sky_fog = r_skyfog.value; }
+    if (lq_fog.value) { CL_FogCurrent(view.fog); view.sky_fog = CL_SkyFog(r_skyfog.value); }
     view.disable_culling = !lq_cull.value; view.disable_shadows = !lq_shadows.value;
     view.water_warp = direct_frame && r_waterwarp.value && r_viewleaf->contents <= CONTENTS_WATER;
     if (luminous && direct_frame && interaction_draws) LuminousLights();
@@ -770,7 +779,7 @@ qboolean LQ_RenderBridgePresent(void)
     uint32_t overlay_height = (vid.height+scale-1)/scale;
     lq_overlay_rows conversion = {vid.buffer, preserve, rgba, vid.width, overlay_width, scale,
         {view.viewport[0], view.viewport[1], view.viewport[2], view.viewport[3]}, {0}, opaque,
-        key_dest == key_menu};
+        key_dest == key_menu && !M_SceneUndimmed()};
     memcpy(conversion.palette, d_8to24table, sizeof(conversion.palette));
     LQ_JobsRunRange(overlay_height, 16, ConvertOverlayRows, &conversion);
     if (loaded && (!palette_valid || memcmp(palette_cache, d_8to24table, sizeof(palette_cache)))) {
@@ -802,6 +811,7 @@ qboolean LQ_RenderBridgePresent(void)
     LQ_GPUDisplay(gpu, Cvar_VariableValue("lq_gamma"), Cvar_VariableValue("lq_hdr") != 0,
         Cvar_VariableValue("lq_hdr_peak"));
     LQ_GPUTestPattern(gpu, Cvar_VariableValue("lq_hdr_test") != 0);
+    LQ_GPUToneRamp(gpu, lq_tone_ramp.value != 0 || M_ShowToneRamp());
     LQ_GPUTone(gpu, lq_tone_shoulder.value, lq_tone_white.value, lq_emission.value, lq_sprite_emission.value);
     {   /* Say in the console when output switches between SDR and HDR. */
         static int reported = -1; static float reported_headroom;

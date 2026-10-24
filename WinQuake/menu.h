@@ -35,4 +35,10 @@ void M_Keydown (int key);
 void M_Draw (void);
 void M_ToggleMenu_f (void);
 
+// LuminousQuake: a setting that needs the video system restarted asks first,
+// then apply() sets it and the restart follows.
+void M_ConfirmVidRestart (void (*apply) (void));
+qboolean M_SceneUndimmed (void);	// a menu showing the scene as it is
+qboolean M_ShowToneRamp (void);	// a tone slider being adjusted
+
 

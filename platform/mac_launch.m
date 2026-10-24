@@ -43,8 +43,12 @@ int LQ_MacInstallation(int argc, char **argv, char *path, size_t size)
         NSBundle *bundle = [NSBundle mainBundle];
         BOOL app = [[[bundle bundlePath] pathExtension] isEqualToString:@"app"];
         BOOL choose = NO;
-        for (int i = 1; i < argc; ++i) if (!strcmp(argv[i], "--choose-installation")) choose = YES;
-        interactive = app && (argc == 1 || choose);
+        BOOL relaunched = NO; /* the Add-ons menu restarting a Dock launch (Sys_RequestRelaunch) */
+        for (int i = 1; i < argc; ++i) {
+            if (!strcmp(argv[i], "--choose-installation")) choose = YES;
+            if (!strcmp(argv[i], "--interactive")) relaunched = YES;
+        }
+        interactive = app && (argc == 1 || choose || relaunched);
         for (int i = 1; i < argc; ++i)
             if (!strcmp(argv[i], "-basedir")) return 1; /* explicit CLI override */
         NSString *nearby = app ? [[bundle bundlePath] stringByDeletingLastPathComponent] :

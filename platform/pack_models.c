@@ -352,6 +352,6 @@ void LQ_PackModelsLoad(const char *pack)
     }
     LQ_ArchiveClose(archive);
     if (meshes || skinned)
-        Con_Printf("Pack models: %d replaced, %d with pack skins, of %d new to this map, in %.2f s.\n",
+        Con_DPrintf("Pack models: %d replaced, %d with pack skins, of %d new to this map, in %.2f s.\n",
             meshes, skinned, looked, Sys_FloatTime() - started);
 }

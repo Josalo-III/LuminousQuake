@@ -10,8 +10,10 @@
 #include <string.h>
 #include <stddef.h>
 #include <math.h>
-/* Tone mapping (tonemap.frag): Luminous light below the shoulder is shown as
- * is; above it, highlights roll off to the ceiling, reached at the white point.
+/* Tone mapping (tonemap.frag): Luminous light below the shoulder (a fraction
+ * of the ceiling: SDR white, or the HDR headroom) is shown as is; above it,
+ * highlights roll off to the ceiling, reached at the white point (a multiple
+ * of the ceiling).
  * These are the defaults; lq_tone_shoulder and lq_tone_white set them live. */
 #define LQ_TONE_SHOULDER 0.8f
 #define LQ_TONE_WHITE 6.0f
@@ -28,6 +30,7 @@ struct lq_gpu {
     float gamma, headroom; /* lq_gamma; HDR headroom above SDR white (1 on SDR) */
     float peak; /* lq_hdr_peak: highest light the display really shows; 0 trusts macOS */
     int test_pattern; /* lq_hdr_test: bands at known light levels instead of the scene */
+    int tone_ramp; /* lq_tone_ramp, or a tone slider being adjusted: a band of known levels through the curve */
     /* Luminous tone and emission (lq_tone_shoulder, lq_tone_white,
      * lq_emission, lq_sprite_emission; see LQ_GPUTone). */
     float tone_shoulder, tone_white, emission, sprite_emission;
@@ -138,7 +141,7 @@ typedef struct {
     float face_light[4]; /* x: 1 + the slot that is brightest everywhere on the face; 0 unknown */
     uint32_t shadow_free[4]; /* slots whose shadow lookup on this face cannot find a blocker */
     float pack[4]; /* x: draw the texture pack's colour; y: shade by its normal map; z: colour gain */
-    float relief[4]; /* x: parallax depth (0 off); y: the height held at the face */
+    float relief[4]; /* x: parallax depth (0 off); y: the height held at the face; z: relief shadows */
     float entity[4]; /* x: a translucent entity's opacity (LQ_SURFACE_TRANSLUCENT) */
 } lq_surface_uniforms;
 typedef struct {
@@ -398,11 +401,27 @@ int LQ_GPUOptions(lq_gpu *g, int smooth, int samples, int vsync, char *error, si
     if (g->samples != samples) { g->samples = samples; g->width = 0; }
     return 1;
 }
+/* Texture packs' own sampler: linear, mipmapped, at the anisotropy chosen. */
+static SDL_GPUSampler *PackSampler(lq_gpu *g, int anisotropy)
+{
+    SDL_GPUSamplerCreateInfo info = {0};
+    info.min_filter = info.mag_filter = SDL_GPU_FILTER_LINEAR; info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
+    info.address_mode_u = info.address_mode_v = info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+    info.max_lod = 1000; info.enable_anisotropy = anisotropy > 1; info.max_anisotropy = (float)anisotropy;
+    return SDL_CreateGPUSampler(g->device, &info);
+}
 int LQ_GPUTextureOptions(lq_gpu *g, int mipmaps, int anisotropy, char *error, size_t size)
 {
     if (mipmaps < 0 || mipmaps > 2 ||
         (anisotropy != 1 && anisotropy != 2 && anisotropy != 4 && anisotropy != 8 && anisotropy != 16)) {
         SDL_SetError("invalid mipmap/anisotropic setting"); return Error(error, size, "GPU texture options");
+    }
+    /* The world shader reads both per frame; only the texture-pack sampler
+     * holds anisotropy, so it is rebuilt here and the setting applies at once. */
+    if (g->pack_sampler && anisotropy != g->anisotropy) {
+        SDL_GPUSampler *sampler = PackSampler(g, anisotropy);
+        if (!sampler) return Error(error, size, "GPU texture options");
+        SDL_ReleaseGPUSampler(g->device, g->pack_sampler); g->pack_sampler = sampler;
     }
     g->mipmaps = mipmaps; g->anisotropy = anisotropy; return 1;
 }
@@ -939,14 +958,7 @@ int LQ_GPUUpload(lq_gpu *g, const lq_scene *s, char *error, size_t size)
     for (uint32_t i = 0; i < g->texture_count; ++i) {
         g->pack_gain[i] = s->materials[i].pack_gain; g->pack_height[i] = s->materials[i].pack_height;
     }
-    {
-        SDL_GPUSamplerCreateInfo info = {0};
-        info.min_filter = info.mag_filter = SDL_GPU_FILTER_LINEAR; info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
-        info.address_mode_u = info.address_mode_v = info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
-        info.max_lod = 1000; info.enable_anisotropy = g->anisotropy > 1; info.max_anisotropy = (float)g->anisotropy;
-        g->pack_sampler = SDL_CreateGPUSampler(g->device, &info);
-        if (!g->pack_sampler) goto failed;
-    }
+    if (!(g->pack_sampler = PackSampler(g, g->anisotropy))) goto failed;
     for (uint32_t i = 0; i < g->texture_count; ++i) {
         const lq_material *m = &s->materials[i];
         if (m->pack_color.pixels && !(g->pack_color[i] = UploadMipmapped(g, &m->pack_color, 0))) goto failed;
@@ -985,10 +997,11 @@ static void DisplayMode(lq_gpu *g)
     }
 }
 void LQ_GPUTestPattern(lq_gpu *g, int on) { g->test_pattern = on != 0; }
+void LQ_GPUToneRamp(lq_gpu *g, int on) { g->tone_ramp = on != 0; }
 void LQ_GPUTone(lq_gpu *g, float shoulder, float white, float emission, float sprite_emission)
 {
     g->tone_shoulder = isfinite(shoulder) && shoulder >= 0.1f && shoulder <= 0.95f ? shoulder : LQ_TONE_SHOULDER;
-    g->tone_white = isfinite(white) && white >= 1.5f && white <= 64 ? white : LQ_TONE_WHITE;
+    g->tone_white = isfinite(white) && white >= 1.0f && white <= 64 ? white : LQ_TONE_WHITE;
     g->emission = isfinite(emission) && emission >= 1 && emission <= 16 ? emission : LQ_EMISSION_GAIN;
     g->sprite_emission = isfinite(sprite_emission) && sprite_emission >= 1 && sprite_emission <= 16 ?
         sprite_emission : LQ_EMISSION_GAIN;
@@ -1472,6 +1485,7 @@ static void DrawSurface(lq_gpu *g, SDL_GPUCommandBuffer *command, SDL_GPURenderP
         if (v->pack_bumps && g->pack_normal[pack]) {
             pack_normal = g->pack_normal[pack]; uniforms.pack[1] = 1;
             uniforms.relief[0] = v->pack_parallax; uniforms.relief[1] = g->pack_height[pack];
+            uniforms.relief[2] = v->pack_relief_shadows ? 1.0f : 0.0f;
         }
     } else if ((d->flags & LQ_SURFACE_MODEL) && d->material < 4096 && v->luminous_lighting &&
             g->frame_pack_color[d->material]) {
@@ -1647,11 +1661,16 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
     }
     SDL_EndGPURenderPass(pass);
     {   /* Tone mapping: the float frame to the display (see tonemap.frag). */
-        struct { float tone[4], target[4]; } display = {
+        struct { float tone[4], target[4], ramp[4]; } display = {
             {g->test_pattern ? 3.0f : v->luminous_lighting ? 1.0f : 0.0f, g->gamma / 2.2f, g->hdr_active ? g->headroom : 1.0f,
-             g->hdr_active ? fmaxf(g->tone_white, 2.0f * g->headroom) : g->tone_white},
-            {g->hdr_active ? 1.0f : 0.0f, g->gamma, g->tone_shoulder,
-             v->luminous_lighting && v->palette_gamma > 0 ? v->palette_gamma : 1.0f}};
+             /* The white point is a multiple of the ceiling, as the shoulder is
+              * a fraction of it, so the whole setting acts at any headroom. */
+             g->tone_white * (g->hdr_active ? g->headroom : 1.0f)},
+            /* The shoulder is a fraction of the ceiling, so on HDR the curve
+             * starts near the display's peak, not below SDR white. */
+            {g->hdr_active ? 1.0f : 0.0f, g->gamma, g->tone_shoulder * (g->hdr_active ? g->headroom : 1.0f),
+             v->luminous_lighting && v->palette_gamma > 0 ? v->palette_gamma : 1.0f},
+            {g->tone_ramp ? 1.0f : 0.0f, 0.06f, 0.16f, 0}};
         SDL_GPUColorTargetInfo target = {0};
         target.texture = g->color; target.load_op = SDL_GPU_LOADOP_DONT_CARE; target.store_op = SDL_GPU_STOREOP_STORE;
         pass = SDL_BeginGPURenderPass(command, &target, 1, NULL);
@@ -1683,7 +1702,7 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
          * are drawn into the swapchain, letterboxed like the SDR blit. */
         float scale = (float)swap_width / width;
         if ((float)swap_height / height < scale) scale = (float)swap_height / height;
-        struct { float tone[4], target[4]; } decode = {{2, 1, 1, 1}, {1, 2.2f, 1, 0}};
+        struct { float tone[4], target[4], ramp[4]; } decode = {{2, 1, 1, 1}, {1, 2.2f, 1, 0}, {0, 0, 0, 0}};
         SDL_GPUColorTargetInfo target = {0};
         target.texture = swapchain; target.load_op = SDL_GPU_LOADOP_CLEAR; target.store_op = SDL_GPU_STOREOP_STORE;
         target.clear_color = (SDL_FColor){0, 0, 0, 1};
