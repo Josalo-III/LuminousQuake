@@ -775,7 +775,8 @@ uint32_t LQ_LightBudgetInView(const lq_scene *scene, const float styles[256], co
 static int ImageCheck(const lq_image *image, uint32_t channels)
 {
     return image->pixels && image->width && image->height && image->width <= 8192 &&
-        image->height <= 8192 && image->channels == channels;
+        image->height <= 8192 && image->channels == channels &&
+        (image->format == LQ_IMAGE_RAW || (image->format == LQ_IMAGE_BC7 && image->levels && image->bytes));
 }
 int LQ_SceneCheck(const lq_scene *s, char *error, size_t size)
 {

@@ -416,6 +416,34 @@ as `none`. The console now says which pack a map used, or why none.
     `Image_HeightmapToNormalmap` slopes at `r_shadow_bumpscale_bumpmap` 4,
     the height kept for parallax). In Rygel that is 6 model skins: the gibs
     and lightning bolts. Not checked on screen.
+- **Texture size and compression (October 25).** Video Options →
+  **Hi-res textures** (`lq_pack_textures`, saved) is now off, full, 1/2,
+  1/4 or dynamic (new profiles start on dynamic; a saved "on" reads as full).
+  The user's design: full uncompressed, the smaller sizes compressed, and
+  dynamic choosing per map. Changing it rebuilds the map.
+  - **Measured:** Rygel's pack decodes to about 1,000 times the size of the
+    8-bit originals: E1M1 0.6 MB against 557 MB (colour and normal, RGBA8
+    with mips); all id1 maps 4.9 MB against 4.7 GB. At E1M3, the scene's
+    pack copy: full 258 MB, 1/2 with BC7 21 MB, 1/4 6 MB.
+  - **Sizes** come from the loader's own mip levels (`LQ_PackHalve`), after
+    the brightness, height and gloss statistics are taken at full size. Off
+    still loads the pack (at the dynamic size) so Luminous keeps its bumps.
+  - **BC7** (`renderer/bc7.c`, our own encoder): mode 6 only, one line
+    through RGBA per 4x4 block (principal-axis fit, the four shared-bit
+    choices, one least-squares pass), 16 bytes a block, a quarter of RGBA8.
+    The whole mip chain is encoded at load on the worker threads and kept
+    compressed in the scene, so the scene cache's copy shrinks too; the GPU
+    samples it directly (`SDL_GPU_TEXTUREFORMAT_BC7_RGBA_UNORM`, checked
+    per device). Round trip: Rygel colour 43.8 dB; normal maps 27–32 dB on x
+    and y, 39.5 dB gloss, 32–36 dB height, since one line serves four
+    channels that change independently; worth a look by eye before a better
+    mode is added. About 0.2 s per 1024² image on one core at -O2; the file
+    is always optimized, as the Dock app is a Debug build. Only images whose
+    sides are multiples of 4 are compressed; model skins follow the size,
+    uncompressed.
+  - **Dynamic:** full if the pack's RGBA8 mip chains fit a quarter of free
+    RAM, else 1/2 if a sixteenth of that does, else 1/4. At E1M3 on this
+    64 GB Mac it chose full.
 - **Not in Rygel's pack, so not built:** sky texture layers (packs bring
   skyboxes instead, which load) and sprite frames (DarkPlaces'
   `progs/<sprite>.spr_<frame>`). They wait for a pack that uses them.

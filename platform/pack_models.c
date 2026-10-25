@@ -123,6 +123,16 @@ static int LoadSkin(const char *pack, lq_archive *archive, const char *base, flo
     LQ_QuakeLoadImage(pack, archive, name, &gloss);
     LQ_PackGlossIntoNormal(&out->pack_normal, &gloss);
     free(gloss.pixels);
+    /* At the size the world's pack was loaded (High-res textures). */
+    for (int h = 0; h < LQ_QuakePackHalvings(); ++h) {
+        lq_image *images[2] = {&out->pack_color, &out->pack_normal};
+        for (int k = 0; k < 2; ++k) {
+            lq_image next;
+            if (images[k]->pixels && (images[k]->width > 4 || images[k]->height > 4) && LQ_PackHalve(images[k], k, &next)) {
+                free(images[k]->pixels); *images[k] = next;
+            }
+        }
+    }
     float mean = LQ_PackLinearMean(&out->pack_color);
     out->pack_gain = original > 0 && mean > 1e-5f ? fminf(fmaxf(original / mean, 0.5f), 2.0f) : 1;
     out->indices = (lq_image){1, 1, 1, &placeholder};

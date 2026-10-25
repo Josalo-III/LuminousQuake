@@ -1,5 +1,6 @@
 /* Community texture-pack image decoding. GPL-2.0-or-later. */
 #include "pack_images.h"
+#include "bc7.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -113,6 +114,38 @@ int LQ_PackNormalFromBump(const lq_image *bump, float bumpscale, lq_image *out)
         }
     #undef HEIGHT
     *out = (lq_image){w, h, 4, pixels};
+    return 1;
+}
+int LQ_PackCompressBC7(lq_image *image, int normal_map)
+{
+    if (!image || !image->pixels || image->format != LQ_IMAGE_RAW || image->channels != 4 ||
+        !image->width || !image->height || (image->width & 3) || (image->height & 3)) return 0;
+    uint32_t levels = 1;
+    while ((image->width >> levels) || (image->height >> levels)) ++levels;
+    size_t bytes = 0;
+    for (uint32_t l = 0; l < levels; ++l) {
+        uint32_t w = image->width >> l, h = image->height >> l;
+        bytes += LQ_BC7LevelBytes(w ? w : 1, h ? h : 1);
+    }
+    uint8_t *chain = malloc(bytes);
+    if (!chain) return 0;
+    lq_image level = *image, next;
+    size_t at = 0;
+    for (uint32_t l = 0; l < levels; ++l) {
+        LQ_BC7EncodeLevel(level.pixels, level.width, level.height, chain + at);
+        at += LQ_BC7LevelBytes(level.width, level.height);
+        if (l + 1 < levels) {
+            if (!LQ_PackHalve(&level, normal_map, &next)) {
+                if (level.pixels != image->pixels) free(level.pixels);
+                free(chain); return 0;
+            }
+            if (level.pixels != image->pixels) free(level.pixels);
+            level = next;
+        }
+    }
+    if (level.pixels != image->pixels) free(level.pixels);
+    free(image->pixels);
+    image->pixels = chain; image->format = LQ_IMAGE_BC7; image->levels = levels; image->bytes = bytes;
     return 1;
 }
 int LQ_PackHalve(const lq_image *source, int normal_map, lq_image *out)

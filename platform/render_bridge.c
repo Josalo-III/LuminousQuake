@@ -81,7 +81,10 @@ static cvar_t lq_shadow_free = {"lq_shadow_free", "1"};
 /* Community texture packs (Luminous): the pack's colour and glow images in
  * place of the 8-bit textures, and its normal maps shaping direct light. Both
  * switch at once; the images load with the map whenever a pack is present. */
-static cvar_t lq_pack_textures = {"lq_pack_textures", "1", true}, lq_pack_bumps = {"lq_pack_bumps", "1", true};
+/* High-res textures: 0 off (the 8-bit textures; normal maps still load for
+ * Luminous's bumps), 1 full, 2 half, 3 quarter, 4 dynamic (by free memory).
+ * Below full the images are BC7. */
+static cvar_t lq_pack_textures = {"lq_pack_textures", "4", true}, lq_pack_bumps = {"lq_pack_bumps", "1", true};
 /* Parallax depth as a fraction of the texture's size (DarkPlaces' offset
  * mapping scale is 0.04); zero turns parallax off. */
 static cvar_t lq_pack_parallax = {"lq_pack_parallax", "0.04", true};
@@ -127,6 +130,7 @@ static void ChooseTexturePack(void)
     snprintf(texture_pack_path, sizeof(texture_pack_path), "%s", packs[chosen].path);
 }
 static char loaded_pack[64]; /* lq_texture_pack when the loaded scene was built */
+static int loaded_detail; /* PackLoadSetting when the loaded scene was built */
 /* Luminous tone mapping and emission, for tuning by eye (see LQ_GPUTone). */
 /* Map fog (Video Options -> Fog) in Classic GPU and Luminous, and the share
  * of it over the sky: the map's "_skyfog" key, or r_skyfog where it sets
@@ -153,6 +157,7 @@ static uint64_t Hash(uint64_t h, const void *data, size_t size)
     for (size_t i = 0; i < size; ++i) h = (h ^ p[i]) * 1099511628211ull;
     return h;
 }
+static int PackLoadSetting(void);
 static uint64_t SceneKey(void)
 {
     model_t *m = cl.worldmodel;
@@ -161,6 +166,7 @@ static uint64_t SceneKey(void)
     h = Hash(h, com_gamedir, strlen(com_gamedir) + 1); h = Hash(h, m->name, strlen(m->name) + 1);
     h = Hash(h, settings, sizeof(settings));
     ChooseTexturePack(); h = Hash(h, texture_pack, strlen(texture_pack) + 1);  /* both GPU renderers draw packs */
+    int detail = PackLoadSetting(); h = Hash(h, &detail, sizeof(detail));
     if (m->vertexes) h = Hash(h, m->vertexes, (size_t)m->numvertexes * sizeof(*m->vertexes));
     if (m->entities) h = Hash(h, m->entities, strlen(m->entities));
     for (int i = 0; i < m->numsurfaces; ++i) { /* each face's lightmap, as baked */
@@ -173,7 +179,16 @@ static uint64_t SceneKey(void)
     return h ? h : 1;
 }
 static size_t ImageBytes(const lq_image *image)
-{ return image->pixels ? (size_t)image->width * image->height * (image->channels ? image->channels : 1) : 0; }
+{
+    if (image->format == LQ_IMAGE_BC7) return image->pixels ? image->bytes : 0;
+    return image->pixels ? (size_t)image->width * image->height * (image->channels ? image->channels : 1) : 0;
+}
+/* The size the pack loads at: off loads as dynamic, so normal maps stay. */
+static int PackLoadSetting(void)
+{
+    int v = (int)lq_pack_textures.value;
+    return v >= 1 && v <= 4 ? v : 4;
+}
 static size_t SceneBytes(const lq_scene *s)
 {
     size_t bytes = (size_t)s->vertex_count * sizeof(*s->vertices) + (size_t)s->index_count * sizeof(*s->indices) +
@@ -401,7 +416,7 @@ void LQ_RenderBegin(void)
     memset(preserve, 0, count);
     /* A tube's colour is in its bounce, so a camera recording another colour reloads the map's lighting. */
     if (loaded && luminous && LQ_FluorescentCast(TubeCamera()) != LQ_FluorescentCast(tinted_camera)) LQ_RenderMapChanged();
-    if (loaded && strcmp(loaded_pack, lq_texture_pack.string)) LQ_RenderMapChanged();
+    if (loaded && (strcmp(loaded_pack, lq_texture_pack.string) || loaded_detail != PackLoadSetting())) LQ_RenderMapChanged();
     if (!loaded && cls.state == ca_connected && cl.worldmodel && !con_forcedup) {
         luminous = Cvar_VariableValue("lq_renderer") == 2;
         uint64_t key = SceneKey();
@@ -411,6 +426,7 @@ void LQ_RenderBegin(void)
         else if (!LQ_QuakeSceneFromWorld(&map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }
         map_key = key;
         snprintf(loaded_pack, sizeof(loaded_pack), "%s", lq_texture_pack.string);
+        loaded_detail = PackLoadSetting();
         if (luminous) {
             /* Before bounce, so each failing tube's bounce follows it. */
             if (!cached) {
@@ -442,7 +458,16 @@ void LQ_RenderBegin(void)
              * once. Both GPU renderers draw its colour and glow; only Luminous
              * shades with its normal maps and gloss. */
             double started = Sys_FloatTime();
+            /* Dynamic size fits a quarter of free RAM, as the scene cache's share. */
+            LQ_QuakeSetPackDetail(PackLoadSetting(), FreeRAM() / 4, LQ_GPUSupportsBC7(gpu));
             uint32_t found[4], packed = LQ_QuakeSceneLoadPack(&map_scene, texture_pack_path, LQ_JobsRunRange, found);
+            if (packed) {
+                size_t bytes = 0;
+                for (uint32_t i = 0; i < map_scene.material_count; ++i)
+                    bytes += ImageBytes(&map_scene.materials[i].pack_color) + ImageBytes(&map_scene.materials[i].pack_normal);
+                Con_DPrintf("Texture pack size: %s%s, %.0f MB\n", LQ_QuakePackHalvings() == 0 ? "full" :
+                    LQ_QuakePackHalvings() == 1 ? "1/2" : "1/4", LQ_QuakePackCompressed() ? ", BC7" : "", bytes / 1048576.0);
+            }
             if (packed)
                 Con_DPrintf("Texture pack%s%s: %u of %u textures replaced (%u colour, %u bump, %u glow, %u gloss) in %.2f s.\n",
                     texture_pack[0] ? " " : "", texture_pack,

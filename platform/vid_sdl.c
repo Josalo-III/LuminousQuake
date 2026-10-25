@@ -564,7 +564,9 @@ static void VideoMenuDraw(void)
         M_Print(32, 140, "Texture pack");
         M_Print(168, 140, at == -2 ? (video_pack_count ? va("auto: %.11s", video_packs[0]) : "auto: none") :
             at < 0 ? "none" : va("%.17s", video_packs[at]));
-        M_Print(32, 148, "Hi-res textures"); M_Print(168, 148, Cvar_VariableValue("lq_pack_textures") ? "on" : "off");
+        static const char *sizes[] = {"off", "full", "1/2", "1/4", "dynamic"};
+        int size = (int)Cvar_VariableValue("lq_pack_textures");
+        M_Print(32, 148, "Hi-res textures"); M_Print(168, 148, (char *)sizes[size >= 0 && size <= 4 ? size : 4]);
         M_Print(32, 156, "Pack brightness"); M_Print(168, 156, Cvar_VariableValue("lq_pack_brightness") ? "match" : "as made");
         M_Print(32, 164, "Pack models"); M_Print(168, 164, Cvar_VariableValue("lq_pack_models") ? "on" : "off");
         M_Print(32, 172, "Pack model skins"); M_Print(168, 172, Cvar_VariableValue("lq_pack_skins") ? "on" : "off");
@@ -596,7 +598,7 @@ static void VideoMenuDraw(void)
         M_Print(32, 192, !video_pack_count ? "No pack: put a .pk3 beside the app." :
             at == -1 ? "Original textures only." : "A new pack reloads the map.");
     } else if (video_cursor == 16)
-        M_Print(32, 192, "GPU: the pack's colour and glow.");
+        M_Print(32, 192, "Dynamic fits memory; 1/2, 1/4 compress.");
     else if (video_cursor == 17)
         M_Print(32, 192, "Match: each at its original's level.");
     else if (video_cursor == 18)
@@ -637,9 +639,13 @@ static void VideoMenuKey(int key)
             if (at < -2) at = video_pack_count - 1;
             if (at >= video_pack_count) at = -2;
             Cvar_Set("lq_texture_pack", at == -2 ? "auto" : at == -1 ? "none" : video_packs[at]);
+        } else if (video_cursor == 16) {  /* off, full, 1/2, 1/4, dynamic: a new size reloads the map */
+            int size = (int)Cvar_VariableValue("lq_pack_textures");
+            if (size < 0 || size > 4) size = 4;
+            Cvar_SetValue("lq_pack_textures", (size + (key == K_LEFTARROW ? 4 : 1)) % 5);
         } else {
-            static const char *switches[] = {"lq_pack_textures", "lq_pack_brightness", "lq_pack_models", "lq_pack_skins"};
-            const char *name = switches[video_cursor - 16];
+            static const char *switches[] = {"lq_pack_brightness", "lq_pack_models", "lq_pack_skins"};
+            const char *name = switches[video_cursor - 17];
             Cvar_SetValue((char *)name, Cvar_VariableValue((char *)name) != 0 ? 0 : 1);
         }
         video_changed = true;

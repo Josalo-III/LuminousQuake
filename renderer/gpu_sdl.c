@@ -2,6 +2,7 @@
  * GPL-2.0-or-later. */
 #include <SDL3/SDL.h>
 #include "gpu_sdl.h"
+#include "bc7.h"
 #include "indexed_mips.h"
 #include "pack_images.h"
 #include "generated/world_shaders.h"
@@ -502,6 +503,47 @@ static SDL_GPUTexture *UploadMipmapped(lq_gpu *g, const lq_image *image, int nor
     if (!ok) { SDL_ReleaseGPUTexture(g->device, texture); return NULL; }
     return texture;
 }
+/* A pack image stored as a BC7 mip chain (LQ_PackCompressBC7): each level
+ * copied from the chain as it is. */
+static SDL_GPUTexture *UploadBC7(lq_gpu *g, const lq_image *image)
+{
+    SDL_GPUTextureCreateInfo info = {0};
+    info.type = SDL_GPU_TEXTURETYPE_2D; info.format = SDL_GPU_TEXTUREFORMAT_BC7_RGBA_UNORM;
+    info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    info.width = image->width; info.height = image->height; info.layer_count_or_depth = 1;
+    info.num_levels = image->levels; info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    SDL_GPUTexture *texture = SDL_CreateGPUTexture(g->device, &info);
+    if (!texture) return NULL;
+    SDL_GPUTransferBuffer *transfer = Transfer(g, (uint32_t)image->bytes, SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, image->pixels);
+    SDL_GPUCommandBuffer *command = transfer ? SDL_AcquireGPUCommandBuffer(g->device) : NULL;
+    int ok = command != NULL;
+    if (ok) {
+        SDL_GPUCopyPass *pass = SDL_BeginGPUCopyPass(command);
+        uint32_t offset = 0;
+        for (uint32_t l = 0; l < image->levels; ++l) {
+            uint32_t w = image->width >> l, h = image->height >> l;
+            if (!w) w = 1;
+            if (!h) h = 1;
+            SDL_GPUTextureTransferInfo source = {transfer, offset, 0, 0};
+            SDL_GPUTextureRegion dest = {0};
+            dest.texture = texture; dest.mip_level = l; dest.w = w; dest.h = h; dest.d = 1;
+            SDL_UploadToGPUTexture(pass, &source, &dest, false);
+            offset += (uint32_t)LQ_BC7LevelBytes(w, h);
+        }
+        SDL_EndGPUCopyPass(pass);
+        ok = SDL_SubmitGPUCommandBuffer(command);
+    }
+    if (transfer) SDL_ReleaseGPUTransferBuffer(g->device, transfer);
+    if (!ok) { SDL_ReleaseGPUTexture(g->device, texture); return NULL; }
+    return texture;
+}
+int LQ_GPUSupportsBC7(lq_gpu *g)
+{
+    return g && SDL_GPUTextureSupportsFormat(g->device, SDL_GPU_TEXTUREFORMAT_BC7_RGBA_UNORM,
+        SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREUSAGE_SAMPLER);
+}
+static SDL_GPUTexture *UploadPackImage(lq_gpu *g, const lq_image *image, int normal_map)
+{ return image->format == LQ_IMAGE_BC7 ? UploadBC7(g, image) : UploadMipmapped(g, image, normal_map); }
 static SDL_GPUTexture *Upload3D(lq_gpu *g, uint32_t w, uint32_t h, uint32_t d, const uint8_t *pixels,
     SDL_GPUTextureUsageFlags usage)
 {
@@ -962,8 +1004,8 @@ int LQ_GPUUpload(lq_gpu *g, const lq_scene *s, char *error, size_t size)
     if (!(g->pack_sampler = PackSampler(g, g->anisotropy))) goto failed;
     for (uint32_t i = 0; i < g->texture_count; ++i) {
         const lq_material *m = &s->materials[i];
-        if (m->pack_color.pixels && !(g->pack_color[i] = UploadMipmapped(g, &m->pack_color, 0))) goto failed;
-        if (m->pack_normal.pixels && !(g->pack_normal[i] = UploadMipmapped(g, &m->pack_normal, 1))) goto failed;
+        if (m->pack_color.pixels && !(g->pack_color[i] = UploadPackImage(g, &m->pack_color, 0))) goto failed;
+        if (m->pack_normal.pixels && !(g->pack_normal[i] = UploadPackImage(g, &m->pack_normal, 1))) goto failed;
     }
     return 1;
 failed:

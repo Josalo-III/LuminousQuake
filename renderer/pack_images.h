@@ -29,6 +29,11 @@ int LQ_PackGlossIntoNormal(lq_image *normal, const lq_image *gloss);
  * in this engine's layout: x and y in red and green, no gloss in blue, the
  * height in alpha. Returns 0, leaving `out` empty, if allocation fails. */
 int LQ_PackNormalFromBump(const lq_image *bump, float bumpscale, lq_image *out);
+/* Replace an RGBA8 pack image with its BC7 mip chain (renderer/bc7.c), every
+ * level made as LQ_PackHalve makes it (`normal_map` as there). Only images
+ * whose sides are multiples of 4 are compressed. Returns 0, leaving the image
+ * as it was, if it is not compressed. */
+int LQ_PackCompressBC7(lq_image *image, int normal_map);
 /* The next mip level of a pack image, half each side (rounded down, at least
  * 1), from 2x2 blocks. A colour image is averaged in linear light (its values
  * decoded and re-encoded with the 2.2 power world.frag uses), so distant

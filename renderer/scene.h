@@ -7,7 +7,11 @@
 /* No engine, QuakeC, SDL or graphics API types cross this boundary.
  * All arrays/images are owned by the scene; GPU uploads copy the data they consume. */
 typedef struct { float position[3], uv[2], light_uv[2], shade, normal[3]; } lq_vertex;
-typedef struct { uint32_t width, height, channels; uint8_t *pixels; } lq_image;
+/* An image: RGBA8 (or 8-bit indices) at `pixels`, or, when `format` is
+ * LQ_IMAGE_BC7, a BC7 mip chain of `levels` levels, `bytes` long, base level
+ * first (texture packs at 1/2 and 1/4 resolution). */
+enum { LQ_IMAGE_RAW = 0, LQ_IMAGE_BC7 = 1 };
+typedef struct { uint32_t width, height, channels; uint8_t *pixels; uint32_t format, levels; size_t bytes; } lq_image;
 enum { LQ_SURFACE_SKY = 1, LQ_SURFACE_WATER = 2, LQ_SURFACE_MODEL = 4,
        LQ_SURFACE_MASKED = 8, LQ_SURFACE_WEAPON = 16,
        LQ_SURFACE_ACTOR = 32, /* model lit by Luminous lights/probes; Classic uses shade */

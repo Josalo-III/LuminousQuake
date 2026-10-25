@@ -11,7 +11,10 @@ option(LQ_BUILD_GPU "Build the experimental SDL3 GPU world viewer" OFF)
 option(LQ_GPU_TESTS "Run tests requiring an actual SDL3 GPU device/window system" OFF)
 include(CTest)
 add_library(lq_scene STATIC renderer/scene.c renderer/scene_fixture.c renderer/indexed_mips.c renderer/bounce.c renderer/effects.c
-    renderer/fluorescent.c renderer/pack_images.c renderer/pack_archive.c)
+    renderer/fluorescent.c renderer/pack_images.c renderer/pack_archive.c renderer/bc7.c)
+# BC7 encoding at load (texture packs at 1/2 and 1/4) is slow unoptimized; the
+# Dock app is a Debug build, so this one file is always optimized.
+set_source_files_properties(renderer/bc7.c PROPERTIES COMPILE_OPTIONS "-O2")
 target_include_directories(lq_scene PUBLIC renderer PRIVATE third_party)
 if(NOT WIN32)
     target_link_libraries(lq_scene PUBLIC m)

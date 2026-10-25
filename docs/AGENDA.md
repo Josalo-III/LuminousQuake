@@ -427,6 +427,11 @@ them. Principles, decided October 17, 2026:
   user-assigned memory budget for lighting (probe spacing, shadow map size,
   bounce resolution), and Luminous uses as much of it as helps. 64 GB is high
   but not unusual, and the 1996 heap gives no hint of what is available.
+- **Texture packs size themselves; the slider stays two-way.** Decided
+  October 25: Video Options → Hi-res textures chooses full, 1/2, 1/4 or
+  dynamic (full uncompressed, smaller sizes BC7), so texture memory is not a
+  third share of the slider below; built the same day
+  ([texture size](MATERIAL_PACKS.md)).
 - **One RAM slider for both.** Decided October 17. Two options, each on by
   default: "Allocate available RAM to scene caching" and "Allocate available
   RAM to lighting complexity". A slider divides the available RAM between them

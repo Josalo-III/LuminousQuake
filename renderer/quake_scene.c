@@ -997,6 +997,35 @@ static void PackDecode(void *opaque, size_t begin, size_t end)
         for (int k = 0; k < PACK_KINDS; ++k) { free(f->files[k].data); f->files[k].data = NULL; }
     }
 }
+/* High-res textures: 1 full, 2 half, 3 quarter, 4 dynamic (the largest that
+ * fits `budget` bytes: full if its RGBA8 mip chains fit, half if a sixteenth
+ * of that does, otherwise quarter). Below full the images are BC7, when the
+ * GPU takes it. Model skins follow the size chosen (LQ_QuakePackHalvings). */
+static int pack_setting = 1, pack_compress, pack_halvings;
+static size_t pack_budget;
+void LQ_QuakeSetPackDetail(int setting, size_t budget, int compress)
+{
+    pack_setting = setting >= 1 && setting <= 4 ? setting : 1;
+    pack_budget = budget; pack_compress = compress != 0;
+}
+int LQ_QuakePackHalvings(void) { return pack_halvings; }
+int LQ_QuakePackCompressed(void) { return pack_compress && pack_halvings > 0; }
+static size_t ChainBytes(const lq_image *image)
+{ return image->pixels && image->format == LQ_IMAGE_RAW ? (size_t)image->width * image->height * 4 * 4 / 3 : 0; }
+static void PackDetail(void *opaque, size_t begin, size_t end)
+{
+    lq_scene *s = opaque;
+    for (size_t i = begin; i < end; ++i) {
+        lq_material *m = &s->materials[i];
+        lq_image *images[2] = {&m->pack_color, &m->pack_normal};
+        for (int k = 0; k < 2; ++k) {
+            lq_image *image = images[k], next;
+            for (int h = 0; h < pack_halvings && image->pixels && (image->width > 4 || image->height > 4); ++h)
+                if (LQ_PackHalve(image, k, &next)) { free(image->pixels); *image = next; }
+            if (pack_compress && pack_halvings > 0) LQ_PackCompressBC7(image, k);
+        }
+    }
+}
 uint32_t LQ_QuakeSceneLoadPack(lq_scene *s, const char *pack, lq_range_runner run, uint32_t counts[4])
 {
     for (int k = 0; k < 4; ++k) counts[k] = 0;  /* colour, bump, glow, gloss (not _bump: it becomes a bump) */
@@ -1078,6 +1107,13 @@ uint32_t LQ_QuakeSceneLoadPack(lq_scene *s, const char *pack, lq_range_runner ru
         }
         any += m->pack_color.pixels || m->pack_normal.pixels;
     }
+    /* Last, as everything above reads the full-size RGBA8 images. */
+    size_t full = 0;
+    for (uint32_t i = 0; i < s->material_count; ++i)
+        full += ChainBytes(&s->materials[i].pack_color) + ChainBytes(&s->materials[i].pack_normal);
+    pack_halvings = pack_setting == 2 ? 1 : pack_setting == 3 ? 2 :
+        pack_setting == 4 && pack_budget && full > pack_budget ? (full / 16 <= pack_budget ? 1 : 2) : 0;
+    if (any && pack_halvings) run(s->material_count, 1, PackDetail, s);
     free(files);
     return any;
 }
