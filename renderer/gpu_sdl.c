@@ -1480,13 +1480,14 @@ static void DrawSurface(lq_gpu *g, SDL_GPUCommandBuffer *command, SDL_GPURenderP
     /* Texture packs: both GPU renderers draw a pack's colour and glow; only
      * Luminous shades with its normal maps (bumps, parallax, relief shadows)
      * and the gloss they carry in blue (uniforms.pack[3]: gloss intensity). */
-    if (pack < g->texture_count && g->pack_color &&
-            !(d->flags & (LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_MASKED))) {
+    /* Liquids and fences take the pack's colour too; liquids keep their
+     * waves rather than bumps. */
+    if (pack < g->texture_count && g->pack_color && !(d->flags & LQ_SURFACE_SKY)) {
         if (v->pack_textures && g->pack_color[pack]) {
             pack_color = g->pack_color[pack]; uniforms.pack[0] = 1;
             uniforms.pack[2] = v->pack_match && g->pack_gain[pack] > 0 ? g->pack_gain[pack] : 1;
         }
-        if (v->luminous_lighting && v->pack_bumps && g->pack_normal[pack]) {
+        if (v->luminous_lighting && v->pack_bumps && g->pack_normal[pack] && !(d->flags & LQ_SURFACE_WATER)) {
             pack_normal = g->pack_normal[pack]; uniforms.pack[1] = 1; uniforms.pack[3] = v->pack_gloss;
             uniforms.relief[0] = v->pack_parallax; uniforms.relief[1] = g->pack_height[pack];
             uniforms.relief[2] = v->pack_relief_shadows ? 1.0f : 0.0f;
@@ -1864,7 +1865,7 @@ static uint32_t *BounceWords(const lq_scene *s, const uint8_t (*emit_styles)[4],
         if (d->first_index >= s->index_count) continue; /* kind 0: never hit */
         uint32_t base = s->indices[d->first_index];
         int sky = (d->flags & LQ_SURFACE_SKY) != 0;
-        o[0] = sky ? 2 : !d->flags && grid->width ? 1 : 0;
+        o[0] = sky ? 2 : !(d->flags & LQ_SURFACE_WATER) && grid->width ? 1 : 0;
         o[1] = base; o[2] = d->index_count / 3 + 2;
         o[3] = emit_styles ? (uint32_t)emit_styles[f][0] | (uint32_t)emit_styles[f][1] << 8 |
             (uint32_t)emit_styles[f][2] << 16 | (uint32_t)emit_styles[f][3] << 24 : 0xffffffffu;

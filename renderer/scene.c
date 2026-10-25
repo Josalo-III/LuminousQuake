@@ -870,7 +870,7 @@ int LQ_SceneCheck(const lq_scene *s, char *error, size_t size)
         REQUIRE(d->material < s->material_count, "draw references invalid material");
         REQUIRE(d->first_index <= s->index_count && d->index_count <= s->index_count - d->first_index &&
             d->index_count && !(d->index_count % 3), "invalid triangle range");
-        REQUIRE(!(d->flags & ~(LQ_SURFACE_SKY | LQ_SURFACE_WATER)), "invalid surface flags");
+        REQUIRE(!(d->flags & ~(LQ_SURFACE_SKY | LQ_SURFACE_WATER | LQ_SURFACE_MASKED)), "invalid surface flags");  /* fences: masked */
     }
     return 1;
 #undef REQUIRE

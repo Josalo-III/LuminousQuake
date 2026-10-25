@@ -114,8 +114,10 @@ with tempfile.TemporaryDirectory(prefix='lq-bsp-') as temporary:
     output = run(root, '-map', 'worldsun')
     assert 'Light inventory: sun 100 50 0 along 0.50 0.00 -0.87, penumbra 0 degrees' in output, output
     assert 'Light inventory: 0 sources' in output, output
-    output = run(root, '-map', '../escape', expected=1)
-    assert 'without a path or extension' in output, output
+    # Maps may sit in folders under maps/ (test/test_shadow), but nothing may leave it.
+    for escape in ('../escape', '/escape'):
+        output = run(root, '-map', escape, expected=1)
+        assert 'Use a map name such as e1m1' in output, output
     output = run(root, '--run-seconds', 'nan', expected=1)
     assert '--run-seconds needs' in output, output
 print('PASS generated BSP/PAK import, scene conversion, ericw-tools sun and surface templates, '

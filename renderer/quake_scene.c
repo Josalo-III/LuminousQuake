@@ -289,7 +289,7 @@ static int Spawn(model_t *world, lq_scene *scene)
             if (style < 0 || style >= 255 ||
                 sscanf(origin,"%f %f %f",&light.origin[0],&light.origin[1],&light.origin[2]) != 3 ||
                 !isfinite(light.origin[0]) || !isfinite(light.origin[1]) || !isfinite(light.origin[2])) {
-                Con_DPrintf("Light inventory: skipping invalid source entity %u.\n",light.entity_index);
+                Con_Printf("Light inventory: skipping invalid source entity %u.\n",light.entity_index);
             } else {
                 char extra; float intensity = 0;
                 if (light.light_value[0] && (sscanf(light.light_value,"%f %c",&intensity,&extra) != 1 || !isfinite(intensity))) {
@@ -403,7 +403,7 @@ static int Spawn(model_t *world, lq_scene *scene)
         ++templates;
         if (!light->flags) kept += ExpandSurfaceLight(world, scene, light, &extras[i], sources + kept, 4096 - kept, &faces);
     }
-    if (kept == 4096) Con_DPrintf("Light inventory: surface lights stop at the 4096-source limit.\n");
+    if (kept == 4096) Con_Printf("Light inventory: surface lights stop at the 4096-source limit.\n");
     free(scene->light_sources); free(extras);
     lq_light_source *fitted = realloc(sources, (kept ? kept : 1) * sizeof(*sources));
     scene->light_sources = fitted ? fitted : sources; scene->light_source_count = kept;
@@ -606,7 +606,7 @@ static int BuildSampleGrids(model_t *world, lq_scene *s, const uint16_t (*atlas)
     if (!s->sample_positions) { free(albedo); return 0; }
     for (uint32_t i = 0; i < s->draw_count && i < (uint32_t)world->numsurfaces; ++i) {
         const lq_draw *draw = &s->draws[i];
-        if (draw->flags) continue;
+        if (draw->flags & (LQ_SURFACE_SKY|LQ_SURFACE_WATER)) continue;
         msurface_t *f = world->surfaces + i;
         lq_face_samples *grid = &s->face_samples[i];
         for (int k = 0; k < 4; ++k) { grid->s[k] = f->texinfo->vecs[0][k]; grid->t[k] = f->texinfo->vecs[1][k]; }
@@ -650,8 +650,10 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
     int lighting_bytes;
     int light_analysis = 0;
     for (int i = 1; i < argc; ++i) if (!strcmp(argv[i],"--light-analysis")) light_analysis = 1;
-    if (!map || !*map || strlen(map) > MAX_QPATH - 10 || strstr(map, "..") || strchr(map, '/') || strchr(map, '\\'))
-        return Failure(s, error, size, "Use a map name such as e1m1, without a path or extension");
+    /* A map in a folder under maps/ (the rerelease's test/test_shadow) is
+     * allowed; nothing may leave maps/. */
+    if (!map || !*map || strlen(map) > MAX_QPATH - 10 || strstr(map, "..") || map[0] == '/' || strchr(map, '\\'))
+        return Failure(s, error, size, "Use a map name such as e1m1 or test/test_shadow, without an extension");
     if (argc && legacy_heap) return Failure(s, error, size, "A legacy scene is already loaded");
     if (argc >= MAX_NUM_ARGVS) return Failure(s, error, size, "Too many command-line arguments");
     if (argc) {
@@ -743,11 +745,13 @@ int LQ_QuakeSceneLoad(int argc, char **argv, const char *map, lq_scene *s, char 
             memcpy(m->name, texture->name, 16); m->name[16] = 0;
         }
         draw->first_index = s->index_count; draw->index_count = (f->numedges - 2) * 3; draw->material = material;
+        /* Fence textures ({name, FitzQuake's): palette index 255 is see-through. */
         draw->flags = (f->flags & SURF_DRAWSKY ? LQ_SURFACE_SKY : 0) |
-            (f->flags & SURF_DRAWTURB ? LQ_SURFACE_WATER : 0);
+            (f->flags & SURF_DRAWTURB ? LQ_SURFACE_WATER : 0) |
+            (s->materials[material].name[0] == '{' ? LQ_SURFACE_MASKED : 0);
         memset(draw->styles, 255, 4); draw->styles[0] = 0;
         memset(draw->bounce_styles, 255, 4);
-        if (!draw->flags) {
+        if (!(draw->flags & (LQ_SURFACE_SKY|LQ_SURFACE_WATER))) {  /* lit faces, fences included */
             if (light_width < 1 || light_height < 1 || light_width + 2 > atlas_width || light_height + 2 > atlas_height)
                 FAIL("Invalid surface lightmap size");
             if (atlas_x + light_width + 1 > atlas_width) { atlas_x = 1; atlas_y += row_height; row_height = 0; }
@@ -894,7 +898,7 @@ int LQ_QuakeSceneFromWorld(lq_scene *s, char *error, size_t size)
     return LQ_QuakeSceneLoad(0, NULL, name, s, error, size);
 }
 /* Community texture packs. */
-enum { PACK_COLOR, PACK_NORMAL, PACK_GLOW, PACK_GLOSS, PACK_KINDS };
+enum { PACK_COLOR, PACK_NORMAL, PACK_GLOW, PACK_GLOSS, PACK_BUMP, PACK_KINDS };
 /* Each image's file as read; entries of a .pk3 are still raw (archived). */
 typedef struct { lq_archive_blob files[PACK_KINDS]; uint8_t archived[PACK_KINDS]; } pack_files;
 typedef struct { lq_scene *scene; pack_files *files; uint32_t found[PACK_KINDS]; } pack_job;
@@ -979,7 +983,13 @@ static void PackDecode(void *opaque, size_t begin, size_t end)
                 LQ_PackFoldGlow(&m->pack_color, &glow);
             free(glow.pixels);
         }
-        LQ_PackDecode(f->files[PACK_NORMAL].data, f->files[PACK_NORMAL].size, &m->pack_normal);
+        if (!LQ_PackDecode(f->files[PACK_NORMAL].data, f->files[PACK_NORMAL].size, &m->pack_normal)) {
+            /* No _norm: a height-only _bump becomes one, as in DarkPlaces. */
+            lq_image bump = {0};
+            if (LQ_PackDecode(f->files[PACK_BUMP].data, f->files[PACK_BUMP].size, &bump))
+                LQ_PackNormalFromBump(&bump, 4, &m->pack_normal);
+            free(bump.pixels);
+        }
         /* The gloss rides in the normal map's blue (LQ_PackGlossIntoNormal). */
         LQ_PackDecode(f->files[PACK_GLOSS].data, f->files[PACK_GLOSS].size, &gloss);
         LQ_PackGlossIntoNormal(&m->pack_normal, &gloss);
@@ -989,7 +999,7 @@ static void PackDecode(void *opaque, size_t begin, size_t end)
 }
 uint32_t LQ_QuakeSceneLoadPack(lq_scene *s, const char *pack, lq_range_runner run, uint32_t counts[4])
 {
-    for (int k = 0; k < PACK_KINDS; ++k) counts[k] = 0;
+    for (int k = 0; k < 4; ++k) counts[k] = 0;  /* colour, bump, glow, gloss (not _bump: it becomes a bump) */
     if (!s || !s->material_count || !loaded_world || !run) return 0;
     char map[MAX_QPATH];
     COM_FileBase(loaded_world->name, map);
@@ -999,13 +1009,15 @@ uint32_t LQ_QuakeSceneLoadPack(lq_scene *s, const char *pack, lq_range_runner ru
     uint32_t any = 0;
     for (uint32_t i = 0; i < s->material_count; ++i) {
         const lq_material *m = &s->materials[i];
-        /* Sky and liquids keep their own drawing for now; solid textures only. */
-        if (!m->name[0] || m->name[0] == '*' || !Q_strncasecmp((char *)m->name, "sky", 3) ||
+        /* Sky keeps its own drawing (packs bring skyboxes instead). Liquids'
+         * '*' is '#' in pack file names, as DarkPlaces writes it. */
+        if (!m->name[0] || !Q_strncasecmp((char *)m->name, "sky", 3) ||
             m->pack_color.pixels || m->pack_normal.pixels) continue;
         char name[32], lower[32];
         snprintf(name, sizeof(name), "%s", m->name);
+        if (name[0] == '*') name[0] = '#';
         for (int k = 0; name[k]; ++k) lower[k] = (char)tolower((unsigned char)name[k]), lower[k + 1] = 0;
-        static const char *suffixes[PACK_KINDS][2] = {{"", NULL}, {"_norm", NULL}, {"_glow", "_luma"}, {"_gloss", NULL}};
+        static const char *suffixes[PACK_KINDS][2] = {{"", NULL}, {"_norm", NULL}, {"_glow", "_luma"}, {"_gloss", NULL}, {"_bump", NULL}};
         pack_files *f = &files[i];
         for (int k = 0; k < PACK_KINDS; ++k)
             for (int j = 0; j < 2 && !f->files[k].data && suffixes[k][j]; ++j)
@@ -1015,6 +1027,8 @@ uint32_t LQ_QuakeSceneLoadPack(lq_scene *s, const char *pack, lq_range_runner ru
         if (!f->files[PACK_COLOR].data) { free(f->files[PACK_GLOW].data); f->files[PACK_GLOW].data = NULL; }
         /* So does a gloss: specular on the original 8-bit texture would be invented. */
         if (!f->files[PACK_COLOR].data) { free(f->files[PACK_GLOSS].data); f->files[PACK_GLOSS].data = NULL; }
+        /* A _bump is used only where there is no _norm. */
+        if (f->files[PACK_NORMAL].data) { free(f->files[PACK_BUMP].data); f->files[PACK_BUMP].data = NULL; }
     }
     LQ_ArchiveClose(archive);
     pack_job job = {s, files, {0}};

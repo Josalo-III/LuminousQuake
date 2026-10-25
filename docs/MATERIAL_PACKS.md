@@ -394,9 +394,39 @@ as `none`. The console now says which pack a map used, or why none.
   out with the bumps by footprint. E1M3 with Rygel: 46 of 49 replaced
   textures have gloss; Gloss 1 against 0 changes 2.4% of pixels by more
   than 16 levels, 2 against 0 4.4%.
-- **Not yet:** liquids, sky, masked (`{`) textures and sprites keep their
-  original textures (models since October 23: [Models](#models-october-23)); `_bump` height-only maps
-  are a later stage.
+- **Liquids, fences and `_bump` (October 25).** Rygel has 13 liquids
+  (`#04water1`: colour, glow, gloss, normal); the loader looks a liquid's `*`
+  up as `#`, as DarkPlaces writes it. Both GPU renderers draw the pack colour
+  on the waves (sampled at the warped coordinate), translucent liquids lit,
+  opaque ones unlit as their palette colours are, glow emitting. Bumps,
+  parallax and gloss are not applied to liquids: the waves stand in for them.
+  E1M1's `*water0` shows Rygel's ripples in Classic GPU and Luminous.
+  - Fence textures (`{name`, FitzQuake's: palette index 255 see-through) were
+    drawn solid by the GPU renderers. World faces now carry the masked flag
+    (the scene's flag check and the lightmap, bounce and probe code that took
+    "no flags" to mean a lit face were widened to match), the shader discards
+    by the original texture's index 255, and a pack colour shows where the
+    original is solid. In Luminous fences still cast their shadow cubes as
+    solid quads. The rerelease's `maps/test/test_shadow` shows the grid
+    see-through; no pack here has fence textures.
+  - Maps in folders under `maps/` (`test/test_shadow`) were refused by the
+    GPU scene builder and fell back to Software; they now load.
+  - `_bump` images, height only, become normal maps where a texture has no
+    `_norm`, as DarkPlaces does (`LQ_PackNormalFromBump`: its
+    `Image_HeightmapToNormalmap` slopes at `r_shadow_bumpscale_bumpmap` 4,
+    the height kept for parallax). In Rygel that is 6 model skins: the gibs
+    and lightning bolts. Not checked on screen.
+- **Not in Rygel's pack, so not built:** sky texture layers (packs bring
+  skyboxes instead, which load) and sprite frames (DarkPlaces'
+  `progs/<sprite>.spr_<frame>`). They wait for a pack that uses them.
+- **Beyond textures, undecided:** the pack's `gfx/` (135 HUD, menu and
+  console images, which the 8-bit 2D path can't draw), and its `maps/*.lit`
+  and `.dlit` (coloured light and its direction for lightmaps; Luminous
+  computes its own light, Classic GPU would use them).
+- **Before October 25:** liquids, sky, masked (`{`) textures and sprites kept their
+  original textures (models since October 23: [Models](#models-october-23)); `_bump` height-only images
+  (used by DarkPlaces only where `_norm` is missing; in Rygel's pack, 6
+  model skins: the gibs and lightning bolts) are a later stage.
 - **Detail by footprint (October 24)** (`lq_pack_detail_cull`, saved,
   default on): where a pack texel covers less than a pixel, the costly work
   stops. The pack's mip level is worked out once per pixel from screen

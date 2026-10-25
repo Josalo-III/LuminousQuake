@@ -89,6 +89,32 @@ int LQ_PackGlossIntoNormal(lq_image *normal, const lq_image *gloss)
         }
     return 1;
 }
+int LQ_PackNormalFromBump(const lq_image *bump, float bumpscale, lq_image *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (!bump || !bump->pixels || bump->channels != 4 || !bump->width || !bump->height || bumpscale <= 0) return 0;
+    uint32_t w = bump->width, h = bump->height;
+    uint8_t *pixels = malloc((size_t)w * h * 4);
+    if (!pixels) return 0;
+    float z = 255.0f * 6.0f / bumpscale;
+    #define HEIGHT(X, Y) ((int)bump->pixels[((size_t)(Y) * w + (X)) * 4] + bump->pixels[((size_t)(Y) * w + (X)) * 4 + 1] + \
+        bump->pixels[((size_t)(Y) * w + (X)) * 4 + 2])
+    for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x) {
+            uint32_t left = x ? x - 1 : w - 1, right = x + 1 < w ? x + 1 : 0;
+            uint32_t above = y ? y - 1 : h - 1, below = y + 1 < h ? y + 1 : 0;
+            float n[3] = {(float)(HEIGHT(left, y) - HEIGHT(right, y)), (float)(HEIGHT(x, below) - HEIGHT(x, above)), z};
+            float length = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            uint8_t *q = pixels + ((size_t)y * w + x) * 4;
+            q[0] = (uint8_t)(128.0f + n[0] / length * 127.0f);
+            q[1] = (uint8_t)(128.0f + n[1] / length * 127.0f);
+            q[2] = 0;
+            q[3] = (uint8_t)(HEIGHT(x, y) / 3);
+        }
+    #undef HEIGHT
+    *out = (lq_image){w, h, 4, pixels};
+    return 1;
+}
 int LQ_PackHalve(const lq_image *source, int normal_map, lq_image *out)
 {
     memset(out, 0, sizeof(*out));

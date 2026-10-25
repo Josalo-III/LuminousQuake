@@ -110,7 +110,13 @@ static int LoadSkin(const char *pack, lq_archive *archive, const char *base, flo
     if (glow.pixels) LQ_PackFoldGlow(&out->pack_color, &glow);
     free(glow.pixels);
     snprintf(name, sizeof(name), "%s_norm", base);
-    LQ_QuakeLoadImage(pack, archive, name, &out->pack_normal);
+    if (!LQ_QuakeLoadImage(pack, archive, name, &out->pack_normal)) {
+        /* No _norm: a height-only _bump becomes one, as in DarkPlaces. */
+        lq_image bump = {0};
+        snprintf(name, sizeof(name), "%s_bump", base);
+        if (LQ_QuakeLoadImage(pack, archive, name, &bump)) LQ_PackNormalFromBump(&bump, 4, &out->pack_normal);
+        free(bump.pixels);
+    }
     /* Its gloss rides in the normal map's blue, as for world textures. */
     lq_image gloss = {0};
     snprintf(name, sizeof(name), "%s_gloss", base);

@@ -246,8 +246,10 @@ setting on and the original with it off. **October 24:** gloss specular
 (Luminous Options → **Gloss**), and Classic GPU draws packs too (colour,
 glow, models, skins and skyboxes; bumps, parallax, relief shadows and gloss
 stay Luminous's), with the shared pack settings moved to Video Options
-([status](MATERIAL_PACKS.md#implemented-first-stage-october-20)). Still to
-come: liquids, sky and `_bump` maps
+([status](MATERIAL_PACKS.md#implemented-first-stage-october-20)). **October 25:** liquids, fence textures
+(which the GPU renderers had drawn solid) and `_bump` height images. Not in
+Rygel's pack, so not built: sky texture layers and sprite frames. Undecided:
+the pack's `gfx/` HUD and menu art and its `.lit`/`.dlit` light files
 ([status](MATERIAL_PACKS.md#models-october-23)).
 
 ### 5. The existing Luminous queue

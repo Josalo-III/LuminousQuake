@@ -800,7 +800,7 @@ void main() {
         if ((flags & 9) != 0) color = litEntry(index);
         // The pack's colour in place of the palette's, lit the same way; its
         // glow (alpha) emits as fullbrights do.
-        if (surface.pack.x > 0.5 && (flags & 9) == 0) {
+        if (surface.pack.x > 0.5 && (flags & 1) == 0) {
             vec4 hd = textureGrad(pack_color, sample_uv, frame_dx, frame_dy);
             // z matches the original texture's brightness (lq_pack_brightness);
             // the glow keeps the pack's own level.
@@ -813,8 +813,14 @@ void main() {
         vec4 hd = textureGrad(pack_color, uv, frame_dx, frame_dy);
         color = vec4(packAlbedo(hd.rgb, surface.pack.z) + packAlbedo(hd.rgb, 1.0) * (hd.a * emission()), 1.0);
         written_linear = true;
+    } else if (lights.parameters.y != 0u && surface.pack.x > 0.5 && (flags & 2) != 0) {
+        // An unlit (opaque) liquid's pack colour, as its palette colours show:
+        // unlit, its glow emitting; sampled on the waves.
+        vec4 hd = textureGrad(pack_color, sample_uv, frame_dx, frame_dy);
+        color = vec4(packAlbedo(hd.rgb, surface.pack.z) + packAlbedo(hd.rgb, 1.0) * (hd.a * emission()), 1.0);
+        written_linear = true;
     } else if (lights.parameters.y != 0u && index < 224.0) color.rgb *= direct_tint;
-    else if (lights.parameters.y == 0u && surface.pack.x > 0.5 && (flags & 9) == 0) {
+    else if (lights.parameters.y == 0u && surface.pack.x > 0.5 && (flags & 1) == 0) {
         // Classic GPU: the pack's colour lit as the palette is, by the
         // colormap's scale at this light grade (row 32 is 1x, row 0 2x), and
         // its glow unlit, as GLQuake-era engines drew replacement textures.

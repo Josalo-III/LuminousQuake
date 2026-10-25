@@ -23,6 +23,12 @@ void LQ_PackSetAlpha(lq_image *image, uint8_t alpha);
  * `normal` becomes a flat one of the gloss's size at full height. Returns 0
  * if allocation fails. */
 int LQ_PackGlossIntoNormal(lq_image *normal, const lq_image *gloss);
+/* A normal map from a height-only _bump image, as DarkPlaces makes one
+ * (Image_HeightmapToNormalmap: neighbouring heights' differences, wrapping at
+ * the edges, against 1530 / bumpscale; it uses r_shadow_bumpscale_bumpmap 4),
+ * in this engine's layout: x and y in red and green, no gloss in blue, the
+ * height in alpha. Returns 0, leaving `out` empty, if allocation fails. */
+int LQ_PackNormalFromBump(const lq_image *bump, float bumpscale, lq_image *out);
 /* The next mip level of a pack image, half each side (rounded down, at least
  * 1), from 2x2 blocks. A colour image is averaged in linear light (its values
  * decoded and re-encoded with the 2.2 power world.frag uses), so distant
