@@ -48,9 +48,9 @@ void LQ_GPUTestPattern(lq_gpu *gpu, int on);
 void LQ_GPUToneRamp(lq_gpu *gpu, int on);
 int LQ_GPUSupportsBC7(lq_gpu *gpu); /* texture packs below full size are stored as BC7 */
 /* Bounce tracing paced for play (staged bounce, on the background thread):
- * `chunk` samples a submission, each waited for, then a pause as long as it
- * took, so bounce takes at most about half the GPU; `cancel` nonzero stops
- * it between submissions. The struct must outlive the tracer's use. */
+ * `chunk` samples a submission, one submission for each frame drawn, so a
+ * frame waits behind at most one slice; `cancel` nonzero stops it between
+ * submissions. The struct must outlive the tracer's use. */
 typedef struct { lq_gpu *gpu; uint32_t chunk; int paced; const volatile int *cancel; } lq_bounce_pace;
 lq_bounce_tracer LQ_GPUBounceTracerPaced(lq_bounce_pace *pace);
 /* Replace the bounce texture, static probes, sky and sun values after a

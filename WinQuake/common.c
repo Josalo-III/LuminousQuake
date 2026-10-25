@@ -1716,6 +1716,47 @@ byte *COM_LoadMallocFileQuiet (const char *filename, int *length)
 	return NULL;
 }
 
+/*
+============
+COM_LoadBaseFileQuiet
+
+LuminousQuake: the copy of a file furthest down the search path, which is the
+base game's (id1) beneath any mod's own, for artwork a mod may replace
+(the main menu's lettering). Packs only; returns a malloc'd copy, or NULL.
+============
+*/
+byte *COM_LoadBaseFileQuiet (const char *filename, int *length)
+{
+	searchpath_t	*search;
+	pack_t			*found = NULL;
+	int				i, at = 0, len;
+	byte			*buf;
+
+	for (search = com_searchpaths ; search ; search = search->next)
+		if (search->pack)
+			for (i=0 ; i<search->pack->numfiles ; i++)
+				if (!strcmp (search->pack->files[i].name, filename))
+				{
+					found = search->pack;
+					at = i;
+					break;
+				}
+	if (!found)
+		return NULL;
+	len = found->files[at].filelen;
+	buf = malloc (len > 0 ? len : 1);
+	if (!buf)
+		return NULL;
+	Sys_FileSeek (found->handle, found->files[at].filepos);
+	if (Sys_FileRead (found->handle, buf, len) != len)
+	{
+		free (buf);
+		return NULL;
+	}
+	*length = len;
+	return buf;
+}
+
 byte *COM_LoadHunkFile (char *path)
 {
 	return COM_LoadFile (path, 1);

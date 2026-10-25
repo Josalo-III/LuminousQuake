@@ -93,6 +93,7 @@ struct lq_gpu {
     SDL_GPUTexture *shadow_maps[LQ_SHADOW_ARRAYS], *shadow_dummy;
     int shadow_shift; /* cube face size: LQ_SHADOW_ARRAY_SIZES doubled (1), halved (-1) or as is (0) */
     lq_bounce_pace load_pace; /* the unpaced tracer used at load: whole passes, 65536 samples a submission */
+    SDL_AtomicInt frames; /* frames submitted, which a paced bounce waits on between slices */
     /* The same cubes with static casters only: a face that only moving casters
      * change is copied from here and the movers drawn over it. */
     SDL_GPUTexture *shadow_static[LQ_SHADOW_ARRAYS];
@@ -1802,6 +1803,7 @@ int LQ_GPURender(lq_gpu *g, const lq_view *v, uint32_t width, uint32_t height, c
         SDL_BlitGPUTexture(command, &blit);
     }
     if (!SDL_SubmitGPUCommandBuffer(command)) return Error(error, size, "GPU submit");
+    SDL_AddAtomicInt(&g->frames, 1);
     return 1;
 }
 static float HalfToFloat(uint16_t h)
@@ -2033,7 +2035,6 @@ static int BounceRun(lq_bounce_pace *pace, const lq_scene *s, uint32_t mode, uin
     SDL_EndGPUCopyPass(copy);
     for (uint32_t first = 0; first < s->sample_count; first += chunk) {
         if (pace->cancel && *pace->cancel) { if (command) SDL_CancelGPUCommandBuffer(command); goto done; }
-        if (pace->paced) chunk = pace->chunk ? pace->chunk : 8192;  /* adapted below, kept across passes */
         if (!command && !(command = SDL_AcquireGPUCommandBuffer(g->device))) goto done;
         u.job[1] = first; u.job[2] = s->sample_count - first < chunk ? s->sample_count - first : chunk;
         SDL_GPUStorageBufferReadWriteBinding writes = {results, false};
@@ -2047,22 +2048,19 @@ static int BounceRun(lq_bounce_pace *pace, const lq_scene *s, uint32_t mode, uin
         SDL_EndGPUComputePass(pass);
         if (first + chunk >= s->sample_count) break;
         if (pace->paced) {
-            /* One submission at a time, then as long again for the frames. */
-            Uint64 started = SDL_GetTicksNS();
+            /* One slice a drawn frame: submit, wait for it, then wait for the
+             * next frame (or 100 ms, when none is drawn, so it still ends). */
+            int frame = SDL_GetAtomicInt(&g->frames);
             SDL_GPUFence *step = SDL_SubmitGPUCommandBufferAndAcquireFence(command);
             command = NULL;
             if (!step) goto done;
             int waited = SDL_WaitForGPUFences(g->device, true, &step, 1);
             SDL_ReleaseGPUFence(g->device, step);
             if (!waited) goto done;
-            /* Aim at about 8 ms a submission: the wait includes frames queued
-             * ahead of it, so it is an upper bound on the slice's own time. */
-            Uint64 took = SDL_GetTicksNS() - started;
-            uint64_t next = took ? (uint64_t)chunk * 8000000ull / took : (uint64_t)chunk * 2;
-            if (next > (uint64_t)chunk * 2) next = (uint64_t)chunk * 2;
-            if (next < (uint64_t)chunk / 2) next = chunk / 2;
-            pace->chunk = next < 1024 ? 1024 : next > BOUNCE_CHUNK ? BOUNCE_CHUNK : (uint32_t)next;
-            SDL_DelayNS(took);
+            for (Uint64 until = SDL_GetTicksNS() + 100000000; SDL_GetAtomicInt(&g->frames) == frame && SDL_GetTicksNS() < until;) {
+                if (pace->cancel && *pace->cancel) goto done;
+                SDL_DelayNS(1000000);
+            }
             continue;
         }
         if (!SDL_SubmitGPUCommandBuffer(command)) { command = NULL; goto done; }

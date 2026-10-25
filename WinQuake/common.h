@@ -179,6 +179,7 @@ byte *COM_LoadStackFile (char *path, void *buffer, int bufsize);
 byte *COM_LoadTempFile (char *path);
 byte *COM_LoadHunkFile (char *path);
 byte *COM_LoadMallocFileQuiet (const char *filename, int *length);	// LuminousQuake
+byte *COM_LoadBaseFileQuiet (const char *filename, int *length);	// LuminousQuake: the base game's copy
 extern	char	com_basedir[MAX_OSPATH];	// LuminousQuake
 void COM_LoadCacheFile (char *path, struct cache_user_s *cu);
 

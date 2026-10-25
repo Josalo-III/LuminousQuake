@@ -167,8 +167,9 @@ void M_DrawTransPic (int x, int y, qpic_t *pic)
 }
 
 void M_DrawPic (int x, int y, qpic_t *pic)
-{
-	Draw_Pic (x + ((vid.width - 320)>>1), y, pic);
+{	// LuminousQuake: index 255 is transparent in every menu picture, as in
+	// GLQuake; mods' titles rely on it (Arcane Dimensions' overlaps the plaque)
+	Draw_TransPic (x + ((vid.width - 320)>>1), y, pic);
 }
 
 byte identityTable[256];
@@ -337,7 +338,9 @@ static qpic_t *M_BigText (const char *text)
  * OPTIONS, the hyphen from a segment of the t's crossbar. The menu has no capital A, so the
  * word is all small capitals, on the small letters' baseline (row 14 of 20).
  * Only id's picture is cut (240 x 112, CRC 0xb57a, the same in the rerelease,
- * retail and shareware); a mod's own menu art gets the console font. */
+ * retail and shareware), the base game's copy beneath any mod's, so a mod
+ * that replaces the main menu (Arcane Dimensions swaps ORDERING for HELP)
+ * still gets the same word. Without id's picture, the console font. */
 typedef struct
 {
 	char	ch;
@@ -366,21 +369,29 @@ static qpic_t *M_AddonsWord (void)
 	static int	storage[(sizeof(qpic_t) + 160 * 20) / sizeof(int) + 1];
 	static int	state;	// 0 not tried, 1 built, -1 not id's picture
 	qpic_t	*word = (qpic_t *)storage, *menu;
-	int		i, x, y, at = 0;
+	int		i, x, y, at = 0, length = 0;
+	byte	*file;
 
 	if (state)
 		return state > 0 ? word : NULL;
 	state = -1;
-	menu = Draw_CachePic ("gfx/mainmenu.lmp");
-	if (menu->width != 240 || menu->height != 112)
+	file = COM_LoadBaseFileQuiet ("gfx/mainmenu.lmp", &length);
+	menu = (qpic_t *)file;
+	if (!file || length != 8 + 240 * 112 || LittleLong (menu->width) != 240 || LittleLong (menu->height) != 112)
+	{
+		free (file);
 		return NULL;
+	}
 	{
 		unsigned short	crc;
 		CRC_Init (&crc);
 		for (i = 0 ; i < 240 * 112 ; i++)
 			CRC_ProcessByte (&crc, menu->data[i]);
 		if (CRC_Value (crc) != 0xb57a)
+		{
+			free (file);
 			return NULL;
+		}
 	}
 	word->width = 160;
 	word->height = 20;
@@ -400,7 +411,10 @@ static qpic_t *M_AddonsWord (void)
 					if (x > last) last = x;
 				}
 		if (last < first || at + last - first + 1 > 160)
+		{
+			free (file);
 			return NULL;
+		}
 		for (y = g->y0 ; y < g->y1 ; y++)
 			for (x = first ; x <= last && x <= M_GlyphLimit (g, y) ; x++)
 				if (menu->data[y * 240 + x] != 255)
@@ -411,6 +425,7 @@ static qpic_t *M_AddonsWord (void)
 	// rows are 160 wide in storage; repack to the word's width
 	for (y = 1 ; y < 20 ; y++)
 		memmove (word->data + y * word->width, word->data + y * 160, word->width);
+	free (file);
 	state = 1;
 	return word;
 }

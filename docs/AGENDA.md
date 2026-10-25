@@ -461,11 +461,11 @@ them. Principles, decided October 17, 2026:
   in the start's PVS plus brush models, then the rest on the background
   queue, swapped in when done. On `ad_tfuma` (Release, battery) the start
   covers 36,227 of 66,345 faces: bounce 19.5 s against 25.4 s, and the start
-  view matches the unstaged image exactly. The background pass never
-  finished in 150 s at 4 fps: its pacing times each fenced slice, and at low
-  frame rates the wait is the game's frames, so slices shrink to 1,024
-  samples. Next: one fixed 8,192-sample slice per drawn frame, keep its GPU
-  buffers between passes, and measure on mains power.
+  view matches the unstaged image exactly. Paced by timing each fenced
+  slice, the background pass never finished in 150 s at 4 fps (the wait was
+  the game's frames). Now one 8,192-sample slice per drawn frame (or per
+  100 ms with none drawn): the rest of the map in 151 s at 4 fps, matching
+  the unstaged image. Next: keep its GPU buffers between passes.
 - **Balance follows the hardware.** Measured October 17 at 1080p: the CPU does
   about 4 ms of work a frame, the GPU about 12 ms. Work that can run on either
   should move to whichever is idle, chosen at run time from measured load, not
