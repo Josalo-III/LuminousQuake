@@ -177,6 +177,7 @@ frame, without asking. Leaving Video Options saves the profile's config.
 | `lq_pack_bumps` | 1 | Luminous: the pack's normal maps shape direct light (saved) |
 | `lq_pack_parallax` | 0.04 | Luminous: parallax depth from the pack's normal-map height, as a fraction of the texture's size (DarkPlaces' offset-mapping scale); 0 off (saved) |
 | `lq_pack_relief_shadows` | 1 | Luminous: the height field shadows itself from each pixel's strongest light, at the parallax depth (so off with parallax); experimental (saved) |
+| `lq_pack_detail_cull` | 1 | Luminous: where a pack texel covers less than a pixel, parallax and relief shadows fade out (mip levels 1.5–3) and bumped normals too (4–6), saving their texture reads; 0 runs them everywhere, for comparisons (saved) |
 | `lq_pack_brightness` | 1 | Luminous: 1 scales each pack texture to its original's mean brightness (maps were lit for those); 0 shows the pack as made (saved) |
 | `lq_tone_shoulder` | 0.8 | Luminous: where linear gives way to the highlight curve, as a fraction of the display's ceiling (SDR white, or the HDR headroom): light below it is shown unchanged, above it highlights roll off toward the ceiling (0.1–0.95). On a 2× HDR display 0.8 starts the curve at 1.6× SDR white |
 | `lq_tone_white` | 6 | Luminous: the light that reaches the display's ceiling, as a multiple of that ceiling (SDR white, or the HDR headroom), so the whole range acts at any headroom (1–64; the menu offers 1–12). 1 is the hardest knee: straight from the shoulder to the peak, then clipped. On a 2× HDR display 6 is 12× SDR white |
@@ -195,7 +196,10 @@ frame, without asking. Leaving Video Options saves the profile's config.
 Commands: `setpos x y z [pitch yaw]` (single-player only, moves you in
 noclip), `fog density [r g b [time]]` (GPU renderers), `game [folder]`
 (QuakeSpasm's: names the game folder in use, or restarts LuminousQuake with
-another, as main menu → **Add-ons** does), `vid_restart`,
+another, as main menu → **Add-ons** does), `lq_after <seconds> "<commands>"`
+(runs commands that many seconds later, for timed test scripts),
+`lq_console_log 1` (keeps the console in `qconsole.log` in the profile, as
+`-condebug` does, which now also writes there), `vid_restart`,
 `vid_togglefullscreen`, `lq_clock_report`, `lq_performance_report`.
 
 ### Classic settings that no longer exist

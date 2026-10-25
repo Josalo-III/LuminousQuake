@@ -34,7 +34,7 @@ layout(set=3,binding=0,std140) uniform Surface {
     vec4 face_light; // x: 1 + the slot brightest everywhere on this face (found on the CPU); 0 unknown
     uvec4 shadow_free; // slots whose shadow lookup here provably finds no blocker (LQ_SceneFindShadowFree)
     vec4 pack; // x: draw the pack's colour; y: shade direct light by its normal map; z: colour gain
-    vec4 relief; // x: parallax depth, as a fraction of the texture's size (0 off); y: height held at the face; z: relief shadows
+    vec4 relief; // x: parallax depth, as a fraction of the texture's size (0 off); y: height held at the face; z: relief shadows; w: cull pack detail by footprint
     vec4 entity; // x: a translucent entity's opacity (flag 4096)
 } surface;
 // Luminous runtime lights, pushed once per frame. Each slot owns a shadow cube.
@@ -383,6 +383,13 @@ float lightShadow(uint i, vec3 normal, float brightness, bool diffuse_effect) {
 }
 // Unshadowed light from slot i at this point, in Quake brightness units (its
 // strength included, colour not), and the direction toward it.
+// The pack's mip level here, as the sampler picks it, from the coordinate's
+// screen derivatives (no textureQueryLod in MSL 2.1). Pack detail is culled by
+// it: where a texel covers less than a pixel, bumps are below what can be seen.
+float packLod(vec2 dx, vec2 dy) {
+    vec2 size = vec2(textureSize(pack_normal, 0));
+    return 0.5 * log2(max(max(dot(dx * size, dx * size), dot(dy * size, dy * size)), 1e-8));
+}
 // The world-space gradients of the texture coordinates across the face, from
 // screen derivatives of position and coordinate (a cotangent frame), so no
 // vertex data is needed. Dividing by the determinant keeps the sign right
@@ -413,13 +420,13 @@ vec3 bumpNormal(vec3 n, vec3 du, vec3 dv, vec2 coord, vec2 dx, vec2 dy) {
 // down in even steps (more where the view grazes); the hit is interpolated
 // between the last step above the surface and the first below it. Returns
 // the texture-coordinate shift to where the ray meets the surface.
-vec2 parallaxShift(vec3 n, vec3 du, vec3 dv, vec2 coord, vec2 dx, vec2 dy) {
+vec2 parallaxShift(vec3 n, vec3 du, vec3 dv, vec2 coord, vec2 dx, vec2 dy, float weight) {
     vec3 to_eye = normalize(surface.camera_origin.xyz - world_position);
     float facing = dot(to_eye, n);
     float lu = dot(du, du), lv = dot(dv, dv);
     if (facing <= 0.0 || lu <= 0.0 || lv <= 0.0) return vec2(0.0);
     // Depth in world units, from the texture's size on the face.
-    float depth = surface.relief.x * inversesqrt(sqrt(lu * lv));
+    float depth = surface.relief.x * weight * inversesqrt(sqrt(lu * lv));
     // Grazing views are held to a 4:1 slope so the shift stays bounded.
     vec2 full = -vec2(dot(to_eye, du), dot(to_eye, dv)) * (depth / max(facing, 0.25));
     int steps = int(mix(24.0, 8.0, facing));
@@ -442,17 +449,12 @@ vec2 parallaxShift(vec3 n, vec3 du, vec3 dv, vec2 coord, vec2 dx, vec2 dy) {
 // shadows itself with the depth its author tuned. A texel above the ray
 // blocks; the result is soft from the closest miss, the least clearance over
 // the distance marched, so ridges grade into their shadows. More steps where
-// the light grazes; faded out by mip level, where bumps are below a pixel.
+// the light grazes; faded out with parallax by footprint (packDetail).
 // Shadow cubes still cast every shadow between surfaces.
-float reliefShadow(vec3 n, vec3 du, vec3 dv, vec2 coord, vec2 dx, vec2 dy, vec3 to_light) {
+float reliefShadow(vec3 n, vec3 du, vec3 dv, vec2 coord, vec2 dx, vec2 dy, vec3 to_light, float fade) {
     float facing = dot(to_light, n);
     float lu = dot(du, du), lv = dot(dv, dv);
-    if (facing <= 0.0 || lu <= 0.0 || lv <= 0.0) return 1.0;
-    // The mip level, as the sampler picks it (no textureQueryLod in MSL 2.1).
-    vec2 size = vec2(textureSize(pack_normal, 0));
-    float lod = 0.5 * log2(max(max(dot(dx * size, dx * size), dot(dy * size, dy * size)), 1e-8));
-    float fade = 1.0 - smoothstep(2.0, 4.0, lod);
-    if (fade <= 0.0) return 1.0;
+    if (facing <= 0.0 || lu <= 0.0 || lv <= 0.0 || fade <= 0.0) return 1.0;
     float depth = surface.relief.x * inversesqrt(sqrt(lu * lv));
     // Texture shift per unit of height risen toward the light, held to a 4:1
     // slope as parallax is.
@@ -578,10 +580,19 @@ void main() {
     vec3 frame_du = vec3(0.0), frame_dv = vec3(0.0);
     vec2 frame_dx = dFdx(uv), frame_dy = dFdy(uv), parallax = vec2(0.0);
     bool relief_on = false;
+    // Pack detail by footprint (relief.w): parallax and relief shadows, the
+    // costly marches, fade out between mip levels 1.5 and 3 and stop past it;
+    // the bumped normal fades to the face's between 4 and 6 and stops past 6.
+    float relief_weight = 1.0, bump_weight = 1.0;
     if (surface.pack.y > 0.5 && (flags & 3) == 0) {
         textureFrame(normalize(world_normal), uv, frame_du, frame_dv);
-        if (surface.relief.x > 0.0) {
-            parallax = parallaxShift(normalize(world_normal), frame_du, frame_dv, uv, frame_dx, frame_dy);
+        if (surface.relief.w > 0.5) {
+            float lod = packLod(frame_dx, frame_dy);
+            relief_weight = 1.0 - smoothstep(1.5, 3.0, lod);
+            bump_weight = 1.0 - smoothstep(4.0, 6.0, lod);
+        }
+        if (surface.relief.x > 0.0 && relief_weight > 0.0) {
+            parallax = parallaxShift(normalize(world_normal), frame_du, frame_dv, uv, frame_dx, frame_dy, relief_weight);
             sample_uv += parallax;
             relief_on = surface.relief.z > 0.5;
         }
@@ -616,7 +627,11 @@ void main() {
             bool actor = (flags & 32) != 0;
             if (lights.parameters.y != 0u && ((flags & 4) == 0 || actor)) {
                 vec3 normal = normalize(world_normal);
-                vec3 shading = surface.pack.y > 0.5 ? bumpNormal(normal, frame_du, frame_dv, sample_uv, frame_dx, frame_dy) : normal;
+                vec3 shading = normal;
+                if (surface.pack.y > 0.5 && bump_weight > 0.0) {
+                    shading = bumpNormal(normal, frame_du, frame_dv, sample_uv, frame_dx, frame_dy);
+                    if (bump_weight < 1.0) shading = normalize(mix(normal, shading, bump_weight));
+                }
                 vec3 illumination = vec3(0.0);
                 // Shadows are filtered only where they can be seen. A light
                 // below the faint level, or below the dominance ratio of the
@@ -657,7 +672,7 @@ void main() {
                 }
                 // Relief shadows: the strongest light only (see reliefShadow).
                 if (relief_on && lead != 0xffffffffu && brightest_shadow > 0.0 && !diffuse_effect) {
-                    brightest_shadow *= reliefShadow(normal, frame_du, frame_dv, sample_uv, frame_dx, frame_dy, lead_toward);
+                    brightest_shadow *= reliefShadow(normal, frame_du, frame_dv, sample_uv, frame_dx, frame_dy, lead_toward, relief_weight);
                     strongest = brightest * brightest_shadow;
                 }
                 for (uint word = 0u; word < 4u; ++word)

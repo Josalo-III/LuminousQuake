@@ -754,6 +754,7 @@ void _Host_Frame (float time)
 	IN_Commands ();
 
 // process console commands
+	Cmd_RunAfter ();	// LuminousQuake: timed test commands
 	Cbuf_Execute ();
 #ifdef LQ_PORTABLE
 	/* Startup configuration can redraw the console while it executes. Apply

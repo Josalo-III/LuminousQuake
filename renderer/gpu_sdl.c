@@ -141,7 +141,7 @@ typedef struct {
     float face_light[4]; /* x: 1 + the slot that is brightest everywhere on the face; 0 unknown */
     uint32_t shadow_free[4]; /* slots whose shadow lookup on this face cannot find a blocker */
     float pack[4]; /* x: draw the texture pack's colour; y: shade by its normal map; z: colour gain */
-    float relief[4]; /* x: parallax depth (0 off); y: the height held at the face; z: relief shadows */
+    float relief[4]; /* x: parallax depth (0 off); y: the height held at the face; z: relief shadows; w: cull by footprint */
     float entity[4]; /* x: a translucent entity's opacity (LQ_SURFACE_TRANSLUCENT) */
 } lq_surface_uniforms;
 typedef struct {
@@ -1486,6 +1486,7 @@ static void DrawSurface(lq_gpu *g, SDL_GPUCommandBuffer *command, SDL_GPURenderP
             pack_normal = g->pack_normal[pack]; uniforms.pack[1] = 1;
             uniforms.relief[0] = v->pack_parallax; uniforms.relief[1] = g->pack_height[pack];
             uniforms.relief[2] = v->pack_relief_shadows ? 1.0f : 0.0f;
+            uniforms.relief[3] = v->pack_detail_cull ? 1.0f : 0.0f;
         }
     } else if ((d->flags & LQ_SURFACE_MODEL) && d->material < 4096 && v->luminous_lighting &&
             g->frame_pack_color[d->material]) {

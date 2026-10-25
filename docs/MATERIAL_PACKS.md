@@ -367,7 +367,18 @@ as `none`. The console now says which pack a map used, or why none.
   needs judging by eye with a moving light.
 - **Not yet:** liquids, sky, masked (`{`) textures and sprites keep their
   original textures (models since October 23: [Models](#models-october-23)); `_gloss` specular and `_bump` height-only maps
-  are later stages; parallax has no fade with distance yet.
+  are later stages.
+- **Detail by footprint (October 24)** (`lq_pack_detail_cull`, saved,
+  default on): where a pack texel covers less than a pixel, the costly work
+  stops. The pack's mip level is worked out once per pixel from screen
+  derivatives (so it follows resolution and viewing angle, not a fixed
+  distance). Parallax depth and relief shadows fade out together between mip
+  levels 1.5 and 3 and are skipped past 3; the bumped normal fades to the
+  face's between 4 and 6 and is skipped past 6. Prompted by heat and frame
+  rate after relief shadows landed. At E1M3's start, on against off: close
+  surfaces unchanged; 39% of pixels differ at all, 1.1% by more than 16 of
+  255 levels, on the mid-distance floor and walls. Not yet measured for
+  speed.
 - **E1M1 with Rygel's ultra pack:** 81 of 86 textures replaced (81 colour, 79
   bump, 39 glow); about 9 s to load in the debug build, including bounce.
 - **E1M3 brightness (October 21).** Matched, the pack's walls in the view

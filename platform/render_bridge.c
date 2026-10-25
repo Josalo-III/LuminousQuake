@@ -88,6 +88,10 @@ static cvar_t lq_pack_parallax = {"lq_pack_parallax", "0.04", true};
 /* Relief shadows: the height field shadows itself from each pixel's strongest
  * light, at the parallax depth (so off with parallax). Experimental. */
 static cvar_t lq_pack_relief_shadows = {"lq_pack_relief_shadows", "1", true};
+/* Pack detail by footprint: parallax and relief shadows fade out between mip
+ * levels 1.5 and 3 and stop past it, bumped normals between 4 and 6. 0 runs
+ * them everywhere (for comparisons). */
+static cvar_t lq_pack_detail_cull = {"lq_pack_detail_cull", "1", true};
 /* 1: each pack texture at its original's mean brightness, so maps lit for the
  * 8-bit textures keep their level; 0: the pack as its author made it. */
 static cvar_t lq_pack_brightness = {"lq_pack_brightness", "1", true};
@@ -242,7 +246,7 @@ void LQ_RenderBridgeRegister(void)
 {
     Cvar_RegisterVariable(&lq_scene_cache_mb); Cvar_RegisterVariable(&lq_cull); Cvar_RegisterVariable(&lq_shadows);
     Cvar_RegisterVariable(&lq_panel_shadows); Cvar_RegisterVariable(&lq_shadow_free);
-    Cvar_RegisterVariable(&lq_pack_textures); Cvar_RegisterVariable(&lq_pack_bumps); Cvar_RegisterVariable(&lq_pack_parallax); Cvar_RegisterVariable(&lq_pack_relief_shadows); Cvar_RegisterVariable(&lq_texture_pack);
+    Cvar_RegisterVariable(&lq_pack_textures); Cvar_RegisterVariable(&lq_pack_bumps); Cvar_RegisterVariable(&lq_pack_parallax); Cvar_RegisterVariable(&lq_pack_relief_shadows); Cvar_RegisterVariable(&lq_pack_detail_cull); Cvar_RegisterVariable(&lq_texture_pack);
     Cvar_RegisterVariable(&lq_pack_brightness);
     Cvar_RegisterVariable(&lq_pack_models); Cvar_RegisterVariable(&lq_pack_skins);
     Cvar_RegisterVariable(&lq_fog); Cvar_RegisterVariable(&r_skyfog);
@@ -703,6 +707,7 @@ static void LuminousLights(void)
     view.pack_match = lq_pack_brightness.value != 0;
     view.pack_parallax = lq_pack_parallax.value > 0 && lq_pack_parallax.value <= 0.2f ? lq_pack_parallax.value : 0;
     view.pack_relief_shadows = lq_pack_relief_shadows.value != 0;
+    view.pack_detail_cull = lq_pack_detail_cull.value != 0;
     LQ_BuildVisibleLightInteractions(&map_scene, runtime_lights, count, world_draws, interaction_draws);
     for (uint32_t i = 0; i < map_scene.draw_count; ++i)
         if (world_draws[i].index_count)

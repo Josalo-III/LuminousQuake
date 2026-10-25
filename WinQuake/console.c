@@ -22,6 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #ifdef LQ_PORTABLE
 #include "render_bridge.h"
+#include "user_paths.h"
 #endif
 
 int 		con_linewidth;
@@ -39,6 +40,9 @@ int			con_x;				// offset in current line for next print
 char		*con_text=0;
 
 cvar_t		con_notifytime = {"con_notifytime","3"};		//seconds
+// LuminousQuake: 1 appends the console to qconsole.log in the profile, as
+// -condebug does, for runs started from Finder (no command line). Not saved.
+cvar_t		lq_console_log = {"lq_console_log","0"};
 
 #define	NUM_CON_TIMES 4
 float		con_times[NUM_CON_TIMES];	// realtime time the line was generated
@@ -217,14 +221,9 @@ void Con_Init (void)
 
 	con_debuglog = COM_CheckParm("-condebug");
 
-	if (con_debuglog)
-	{
-		if (strlen (com_gamedir) < (MAXGAMEDIRLEN - strlen (t2)))
-		{
-			sprintf (temp, "%s%s", com_gamedir, t2);
-			remove (temp);
-		}
-	}
+	// LuminousQuake: the log goes to the profile, never into the install
+	if (con_debuglog && LQ_UserPath (temp, sizeof(temp), t2 + 1))
+		remove (temp);
 
 	con_text = Hunk_AllocName (CON_TEXTSIZE, "context");
 	Q_memset (con_text, ' ', CON_TEXTSIZE);
@@ -237,6 +236,7 @@ void Con_Init (void)
 // register our commands
 //
 	Cvar_RegisterVariable (&con_notifytime);
+	Cvar_RegisterVariable (&lq_console_log);	// LuminousQuake
 
 	Cmd_AddCommand ("toggleconsole", Con_ToggleConsole_f);
 	Cmd_AddCommand ("messagemode", Con_MessageMode_f);
@@ -384,9 +384,13 @@ void Con_Printf (char *fmt, ...)
 // also echo to debugging console
 	Sys_Printf ("%s", msg);	// also echo to debugging console
 
-// log all messages to file
-	if (con_debuglog)
-		Con_DebugLog(va("%s/qconsole.log",com_gamedir), "%s", msg);
+// log all messages to file (LuminousQuake: in the profile; lq_console_log too)
+	if (con_debuglog || lq_console_log.value)
+	{
+		char	path[MAX_OSPATH];
+		if (LQ_UserPath (path, sizeof(path), "qconsole.log"))
+			Con_DebugLog (path, "%s", msg);
+	}
 
 	if (!con_initialized)
 		return;

@@ -2258,7 +2258,7 @@ void M_Luminous_Key (int key)
 		return;
 	}
 	o = &luminous_options[luminous_cursor - 1];
-	luminous_tuning = true;
+	luminous_tuning = o->step != 0;	// sliders shrink to their line; switches keep the page
 	v = M_LuminousValue (o);
 	if (!o->step)
 		v = v != 0 ? 0 : 1;

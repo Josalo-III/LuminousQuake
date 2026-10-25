@@ -445,6 +445,74 @@ static	cmd_function_t	*cmd_functions;		// possible commands to execute
 Cmd_Init
 ============
 */
+/*
+============
+Cmd_After_f
+
+LuminousQuake: lq_after <seconds> <commands>: runs the commands that many
+seconds (realtime) later, so a test script can hold each setting for a fixed
+time rather than a number of frames. Quote commands holding a ';'.
+============
+*/
+#define	MAX_AFTER	64
+static struct
+{
+	double	at;
+	char	text[256];
+} after_queue[MAX_AFTER];
+static int	after_count;
+
+static void Cmd_After_f (void)
+{
+	int		i;
+	char	*text;
+
+	if (Cmd_Argc () < 3)
+	{
+		Con_Printf ("lq_after <seconds> <commands>: runs them that many seconds from now\n");
+		return;
+	}
+	if (after_count == MAX_AFTER)
+	{
+		Con_Printf ("lq_after: %d already waiting\n", MAX_AFTER);
+		return;
+	}
+	text = after_queue[after_count].text;
+	text[0] = 0;
+	for (i = 2 ; i < Cmd_Argc () ; i++)
+	{
+		size_t	used = strlen (text);
+		snprintf (text + used, sizeof(after_queue[0].text) - used, "%s%s", i > 2 ? " " : "", Cmd_Argv (i));
+	}
+	after_queue[after_count].at = realtime + Q_atof (Cmd_Argv (1));
+	after_count++;
+}
+
+/*
+============
+Cmd_RunAfter
+
+LuminousQuake: queues the lq_after commands whose time has come; called once
+a frame, before the command buffer runs.
+============
+*/
+void Cmd_RunAfter (void)
+{
+	int		i;
+
+	for (i = 0 ; i < after_count ; )
+	{
+		if (realtime < after_queue[i].at)
+		{
+			i++;
+			continue;
+		}
+		Cbuf_AddText (after_queue[i].text);
+		Cbuf_AddText ("\n");
+		after_queue[i] = after_queue[--after_count];
+	}
+}
+
 void Cmd_Init (void)
 {
 //
@@ -456,6 +524,7 @@ void Cmd_Init (void)
 	Cmd_AddCommand ("alias",Cmd_Alias_f);
 	Cmd_AddCommand ("cmd", Cmd_ForwardToServer);
 	Cmd_AddCommand ("wait", Cmd_Wait_f);
+	Cmd_AddCommand ("lq_after", Cmd_After_f);	// LuminousQuake
 }
 
 /*

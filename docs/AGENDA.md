@@ -193,6 +193,29 @@ Luminous only. Classic GPU stays palette-exact.
   panel is replaced** (ordered October 24, due within the week). Until then,
   the Acer must be mirrored to it, so macOS reports the XDR's 10× headroom
   and `lq_hdr_peak 2` stands in for the Acer's real peak.
+  **Frame rate collapse found October 24: the Acer, not the code.** With
+  the Acer connected, Luminous at E1M3's start (Release, the user's
+  settings) ran about 150 fps for a few seconds after each map load, then
+  fell to 14–25 and stayed there whatever was switched off (pack, bumps,
+  relief shadows, HDR, shadows). The main thread was waiting on Metal
+  fences at 6% CPU, so it was GPU-bound. The October 19 build (`af82f48`)
+  fell the same way. With the Acer unplugged, the same run held 160–161
+  fps for two minutes through three map reloads, GPU at 100%. The October
+  19 "thermal" fall (100 to 20 fps in 20 s) was likely this too. **It is
+  power:** with the Acer connected for data, mirrored as usual, but drawing
+  its power from a second USB cable, the same run held 150–158 fps for two
+  minutes through three reloads, GPU at 99–100%, though the battery fell
+  from 10% to 8% meanwhile. The Mac's MagSafe port is broken, so all power
+  comes over USB-C, from car adapters. Negotiated wattage (System
+  Information → Power): 27 W from the car's low-power port, 60 W from its
+  "100 W" connector (a 3 A cable or a 20 V 3 A adapter), 45 W through the
+  Acer's pass-through. Under game load this M1 Max draws more than 60 W, so
+  the battery makes up the difference, and with the Acer drawing from the
+  Mac as well, macOS cut GPU power. The adapter does give 100 W through a
+  Thunderbolt 4 cable; the other cables cap it at 60 W. **Confirmed on 100 W**
+  (Acer on its own power): 152–158 fps for two minutes through three
+  reloads, GPU 98–100%, about 87 W drawn in, and the battery still charging
+  (17% to 19%). On 60 W, `host_maxfps 60` keeps the GPU at a moderate clock.
 - This comes before material packs, because specular and normal-mapped light
   look wrong when computed in gamma space.
 
@@ -220,7 +243,7 @@ Luminous Options → **Pack models**
 and **Pack model skins**. Evidence: E1M1 with Rygel's pack: "29 replaced, 1
 with pack skins, of 40", and the view shotgun is the pack's MD3 with the
 setting on and the original with it off. Still to come: gloss specular,
-a parallax fade with distance, liquids, sky and `_bump` maps
+liquids, sky and `_bump` maps
 ([status](MATERIAL_PACKS.md#models-october-23)).
 
 ### 5. The existing Luminous queue
