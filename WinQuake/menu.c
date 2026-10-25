@@ -44,7 +44,7 @@ static int	luminous_cursor;
 // True while a tone slider is being adjusted: the renderer shows its ramp.
 qboolean M_ShowToneRamp (void)
 {
-	return M_SceneUndimmed () && luminous_cursor > 0 &&
+	return M_SceneUndimmed () &&
 		(luminous_cursor == M_LuminousRow ("lq_tone_shoulder") || luminous_cursor == M_LuminousRow ("lq_tone_white"));
 }
 
@@ -2058,9 +2058,10 @@ void M_Video_Key (int key)
 
 /* Switches and sliders for comparing Luminous features: each takes effect at
  * once, so a setting can be flipped back and forth while looking at a scene.
- * Texture-pack settings join as those features arrive. Everything here is
- * Luminous's alone: the bridge sends the tone and glow values to Classic GPU
- * too, but its shaders ignore them (tonemap.frag, emission() in world.frag). */
+ * Everything here is Luminous's alone. Texture-pack settings both GPU
+ * renderers draw (the pack, its colour and glow, models and skins) are on
+ * Video Options. The bridge sends tone and glow values to Classic GPU too, but
+ * its shaders ignore them (tonemap.frag, emission() in world.frag). */
 typedef struct
 {
 	const char	*label, *cvar, *help;
@@ -2070,13 +2071,10 @@ typedef struct
 
 static const luminous_option_t luminous_options[] =
 {
-	{"     High-res textures", "lq_pack_textures", "The pack's colour and glow.", 0, 1, 0, 1, "off", "on"},
 	{"             Bump maps", "lq_pack_bumps", "Texture pack normal maps.", 0, 1, 0, 1, "off", "on"},
 	{"        Parallax depth", "lq_pack_parallax", "Bump depth, of texture size. 0 off.", 0, 0.08f, 0.01f, 0.04f, NULL, NULL},
 	{"        Relief shadows", "lq_pack_relief_shadows", "Bumps shadowed by the brightest light.", 0, 1, 0, 1, "off", "on"},
-	{"       Pack brightness", "lq_pack_brightness", "Match: each texture at its original's.", 0, 1, 0, 1, "as made", "match"},
-	{"           Pack models", "lq_pack_models", "The pack's own models, drawn only.", 0, 1, 0, 1, "off", "on"},
-	{"      Pack model skins", "lq_pack_skins", "Pack skins on original models.", 0, 1, 0, 1, "off", "on"},
+	{"                 Gloss", "lq_pack_gloss", "Pack gloss maps' shine. 0 off.", 0, 2, 0.25f, 1, NULL, NULL},
 	{"               Shadows", "lq_shadows", "Shadow cubes and their filtering.", 0, 1, 0, 1, "off", "on"},
 	{"         Panel shadows", "lq_panel_shadows", "Lit panels: one cube per group.", 0, 1, 0, 1, "per piece", "shared"},
 	{"    Skip clear shadows", "lq_shadow_free", "No lookup where none can fall.", 0, 1, 0, 1, "off", "on"},
@@ -2085,9 +2083,9 @@ static const luminous_option_t luminous_options[] =
 	{"     Fullbright glow x", "lq_emission", "Lava, flames, lit panels.", 1, 8, 0.5f, 3, NULL, NULL},
 	{"      Explosion glow x", "lq_sprite_emission", "Explosions and other sprites.", 1, 8, 0.5f, 3, NULL, NULL},
 };
-// Item 0 chooses the texture pack; the table follows; the last item resets.
+// The table's settings, then Reset sliders as the last row.
 #define	LUMINOUS_TABLE	((int)(sizeof(luminous_options) / sizeof(luminous_options[0])))
-#define	LUMINOUS_ITEMS	(LUMINOUS_TABLE + 2)
+#define	LUMINOUS_ITEMS	(LUMINOUS_TABLE + 1)
 
 // The menu row (cursor position) of a table setting, by its cvar.
 static int M_LuminousRow (const char *cvar)
@@ -2095,13 +2093,9 @@ static int M_LuminousRow (const char *cvar)
 	int		i;
 	for (i = 0 ; i < LUMINOUS_TABLE ; i++)
 		if (!Q_strcmp ((char *)luminous_options[i].cvar, (char *)cvar))
-			return i + 1;
+			return i;
 	return -1;
 }
-
-static char	luminous_packs[32][64];	// texture packs found (LQ_TexturePacks)
-static const char	*luminous_places[32];	// where each one is
-static int	luminous_pack_count;
 
 void M_Menu_Luminous_f (void)
 {
@@ -2109,32 +2103,8 @@ void M_Menu_Luminous_f (void)
 	m_state = m_luminous;
 	m_entersound = true;
 	luminous_tuning = false;
-	luminous_pack_count = LQ_TexturePacks (luminous_packs, luminous_places, 32);
-}
-
-// The choices in order: auto (-2), none (-1), then each pack found.
-static int M_LuminousPackIndex (void)
-{
-	const char	*current = Cvar_VariableString ("lq_texture_pack");
-	int		i;
-
-	if (!current[0] || !Q_strcasecmp ((char *)current, "auto"))	// empty is auto (an early default)
-		return -2;
-	for (i = 0 ; i < luminous_pack_count ; i++)
-		if (!Q_strcasecmp (luminous_packs[i], (char *)current))
-			return i;
-	return -1;	// none, or a folder no longer there
-}
-
-static void M_LuminousPack (int dir)
-{
-	int		at = M_LuminousPackIndex () + dir;
-
-	if (at < -2)
-		at = luminous_pack_count - 1;
-	if (at >= luminous_pack_count)
-		at = -2;
-	Cvar_Set ("lq_texture_pack", at == -2 ? "auto" : at == -1 ? "none" : luminous_packs[at]);
+	if (luminous_cursor >= LUMINOUS_ITEMS)
+		luminous_cursor = 0;
 }
 
 static float M_LuminousValue (const luminous_option_t *o)
@@ -2146,68 +2116,41 @@ static float M_LuminousValue (const luminous_option_t *o)
 	return v;
 }
 
+static void M_LuminousSetting (const luminous_option_t *o, int y)
+{
+	M_Print (16, y, (char *)o->label);
+	if (!o->step)
+		M_Print (220, y, (char *)(M_LuminousValue (o) != 0 ? o->on : o->off));
+	else
+	{
+		M_DrawSlider (220, y, (M_LuminousValue (o) - o->low) / (o->high - o->low));
+		M_Print (320 - 8*4, y, va("%.2g", M_LuminousValue (o)));
+	}
+}
+
 void M_Luminous_Draw (void)
 {
-	int		i, y;
-	const luminous_option_t	*o;
+	int		i;
 
-	if (luminous_tuning)	// the setting being adjusted, alone, over the scene
+	if (luminous_tuning && luminous_cursor < LUMINOUS_TABLE)	// the setting being adjusted, alone, over the scene
 	{
-		o = &luminous_options[luminous_cursor - 1];
-		M_Print (16, 176, (char *)o->label);
-		if (!o->step)
-			M_Print (220, 176, (char *)(M_LuminousValue (o) != 0 ? o->on : o->off));
-		else
-		{
-			M_DrawSlider (220, 176, (M_LuminousValue (o) - o->low) / (o->high - o->low));
-			M_Print (320 - 8*4, 176, va("%.2g", M_LuminousValue (o)));
-		}
+		M_LuminousSetting (&luminous_options[luminous_cursor], 176);
 		M_Print (16, 184, M_ShowToneRamp () ? "Green shoulder, blue peak, red white." :
 			"Up, down or Esc: the whole page.");
 		return;
 	}
 	M_Print ((320 - 16*8)/2, 4, "LUMINOUS OPTIONS");
-	{
-		int		at = M_LuminousPackIndex ();
-		M_Print (16, 32, "          Texture pack");
-		if (at == -2)
-			M_Print (220, 32, luminous_pack_count ? va("auto:%.7s", luminous_packs[0]) : "auto: none");
-		else
-			M_Print (220, 32, at < 0 ? "none" : va("%.12s", luminous_packs[at]));
-	}
 	for (i = 0 ; i < LUMINOUS_TABLE ; i++)
-	{
-		o = &luminous_options[i];
-		y = 40 + i*8;
-		M_Print (16, y, (char *)o->label);
-		if (!o->step)
-			M_Print (220, y, (char *)(M_LuminousValue (o) != 0 ? o->on : o->off));
-		else
-		{
-			M_DrawSlider (220, y, (M_LuminousValue (o) - o->low) / (o->high - o->low));
-			M_Print (320 - 8*4, y, va("%.2g", M_LuminousValue (o)));
-		}
-	}
-	M_Print (16, 40 + i*8, "         Reset sliders");
+		M_LuminousSetting (&luminous_options[i], 32 + i*8);
+	M_Print (16, 32 + i*8, "         Reset sliders");
 	M_DrawCharacter (200, 32 + luminous_cursor*8, 12+((int)(realtime*4)&1));
 	if (Cvar_VariableValue ("lq_renderer") != 2)
 		M_Print (16, 176, "Luminous renderer only.");
-	else if (luminous_cursor == 0)
-	{
-		int		at = M_LuminousPackIndex ();
-		if (!luminous_pack_count)
-			M_Print (16, 176, "No pack: put a .pk3 beside the app");
-		else if (at == -1)
-			M_Print (16, 176, "Original textures only.");
-		else
-			M_Print (16, 176, (char *)luminous_places[at == -2 ? 0 : at]);
-	}
-	else if (luminous_cursor <= LUMINOUS_TABLE)
-		M_Print (16, 176, (char *)luminous_options[luminous_cursor - 1].help);
+	else if (luminous_cursor < LUMINOUS_TABLE)
+		M_Print (16, 176, (char *)luminous_options[luminous_cursor].help);
 	else
 		M_Print (16, 176, "Sliders back to their defaults.");
-	M_Print (16, 184, luminous_cursor != 0 ? "Changes apply at once." :
-		luminous_pack_count ? "A new pack reloads the map." : "or in id1, then reopen this menu.");
+	M_Print (16, 184, "Changes apply at once. Packs: Video.");
 }
 
 void M_Luminous_Key (int key)
@@ -2244,12 +2187,7 @@ void M_Luminous_Key (int key)
 	}
 	S_LocalSound ("misc/menu3.wav");
 	dir = key == K_LEFTARROW ? -1 : 1;
-	if (luminous_cursor == 0)
-	{
-		M_LuminousPack (dir);
-		return;
-	}
-	if (luminous_cursor == LUMINOUS_ITEMS - 1)
+	if (luminous_cursor == LUMINOUS_TABLE)
 	{
 		if (key == K_ENTER)
 			for (i = 0 ; i < LUMINOUS_TABLE ; i++)
@@ -2257,7 +2195,7 @@ void M_Luminous_Key (int key)
 					Cvar_SetValue ((char *)luminous_options[i].cvar, luminous_options[i].base);
 		return;
 	}
-	o = &luminous_options[luminous_cursor - 1];
+	o = &luminous_options[luminous_cursor];
 	luminous_tuning = o->step != 0;	// sliders shrink to their line; switches keep the page
 	v = M_LuminousValue (o);
 	if (!o->step)

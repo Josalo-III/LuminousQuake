@@ -128,10 +128,14 @@ and only print `Unknown command`.
 
 ### LuminousQuake settings
 
-Options → **Luminous Options** sets `lq_texture_pack`, `lq_pack_textures`, `lq_pack_bumps`, `lq_pack_parallax`, `lq_pack_brightness`,
-`lq_shadows`, `lq_panel_shadows`, `lq_shadow_free`, the tone shoulder and white
-point, and both glow gains, each taking effect at once (for comparisons;
-**Reset sliders** restores the parallax depth, tone and glow defaults).
+Options → **Video Options** sets the texture pack and what both GPU renderers
+draw from it: `lq_texture_pack`, `lq_pack_textures`, `lq_pack_brightness`,
+`lq_pack_models`, `lq_pack_skins`. Options → **Luminous Options** sets what
+only Luminous does: `lq_pack_bumps`, `lq_pack_parallax`,
+`lq_pack_relief_shadows`, `lq_pack_gloss`, `lq_shadows`, `lq_panel_shadows`,
+`lq_shadow_free`, the tone shoulder and white point, and both glow gains.
+Each takes effect at once (for comparisons; **Reset sliders** restores the
+Luminous sliders' defaults).
 
 Options → **Video Options** also takes effect at once, except **Resolution**
 and **Fullscreen**, which need a video restart. Those ask first ("Changing this
@@ -172,13 +176,14 @@ frame, without asking. Leaving Video Options saves the profile's config.
 | `lq_shadows` | 1 | 0 lights Luminous without shadow cubes or shadow filtering (for comparisons) |
 | `lq_panel_shadows` | 1 | Experimental: neighbouring pieces of a lit panel share one shadow cube, drawn from their centre with the panel as a wide emitter; 0 gives each piece its own |
 | `lq_shadow_free` | 1 | Skip shadow lookups proved to find no blocker; 0 looks every one up (for comparisons) |
-| `lq_texture_pack` | auto | Luminous: the community texture pack, by name: a `.pk3` beside the app, a `.pk3` in `id1` or the mod's folder, or a folder of the install (such as `rygel_ultra`), searched in that order; `auto` (or empty) takes the first found, `none` none. Only its textures are used; changing it reloads the map (saved) |
-| `lq_pack_textures` | 1 | Luminous: the texture pack's colour and glow in place of the 8-bit textures (saved) |
+| `lq_texture_pack` | auto | GPU renderers: the community texture pack, by name: a `.pk3` beside the app, a `.pk3` in `id1` or the mod's folder, or a folder of the install (such as `rygel_ultra`), searched in that order; `auto` (or empty) takes the first found, `none` none. Only its textures are used; changing it reloads the map (saved) |
+| `lq_pack_textures` | 1 | GPU renderers: the texture pack's colour and glow in place of the 8-bit textures. Classic GPU lights them by its light grades, as GLQuake-era engines did; Luminous lights them in linear light (saved) |
 | `lq_pack_bumps` | 1 | Luminous: the pack's normal maps shape direct light (saved) |
+| `lq_pack_gloss` | 1 | Luminous: shine from the pack's `_gloss` maps, as DarkPlaces' Blinn-Phong (exponent 32) from every runtime light, times this (0–2 in the menu; 0 off). The gloss rides in the normal map, so it needs Bump maps on (saved) |
 | `lq_pack_parallax` | 0.04 | Luminous: parallax depth from the pack's normal-map height, as a fraction of the texture's size (DarkPlaces' offset-mapping scale); 0 off (saved) |
 | `lq_pack_relief_shadows` | 1 | Luminous: the height field shadows itself from each pixel's strongest light, at the parallax depth (so off with parallax); experimental (saved) |
 | `lq_pack_detail_cull` | 1 | Luminous: where a pack texel covers less than a pixel, parallax and relief shadows fade out (mip levels 1.5–3) and bumped normals too (4–6), saving their texture reads; 0 runs them everywhere, for comparisons (saved) |
-| `lq_pack_brightness` | 1 | Luminous: 1 scales each pack texture to its original's mean brightness (maps were lit for those); 0 shows the pack as made (saved) |
+| `lq_pack_brightness` | 1 | GPU renderers: 1 scales each pack texture to its original's mean brightness (maps were lit for those); 0 shows the pack as made (saved) |
 | `lq_tone_shoulder` | 0.8 | Luminous: where linear gives way to the highlight curve, as a fraction of the display's ceiling (SDR white, or the HDR headroom): light below it is shown unchanged, above it highlights roll off toward the ceiling (0.1–0.95). On a 2× HDR display 0.8 starts the curve at 1.6× SDR white |
 | `lq_tone_white` | 6 | Luminous: the light that reaches the display's ceiling, as a multiple of that ceiling (SDR white, or the HDR headroom), so the whole range acts at any headroom (1–64; the menu offers 1–12). 1 is the hardest knee: straight from the shoulder to the peak, then clipped. On a 2× HDR display 6 is 12× SDR white |
 | `lq_tone_ramp` | 0 | Luminous: 1 draws a band of known light levels (1/32 to 16× the ceiling, log scale; grey above, lava orange below) through the tone curve near the top of the frame, marked green at the shoulder, blue at the ceiling (SDR white or the HDR headroom) and red at the white point. Shown by itself while Tone: shoulder or Tone: white point is adjusted |

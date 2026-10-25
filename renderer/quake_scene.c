@@ -894,7 +894,7 @@ int LQ_QuakeSceneFromWorld(lq_scene *s, char *error, size_t size)
     return LQ_QuakeSceneLoad(0, NULL, name, s, error, size);
 }
 /* Community texture packs. */
-enum { PACK_COLOR, PACK_NORMAL, PACK_GLOW, PACK_KINDS };
+enum { PACK_COLOR, PACK_NORMAL, PACK_GLOW, PACK_GLOSS, PACK_KINDS };
 /* Each image's file as read; entries of a .pk3 are still raw (archived). */
 typedef struct { lq_archive_blob files[PACK_KINDS]; uint8_t archived[PACK_KINDS]; } pack_files;
 typedef struct { lq_scene *scene; pack_files *files; uint32_t found[PACK_KINDS]; } pack_job;
@@ -970,7 +970,7 @@ static void PackDecode(void *opaque, size_t begin, size_t end)
     for (size_t i = begin; i < end; ++i) {
         lq_material *m = &job->scene->materials[i];
         pack_files *f = &job->files[i];
-        lq_image glow = {0};
+        lq_image glow = {0}, gloss = {0};
         for (int k = 0; k < PACK_KINDS; ++k) if (f->archived[k]) LQ_ArchiveExpand(&f->files[k]);
         if (LQ_PackDecode(f->files[PACK_COLOR].data, f->files[PACK_COLOR].size, &m->pack_color)) {
             LQ_PackSetAlpha(&m->pack_color, 0);
@@ -980,10 +980,14 @@ static void PackDecode(void *opaque, size_t begin, size_t end)
             free(glow.pixels);
         }
         LQ_PackDecode(f->files[PACK_NORMAL].data, f->files[PACK_NORMAL].size, &m->pack_normal);
+        /* The gloss rides in the normal map's blue (LQ_PackGlossIntoNormal). */
+        LQ_PackDecode(f->files[PACK_GLOSS].data, f->files[PACK_GLOSS].size, &gloss);
+        LQ_PackGlossIntoNormal(&m->pack_normal, &gloss);
+        free(gloss.pixels);
         for (int k = 0; k < PACK_KINDS; ++k) { free(f->files[k].data); f->files[k].data = NULL; }
     }
 }
-uint32_t LQ_QuakeSceneLoadPack(lq_scene *s, const char *pack, lq_range_runner run, uint32_t counts[3])
+uint32_t LQ_QuakeSceneLoadPack(lq_scene *s, const char *pack, lq_range_runner run, uint32_t counts[4])
 {
     for (int k = 0; k < PACK_KINDS; ++k) counts[k] = 0;
     if (!s || !s->material_count || !loaded_world || !run) return 0;
@@ -1001,7 +1005,7 @@ uint32_t LQ_QuakeSceneLoadPack(lq_scene *s, const char *pack, lq_range_runner ru
         char name[32], lower[32];
         snprintf(name, sizeof(name), "%s", m->name);
         for (int k = 0; name[k]; ++k) lower[k] = (char)tolower((unsigned char)name[k]), lower[k + 1] = 0;
-        static const char *suffixes[PACK_KINDS][2] = {{"", NULL}, {"_norm", NULL}, {"_glow", "_luma"}};
+        static const char *suffixes[PACK_KINDS][2] = {{"", NULL}, {"_norm", NULL}, {"_glow", "_luma"}, {"_gloss", NULL}};
         pack_files *f = &files[i];
         for (int k = 0; k < PACK_KINDS; ++k)
             for (int j = 0; j < 2 && !f->files[k].data && suffixes[k][j]; ++j)
@@ -1009,6 +1013,8 @@ uint32_t LQ_QuakeSceneLoadPack(lq_scene *s, const char *pack, lq_range_runner ru
                     PackFile(pack, archive, map, lower, suffixes[k][j], &f->files[k], &f->archived[k]);
         /* A glow belongs to a replacement colour image (as in DarkPlaces). */
         if (!f->files[PACK_COLOR].data) { free(f->files[PACK_GLOW].data); f->files[PACK_GLOW].data = NULL; }
+        /* So does a gloss: specular on the original 8-bit texture would be invented. */
+        if (!f->files[PACK_COLOR].data) { free(f->files[PACK_GLOSS].data); f->files[PACK_GLOSS].data = NULL; }
     }
     LQ_ArchiveClose(archive);
     pack_job job = {s, files, {0}};
@@ -1048,6 +1054,10 @@ uint32_t LQ_QuakeSceneLoadPack(lq_scene *s, const char *pack, lq_range_runner ru
         const lq_material *m = &s->materials[i];
         counts[PACK_COLOR] += m->pack_color.pixels != NULL;
         counts[PACK_NORMAL] += m->pack_normal.pixels != NULL;
+        if (m->pack_normal.pixels) {
+            size_t texels = (size_t)m->pack_normal.width * m->pack_normal.height;
+            for (size_t t = 0; t < texels; ++t) if (m->pack_normal.pixels[t * 4 + 2]) { ++counts[PACK_GLOSS]; break; }
+        }
         if (m->pack_color.pixels) {
             size_t texels = (size_t)m->pack_color.width * m->pack_color.height;
             for (size_t t = 0; t < texels; ++t) if (m->pack_color.pixels[t * 4 + 3]) { ++counts[PACK_GLOW]; break; }

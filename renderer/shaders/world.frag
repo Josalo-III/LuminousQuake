@@ -33,7 +33,7 @@ layout(set=3,binding=0,std140) uniform Surface {
     vec4 bounce_weights; // live style value per bounce layer
     vec4 face_light; // x: 1 + the slot brightest everywhere on this face (found on the CPU); 0 unknown
     uvec4 shadow_free; // slots whose shadow lookup here provably finds no blocker (LQ_SceneFindShadowFree)
-    vec4 pack; // x: draw the pack's colour; y: shade direct light by its normal map; z: colour gain
+    vec4 pack; // x: draw the pack's colour; y: shade direct light by its normal map; z: colour gain; w: gloss intensity (Luminous)
     vec4 relief; // x: parallax depth, as a fraction of the texture's size (0 off); y: height held at the face; z: relief shadows; w: cull pack detail by footprint
     vec4 entity; // x: a translucent entity's opacity (flag 4096)
 } surface;
@@ -403,14 +403,27 @@ void textureFrame(vec3 n, vec2 coord, out vec3 du, out vec3 dv) {
     du = (dp2perp * duv1.x + dp1perp * duv2.x) * inverse;
     dv = (dp2perp * duv1.y + dp1perp * duv2.y) * inverse;
 }
-// The pack's normal map in world space, sampled at `coord`. DarkPlaces' _norm
-// red points along the image's rows and green up it; texture rows run down
-// the image, so green turns toward decreasing t.
-vec3 bumpNormal(vec3 n, vec3 du, vec3 dv, vec2 coord, vec2 dx, vec2 dy) {
+// The pack's normal map in world space, from a texel of it (`texel`, as
+// sampled). DarkPlaces' _norm red points along the image's rows and green up
+// it; texture rows run down the image, so green turns toward decreasing t.
+// The loader keeps x and y in red and green and puts gloss in blue
+// (LQ_PackGlossIntoNormal), so z is rebuilt: the normal points out of the face.
+vec3 bumpNormal(vec3 n, vec3 du, vec3 dv, vec4 texel) {
     float scale = inversesqrt(max(max(dot(du, du), dot(dv, dv)), 1e-20));
-    vec3 m = textureGrad(pack_normal, coord, dx, dy).rgb * 2.0 - 1.0;
-    vec3 bumped = du * (scale * m.x) - dv * (scale * m.y) + n * m.z;
+    vec2 m = texel.rg * 2.0 - 1.0;
+    float mz = sqrt(max(1.0 - dot(m, m), 0.0));
+    vec3 bumped = du * (scale * m.x) - dv * (scale * m.y) + n * mz;
     return dot(bumped, bumped) > 1e-12 ? normalize(bumped) : n;
+}
+// Specular from a pack gloss map, as DarkPlaces' Blinn-Phong with its default
+// exponent (32): the half vector between light and eye against the bumped
+// normal. Weighted by the light's own arrival (incidence, falloff, shadow)
+// and the gloss strength; it adds light that is not the surface's colour.
+float glossTerm(vec3 shading, vec3 to_light, vec3 to_eye) {
+    vec3 h = to_light + to_eye;
+    float l = dot(h, h);
+    if (l < 1e-8) return 0.0;
+    return pow(max(dot(shading, h * inversesqrt(l)), 0.0), 32.0);
 }
 // Parallax, as DarkPlaces' relief mapping: the normal map's alpha is height,
 // spanning surface.relief.x of the texture's size. The texture's mean height
@@ -600,6 +613,8 @@ void main() {
     // Unlit surfaces (sky, opaque liquids) take colormap row 32, the palette's
     // own colours, as software Quake draws them; row 0 is twice that, clipped.
     float index_value, grade = 32.0;
+    float gloss = 0.0;                         // gloss strength here (Luminous, pack gloss maps)
+    vec3 specular = vec3(0.0), shine = vec3(0.0); // gloss light in brightness units, then as light
     vec3 direct_tint = vec3(1.0);
     if ((flags & 1) != 0) {
         vec3 direction = world_position - surface.camera_origin.xyz;
@@ -629,9 +644,12 @@ void main() {
                 vec3 normal = normalize(world_normal);
                 vec3 shading = normal;
                 if (surface.pack.y > 0.5 && bump_weight > 0.0) {
-                    shading = bumpNormal(normal, frame_du, frame_dv, sample_uv, frame_dx, frame_dy);
+                    vec4 texel = textureGrad(pack_normal, sample_uv, frame_dx, frame_dy);
+                    shading = bumpNormal(normal, frame_du, frame_dv, texel);
                     if (bump_weight < 1.0) shading = normalize(mix(normal, shading, bump_weight));
+                    gloss = texel.b * surface.pack.w * bump_weight;
                 }
+                vec3 to_eye = normalize(surface.camera_origin.xyz - world_position);
                 vec3 illumination = vec3(0.0);
                 // Shadows are filtered only where they can be seen. A light
                 // below the faint level, or below the dominance ratio of the
@@ -682,13 +700,18 @@ void main() {
                     float direct = lightReach(i, normal, shading, diffuse_effect, liquid, opacity, submerged, toward);
                     if (direct < 0.01) continue;
                     vec3 c = lights.color_strength[i].rgb;
-                    if (i == lead) { illumination += c * direct * brightest_shadow; continue; }
+                    if (i == lead) {
+                        illumination += c * direct * brightest_shadow;
+                        if (gloss > 0.0) specular += c * (direct * brightest_shadow * glossTerm(shading, toward, to_eye));
+                        continue;
+                    }
                     float value = direct * max(c.r, max(c.g, c.b));
                     float needed = max(lights.color_space.y, strongest * lights.color_space.z);
                     float weight = needed > 0.0 ? clamp(value / needed - 1.0, 0.0, 1.0) : 1.0;
                     if (weight > 0.0)
                         direct *= mix(1.0, lightShadow(i,diffuse_effect ? toward : normal,value,diffuse_effect), weight);
                     illumination += c * direct;
+                    if (gloss > 0.0) specular += c * (direct * glossTerm(shading, toward, to_eye));
                 }
                 // Static-world bounce from those lights, driven by live styles.
                 // Bounce under a translucent liquid mostly arrived through its surface.
@@ -743,6 +766,8 @@ void main() {
                 // with the light's hue kept; tone mapping rolls highlights off.
                 vec3 capped = brightness > 1024.0 ? illumination * (1024.0 / brightness) : illumination;
                 lit_radiance = pow(max(capped / 128.0, vec3(0.0)), vec3(lights.color_space.x));
+                // Gloss shine, in the same brightness units, becomes light the same way.
+                if (gloss > 0.0) shine = gloss * pow(max(specular * lights.tuning.x / 128.0, vec3(0.0)), vec3(lights.color_space.x));
                 linear_lit = !lit_effect;
             } else {
                 brightness = dot(texture(lightmap, light_uv), surface.light_weights) * 255.0;
@@ -779,7 +804,7 @@ void main() {
             vec4 hd = textureGrad(pack_color, sample_uv, frame_dx, frame_dy);
             // z matches the original texture's brightness (lq_pack_brightness);
             // the glow keeps the pack's own level.
-            color = vec4(packAlbedo(hd.rgb, surface.pack.z) * lit_radiance + packAlbedo(hd.rgb, 1.0) * (hd.a * emission()), 1.0);
+            color = vec4(packAlbedo(hd.rgb, surface.pack.z) * lit_radiance + packAlbedo(hd.rgb, 1.0) * (hd.a * emission()) + shine, 1.0);
         }
         written_linear = true;
     } else if (lights.parameters.y != 0u && surface.pack.x > 0.5 && (flags & 4) != 0) {
@@ -789,6 +814,15 @@ void main() {
         color = vec4(packAlbedo(hd.rgb, surface.pack.z) + packAlbedo(hd.rgb, 1.0) * (hd.a * emission()), 1.0);
         written_linear = true;
     } else if (lights.parameters.y != 0u && index < 224.0) color.rgb *= direct_tint;
+    else if (lights.parameters.y == 0u && surface.pack.x > 0.5 && (flags & 9) == 0) {
+        // Classic GPU: the pack's colour lit as the palette is, by the
+        // colormap's scale at this light grade (row 32 is 1x, row 0 2x), and
+        // its glow unlit, as GLQuake-era engines drew replacement textures.
+        // Through paletteLike, so the screen tints and Quake's gamma reach it.
+        vec4 hd = textureGrad(pack_color, sample_uv, frame_dx, frame_dy);
+        vec3 base = paletteLike(hd.rgb * pow(surface.pack.z, 1.0 / DISPLAY_GAMMA));
+        color = vec4(min(base * ((64.0 - grade) / 32.0) + paletteLike(hd.rgb) * hd.a, vec3(1.0)), 1.0);
+    }
     if (sky_color.a > 0.0) { color = sky_color; written_linear = false; }
     if (smooth_sprite) {
         vec4 s = spriteSample(uv);

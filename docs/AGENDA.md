@@ -242,8 +242,12 @@ shadows** (October 24, first version: [status](MATERIAL_PACKS.md#relief-shadows-
 Luminous Options → **Pack models**
 and **Pack model skins**. Evidence: E1M1 with Rygel's pack: "29 replaced, 1
 with pack skins, of 40", and the view shotgun is the pack's MD3 with the
-setting on and the original with it off. Still to come: gloss specular,
-liquids, sky and `_bump` maps
+setting on and the original with it off. **October 24:** gloss specular
+(Luminous Options → **Gloss**), and Classic GPU draws packs too (colour,
+glow, models, skins and skyboxes; bumps, parallax, relief shadows and gloss
+stay Luminous's), with the shared pack settings moved to Video Options
+([status](MATERIAL_PACKS.md#implemented-first-stage-october-20)). Still to
+come: liquids, sky and `_bump` maps
 ([status](MATERIAL_PACKS.md#models-october-23)).
 
 ### 5. The existing Luminous queue

@@ -111,6 +111,12 @@ static int LoadSkin(const char *pack, lq_archive *archive, const char *base, flo
     free(glow.pixels);
     snprintf(name, sizeof(name), "%s_norm", base);
     LQ_QuakeLoadImage(pack, archive, name, &out->pack_normal);
+    /* Its gloss rides in the normal map's blue, as for world textures. */
+    lq_image gloss = {0};
+    snprintf(name, sizeof(name), "%s_gloss", base);
+    LQ_QuakeLoadImage(pack, archive, name, &gloss);
+    LQ_PackGlossIntoNormal(&out->pack_normal, &gloss);
+    free(gloss.pixels);
     float mean = LQ_PackLinearMean(&out->pack_color);
     out->pack_gain = original > 0 && mean > 1e-5f ? fminf(fmaxf(original / mean, 0.5f), 2.0f) : 1;
     out->indices = (lq_image){1, 1, 1, &placeholder};

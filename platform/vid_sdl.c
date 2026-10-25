@@ -451,9 +451,22 @@ static qboolean video_menu_active;
 static qboolean video_changed; /* a setting changed here: the config is saved on leaving */
 static int video_pending_fullscreen;
 void M_ConfirmVidRestart(void (*apply)(void));
+static char video_packs[32][64];   /* texture packs found (LQ_TexturePacks) */
+static const char *video_places[32];
+static int video_pack_count;
+/* The pack choices in order: auto (-2), none (-1), then each pack found. */
+static int VideoPackIndex(void)
+{
+    const char *current = Cvar_VariableString("lq_texture_pack");
+    if (!current[0] || !Q_strcasecmp((char *)current, "auto")) return -2;  /* empty is auto (an early default) */
+    for (int i = 0; i < video_pack_count; ++i)
+        if (!Q_strcasecmp(video_packs[i], (char *)current)) return i;
+    return -1;  /* none, or a folder no longer there */
+}
 static void VideoMenuInit(void)
 {
     if (video_menu_active) return;
+    video_pack_count = LQ_TexturePacks(video_packs, video_places, 32);
     video_choice = 5;
     for (int i = 0; i < (int)(sizeof(resolutions) / sizeof(resolutions[0])); ++i)
         if (vid_width.value == resolutions[i][0] && vid_height.value == resolutions[i][1]) video_choice = i;
@@ -529,22 +542,34 @@ static void VideoMenuDraw(void)
     M_Print(88, 4, "VIDEO OPTIONS");
     M_Print(32, 20, "Resolution");
     M_Print(168, 20, va("%d x %d", resolutions[video_choice][0], resolutions[video_choice][1]));
-    M_Print(32, 30, "Horizontal FOV"); M_Print(168, 30, va("%.0f deg", video_fov));
-    M_Print(32, 40, "Fullscreen"); M_Print(168, 40, video_fullscreen ? "on" : "off");
-    M_Print(32, 50, "VSync"); M_Print(168, 50, video_vsync ? "on" : "off");
-    M_Print(32, 60, "GPU filtering"); M_Print(168, 60, video_filter ? "smooth" : "crisp");
-    M_Print(32, 70, "GPU anti-alias"); M_Print(168, 70, video_msaa == 2 ? "4x MSAA" : video_msaa == 1 ? "2x MSAA" : "off");
-    M_Print(32, 80, "GPU mipmaps"); M_Print(168, 80, video_mipmaps == 2 ? "trilinear" : video_mipmaps == 1 ? "nearest level" : "off");
-    M_Print(32, 90, "GPU anisotropy"); M_Print(168, 90, video_anisotropy ? va("%dx", anisotropy_levels[video_anisotropy]) : "off");
-    M_Print(32, 100, "GPU water"); M_Print(168, 100, video_water ? va("%d%% opaque", (int)(water_levels[video_water] * 100 + 0.5f)) : "opaque");
-    M_Print(32, 110, "Tube camera"); M_Print(168, 110, tube_cameras[video_tubes]);
-    M_Print(32, 120, "3D particles"); M_Print(168, 120, video_particles ? "on" : "off");
-    M_Print(32, 130, "Smooth animation"); M_Print(168, 130, video_lerp ? "on" : "off");
-    M_Print(32, 140, "Fog"); M_Print(168, 140, video_fog ? "map's" : "off");
-    M_Print(32, 150, "HDR"); M_Print(168, 150, video_hdr ? "auto" : "off");
-    M_Print(32, 160, "HDR peak"); M_Print(168, 160, video_peak ? va("%gx white", peak_levels[video_peak]) :
+    M_Print(32, 28, "Horizontal FOV"); M_Print(168, 28, va("%.0f deg", video_fov));
+    M_Print(32, 36, "Fullscreen"); M_Print(168, 36, video_fullscreen ? "on" : "off");
+    M_Print(32, 44, "VSync"); M_Print(168, 44, video_vsync ? "on" : "off");
+    M_Print(32, 52, "GPU filtering"); M_Print(168, 52, video_filter ? "smooth" : "crisp");
+    M_Print(32, 60, "GPU anti-alias"); M_Print(168, 60, video_msaa == 2 ? "4x MSAA" : video_msaa == 1 ? "2x MSAA" : "off");
+    M_Print(32, 68, "GPU mipmaps"); M_Print(168, 68, video_mipmaps == 2 ? "trilinear" : video_mipmaps == 1 ? "nearest level" : "off");
+    M_Print(32, 76, "GPU anisotropy"); M_Print(168, 76, video_anisotropy ? va("%dx", anisotropy_levels[video_anisotropy]) : "off");
+    M_Print(32, 84, "GPU water"); M_Print(168, 84, video_water ? va("%d%% opaque", (int)(water_levels[video_water] * 100 + 0.5f)) : "opaque");
+    M_Print(32, 92, "Tube camera"); M_Print(168, 92, tube_cameras[video_tubes]);
+    M_Print(32, 100, "3D particles"); M_Print(168, 100, video_particles ? "on" : "off");
+    M_Print(32, 108, "Smooth animation"); M_Print(168, 108, video_lerp ? "on" : "off");
+    M_Print(32, 116, "Fog"); M_Print(168, 116, video_fog ? "map's" : "off");
+    M_Print(32, 124, "HDR"); M_Print(168, 124, video_hdr ? "auto" : "off");
+    M_Print(32, 132, "HDR peak"); M_Print(168, 132, video_peak ? va("%gx white", peak_levels[video_peak]) :
         video_peak_custom ? va("%gx white", video_peak_custom) : "as reported");
-    M_DrawCharacter(16, 20 + video_cursor * 10, 12 + ((int)(realtime * 4) & 1));
+    /* Texture packs: both GPU renderers draw the pack's colour, glow, models
+     * and skins (Luminous Options has what only Luminous does with it). */
+    {
+        int at = VideoPackIndex();
+        M_Print(32, 140, "Texture pack");
+        M_Print(168, 140, at == -2 ? (video_pack_count ? va("auto: %.11s", video_packs[0]) : "auto: none") :
+            at < 0 ? "none" : va("%.17s", video_packs[at]));
+        M_Print(32, 148, "Hi-res textures"); M_Print(168, 148, Cvar_VariableValue("lq_pack_textures") ? "on" : "off");
+        M_Print(32, 156, "Pack brightness"); M_Print(168, 156, Cvar_VariableValue("lq_pack_brightness") ? "match" : "as made");
+        M_Print(32, 164, "Pack models"); M_Print(168, 164, Cvar_VariableValue("lq_pack_models") ? "on" : "off");
+        M_Print(32, 172, "Pack model skins"); M_Print(168, 172, Cvar_VariableValue("lq_pack_skins") ? "on" : "off");
+    }
+    M_DrawCharacter(16, 20 + video_cursor * 8, 12 + ((int)(realtime * 4) & 1));
     M_Print(32, 182, va("Current: %u x %u", vid.width* (LQ_UIActive() ? LQ_UIScale() : 1), vid.height* (LQ_UIActive() ? LQ_UIScale() : 1)));
     if (video_cursor == 0 && video_choice != VideoCurrentResolution())
         M_Print(32, 192, "Enter uses it; restarts video.");
@@ -566,6 +591,18 @@ static void VideoMenuDraw(void)
         M_Print(32, 192, "GPU: HDR when the display is.");
     else if (video_cursor == 14)
         M_Print(32, 192, "Cap highlights if they clip.");
+    else if (video_cursor == 15) {
+        int at = VideoPackIndex();
+        M_Print(32, 192, !video_pack_count ? "No pack: put a .pk3 beside the app." :
+            at == -1 ? "Original textures only." : "A new pack reloads the map.");
+    } else if (video_cursor == 16)
+        M_Print(32, 192, "GPU: the pack's colour and glow.");
+    else if (video_cursor == 17)
+        M_Print(32, 192, "Match: each at its original's level.");
+    else if (video_cursor == 18)
+        M_Print(32, 192, "GPU: the pack's own models.");
+    else if (video_cursor == 19)
+        M_Print(32, 192, "GPU: pack skins on original models.");
     else M_Print(32, 192, "Changes apply at once.");
 }
 static void VideoMenuKey(int key)
@@ -579,7 +616,7 @@ static void VideoMenuKey(int key)
     if (key == K_UPARROW || key == K_DOWNARROW) {
         int current = VideoCurrentResolution();
         if (current >= 0) video_choice = current;  /* a resolution browsed and left goes back */
-        video_cursor = (video_cursor + (key == K_UPARROW ? 14 : 1)) % 15;
+        video_cursor = (video_cursor + (key == K_UPARROW ? 19 : 1)) % 20;
         return;
     }
     if (key != K_LEFTARROW && key != K_RIGHTARROW && key != K_ENTER) return;
@@ -592,6 +629,20 @@ static void VideoMenuKey(int key)
     if (video_cursor == 2) {
         video_pending_fullscreen = !video_fullscreen;
         M_ConfirmVidRestart(VideoApplyFullscreen);
+        return;
+    }
+    if (video_cursor >= 15) {  /* texture packs: their settings change directly, no restart */
+        if (video_cursor == 15) {
+            int at = VideoPackIndex() + (key == K_LEFTARROW ? -1 : 1);
+            if (at < -2) at = video_pack_count - 1;
+            if (at >= video_pack_count) at = -2;
+            Cvar_Set("lq_texture_pack", at == -2 ? "auto" : at == -1 ? "none" : video_packs[at]);
+        } else {
+            static const char *switches[] = {"lq_pack_textures", "lq_pack_brightness", "lq_pack_models", "lq_pack_skins"};
+            const char *name = switches[video_cursor - 16];
+            Cvar_SetValue((char *)name, Cvar_VariableValue((char *)name) != 0 ? 0 : 1);
+        }
+        video_changed = true;
         return;
     }
     if (video_cursor == 1) {

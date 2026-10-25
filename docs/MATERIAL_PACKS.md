@@ -365,9 +365,38 @@ as `none`. The console now says which pack a map used, or why none.
   texture for speed. E1M3's start with the auto-chosen pack: the frame darkens
   about 5% and the mortar under the torch deepens; the direction still
   needs judging by eye with a moving light.
+- **Classic GPU draws packs (October 24).** The user decided that Classic
+  GPU should have texture packs as GLQuake-era engines did, limited to what
+  that rendering supports. The pack loads for both GPU renderers. Classic
+  draws its colour lit by the colormap's scale at each light grade
+  ((64 − grade) / 32: row 32 is 1×, row 0 2×), through the screen tints and
+  Quake's gamma as the palette is, with glow added unlit; and the pack's
+  models, skins and skyboxes. Bump maps, parallax, relief shadows and gloss
+  stay Luminous's. The pack settings that both renderers use moved to Video
+  Options (texture pack, high-res textures, pack brightness, pack models,
+  pack model skins); Luminous Options keeps Luminous's own. E1M3's start in
+  Classic, pack on against off: 88% of pixels differ, 33% by more than 16
+  levels.
+- **Gloss specular (October 24)** (Luminous Options → **Gloss**,
+  `lq_pack_gloss`, saved, default 1, 0–2): `_gloss` maps, loaded for world
+  textures and pack model skins when a pack colour image exists. The shader
+  has all 16 texture bindings in use, so the gloss rides in the normal map:
+  red and green hold the normal's x and y, z is rebuilt (it points out of
+  the face), blue holds the gloss's brightest channel, alpha the height
+  (`LQ_PackGlossIntoNormal`; a gloss of another size is resampled; gloss
+  without `_norm` gets a flat normal). Mips average x and y as vectors and
+  blue and alpha as stored. Every runtime light adds DarkPlaces'
+  Blinn-Phong, exponent 32, against the bumped normal, weighted by the
+  light's arrival (falloff, incidence, shadow) and the gloss; the sum
+  becomes light as illumination does and adds to the pack colour. Per-pixel
+  exponent (gloss alpha) and gloss colour are not used: Rygel's 735 gloss
+  maps are JPGs with no alpha, and grey. It needs Bump maps on, and fades
+  out with the bumps by footprint. E1M3 with Rygel: 46 of 49 replaced
+  textures have gloss; Gloss 1 against 0 changes 2.4% of pixels by more
+  than 16 levels, 2 against 0 4.4%.
 - **Not yet:** liquids, sky, masked (`{`) textures and sprites keep their
-  original textures (models since October 23: [Models](#models-october-23)); `_gloss` specular and `_bump` height-only maps
-  are later stages.
+  original textures (models since October 23: [Models](#models-october-23)); `_bump` height-only maps
+  are a later stage.
 - **Detail by footprint (October 24)** (`lq_pack_detail_cull`, saved,
   default on): where a pack texel covers less than a pixel, the costly work
   stops. The pack's mip level is worked out once per pixel from screen

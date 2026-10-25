@@ -92,6 +92,9 @@ static cvar_t lq_pack_relief_shadows = {"lq_pack_relief_shadows", "1", true};
  * levels 1.5 and 3 and stop past it, bumped normals between 4 and 6. 0 runs
  * them everywhere (for comparisons). */
 static cvar_t lq_pack_detail_cull = {"lq_pack_detail_cull", "1", true};
+/* Specular from the pack's _gloss maps, as DarkPlaces' Blinn-Phong (exponent
+ * 32) times this; 0 off. Luminous only: it rides on the normal map. */
+static cvar_t lq_pack_gloss = {"lq_pack_gloss", "1", true};
 /* 1: each pack texture at its original's mean brightness, so maps lit for the
  * 8-bit textures keep their level; 0: the pack as its author made it. */
 static cvar_t lq_pack_brightness = {"lq_pack_brightness", "1", true};
@@ -157,7 +160,7 @@ static uint64_t SceneKey(void)
     if (!m) return 0;
     h = Hash(h, com_gamedir, strlen(com_gamedir) + 1); h = Hash(h, m->name, strlen(m->name) + 1);
     h = Hash(h, settings, sizeof(settings));
-    if (luminous) { ChooseTexturePack(); h = Hash(h, texture_pack, strlen(texture_pack) + 1); }
+    ChooseTexturePack(); h = Hash(h, texture_pack, strlen(texture_pack) + 1);  /* both GPU renderers draw packs */
     if (m->vertexes) h = Hash(h, m->vertexes, (size_t)m->numvertexes * sizeof(*m->vertexes));
     if (m->entities) h = Hash(h, m->entities, strlen(m->entities));
     for (int i = 0; i < m->numsurfaces; ++i) { /* each face's lightmap, as baked */
@@ -246,7 +249,7 @@ void LQ_RenderBridgeRegister(void)
 {
     Cvar_RegisterVariable(&lq_scene_cache_mb); Cvar_RegisterVariable(&lq_cull); Cvar_RegisterVariable(&lq_shadows);
     Cvar_RegisterVariable(&lq_panel_shadows); Cvar_RegisterVariable(&lq_shadow_free);
-    Cvar_RegisterVariable(&lq_pack_textures); Cvar_RegisterVariable(&lq_pack_bumps); Cvar_RegisterVariable(&lq_pack_parallax); Cvar_RegisterVariable(&lq_pack_relief_shadows); Cvar_RegisterVariable(&lq_pack_detail_cull); Cvar_RegisterVariable(&lq_texture_pack);
+    Cvar_RegisterVariable(&lq_pack_textures); Cvar_RegisterVariable(&lq_pack_bumps); Cvar_RegisterVariable(&lq_pack_parallax); Cvar_RegisterVariable(&lq_pack_relief_shadows); Cvar_RegisterVariable(&lq_pack_detail_cull); Cvar_RegisterVariable(&lq_pack_gloss); Cvar_RegisterVariable(&lq_texture_pack);
     Cvar_RegisterVariable(&lq_pack_brightness);
     Cvar_RegisterVariable(&lq_pack_models); Cvar_RegisterVariable(&lq_pack_skins);
     Cvar_RegisterVariable(&lq_fog); Cvar_RegisterVariable(&r_skyfog);
@@ -398,7 +401,7 @@ void LQ_RenderBegin(void)
     memset(preserve, 0, count);
     /* A tube's colour is in its bounce, so a camera recording another colour reloads the map's lighting. */
     if (loaded && luminous && LQ_FluorescentCast(TubeCamera()) != LQ_FluorescentCast(tinted_camera)) LQ_RenderMapChanged();
-    if (loaded && luminous && strcmp(loaded_pack, lq_texture_pack.string)) LQ_RenderMapChanged();
+    if (loaded && strcmp(loaded_pack, lq_texture_pack.string)) LQ_RenderMapChanged();
     if (!loaded && cls.state == ca_connected && cl.worldmodel && !con_forcedup) {
         luminous = Cvar_VariableValue("lq_renderer") == 2;
         uint64_t key = SceneKey();
@@ -432,14 +435,18 @@ void LQ_RenderBegin(void)
                     map_scene.sky_light[0], map_scene.sky_light[1], map_scene.sky_light[2], Sys_FloatTime() - started,
                     tracer.passes ? "GPU" : "CPU");
             else Con_Printf("Luminous bounce unavailable: %s\n", error);
+        }
+        if (!cached) {
             /* A community texture pack in any game folder: its images are kept
-             * with the scene, so lq_pack_textures and lq_pack_bumps switch at once. */
-            started = Sys_FloatTime();
-            uint32_t found[3], packed = LQ_QuakeSceneLoadPack(&map_scene, texture_pack_path, LQ_JobsRunRange, found);
+             * with the scene, so lq_pack_textures and lq_pack_bumps switch at
+             * once. Both GPU renderers draw its colour and glow; only Luminous
+             * shades with its normal maps and gloss. */
+            double started = Sys_FloatTime();
+            uint32_t found[4], packed = LQ_QuakeSceneLoadPack(&map_scene, texture_pack_path, LQ_JobsRunRange, found);
             if (packed)
-                Con_DPrintf("Texture pack%s%s: %u of %u textures replaced (%u colour, %u bump, %u glow) in %.2f s.\n",
+                Con_DPrintf("Texture pack%s%s: %u of %u textures replaced (%u colour, %u bump, %u glow, %u gloss) in %.2f s.\n",
                     texture_pack[0] ? " " : "", texture_pack,
-                    packed, map_scene.material_count, found[0], found[1], found[2], Sys_FloatTime() - started);
+                    packed, map_scene.material_count, found[0], found[1], found[2], found[3], Sys_FloatTime() - started);
             else if (texture_pack[0])
                 Con_DPrintf("Texture pack %s: nothing for this map's textures in %s.\n", texture_pack, texture_pack_path);
             else if (!Q_strcasecmp(lq_texture_pack.string, "none"))
@@ -450,7 +457,7 @@ void LQ_RenderBegin(void)
         }
         /* The pack's models and skins for this map's models (kept from earlier
          * maps with the same pack), whether or not the scene was cached. */
-        if (luminous) LQ_PackModelsLoad(texture_pack_path);
+        LQ_PackModelsLoad(texture_pack_path);
         if (!LQ_GPUUpload(gpu, &map_scene, error, sizeof(error))) { LQ_FallbackRenderer(error); return; }
         if (luminous && !map_scene.draw_bounds && !LQ_SceneDrawBounds(&map_scene)) { LQ_FallbackRenderer("Cannot allocate draw bounds"); return; }
         world_draws = malloc(map_scene.draw_count*sizeof(*world_draws));
@@ -481,7 +488,7 @@ static void UpdateSkybox(void)
     int found = 0;
     char error[256], base[MAX_QPATH];
     if (shown_sky[0]) {
-        const char *pack = luminous ? texture_pack_path : NULL; /* texture packs are Luminous's */
+        const char *pack = texture_pack_path; /* both GPU renderers take the pack's skyboxes */
         lq_archive *archive = LQ_QuakePackArchive(pack);
         for (int f = 0; f < 6; ++f) {
             snprintf(base, sizeof(base), "gfx/env/%s%s", shown_sky, sides[f]);
@@ -703,11 +710,6 @@ static void LuminousLights(void)
     float detail = Cvar_VariableValue("lq_shadow_detail");
     view.shadow_detail = detail > 0 ? detail : -1;
     view.disable_shadow_free = lq_shadow_free.value == 0;
-    view.pack_textures = lq_pack_textures.value != 0; view.pack_bumps = lq_pack_bumps.value != 0;
-    view.pack_match = lq_pack_brightness.value != 0;
-    view.pack_parallax = lq_pack_parallax.value > 0 && lq_pack_parallax.value <= 0.2f ? lq_pack_parallax.value : 0;
-    view.pack_relief_shadows = lq_pack_relief_shadows.value != 0;
-    view.pack_detail_cull = lq_pack_detail_cull.value != 0;
     LQ_BuildVisibleLightInteractions(&map_scene, runtime_lights, count, world_draws, interaction_draws);
     for (uint32_t i = 0; i < map_scene.draw_count; ++i)
         if (world_draws[i].index_count)
@@ -760,6 +762,14 @@ static void CaptureView(void)
     view.palette_gamma = v_gamma.value;
     memcpy(view.palette_shift, v_palette_shift, sizeof(view.palette_shift));
     if (lq_fog.value) { CL_FogCurrent(view.fog); view.sky_fog = CL_SkyFog(r_skyfog.value); }
+    /* Texture packs, for both GPU renderers (Classic draws colour and glow;
+     * the renderer leaves the rest to Luminous). */
+    view.pack_textures = lq_pack_textures.value != 0; view.pack_bumps = lq_pack_bumps.value != 0;
+    view.pack_match = lq_pack_brightness.value != 0;
+    view.pack_parallax = lq_pack_parallax.value > 0 && lq_pack_parallax.value <= 0.2f ? lq_pack_parallax.value : 0;
+    view.pack_relief_shadows = lq_pack_relief_shadows.value != 0;
+    view.pack_detail_cull = lq_pack_detail_cull.value != 0;
+    view.pack_gloss = lq_pack_gloss.value > 0 && lq_pack_gloss.value <= 4 ? lq_pack_gloss.value : 0;
     view.disable_culling = !lq_cull.value; view.disable_shadows = !lq_shadows.value;
     view.water_warp = direct_frame && r_waterwarp.value && r_viewleaf->contents <= CONTENTS_WATER;
     if (luminous && direct_frame && interaction_draws) LuminousLights();

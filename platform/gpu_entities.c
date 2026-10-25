@@ -110,8 +110,9 @@ void LQ_EntitiesBegin(const lq_scene *world)
     luminous_frame = Cvar_VariableValue("lq_renderer") == 2;
     solid_particles = luminous_frame && Cvar_VariableValue("lq_particles") != 0;
     lerp_models = Cvar_VariableValue("r_lerpmodels") != 0; lerp_move = Cvar_VariableValue("r_lerpmove") != 0;
-    pack_models = luminous_frame && Cvar_VariableValue("lq_pack_models") != 0;
-    pack_skins = luminous_frame && Cvar_VariableValue("lq_pack_skins") != 0;
+    /* Both GPU renderers draw the pack's models and skins (lit as each draws). */
+    pack_models = Cvar_VariableValue("lq_pack_models") != 0;
+    pack_skins = Cvar_VariableValue("lq_pack_skins") != 0;
     if (!frame.material_count) {
         if (world->material_count >= 4094) Sys_Error("Too many world materials");
         for (uint32_t i = 0; i < world->material_count; ++i) {

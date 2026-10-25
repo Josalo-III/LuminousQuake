@@ -945,7 +945,8 @@ int LQ_GPUUpload(lq_gpu *g, const lq_scene *s, char *error, size_t size)
     }
     /* Community texture packs: placeholders read as no glow and a flat normal. */
     if (!g->pack_blank_color) {
-        uint8_t blank[4] = {0, 0, 0, 0}, flat[4] = {128, 128, 255, 255};
+        /* A flat normal: x and y zero (z is rebuilt from them), no gloss (blue), height 1. */
+        uint8_t blank[4] = {0, 0, 0, 0}, flat[4] = {128, 128, 0, 255};
         lq_image b = {1, 1, 4, blank}, f = {1, 1, 4, flat};
         g->pack_blank_color = UploadImage(g, &b); g->pack_flat_normal = UploadImage(g, &f);
         if (!g->pack_blank_color || !g->pack_flat_normal) goto failed;
@@ -1476,26 +1477,30 @@ static void DrawSurface(lq_gpu *g, SDL_GPUCommandBuffer *command, SDL_GPURenderP
     uniforms.parameters[1] = (float)(d->flags | extra_flags);
     SDL_GPUTexture *pack_color = g->pack_blank_color, *pack_normal = g->pack_flat_normal;
     if ((d->flags & LQ_SURFACE_SKY) && g->skybox) pack_color = g->skybox;
-    if (pack < g->texture_count && g->pack_color && v->luminous_lighting &&
+    /* Texture packs: both GPU renderers draw a pack's colour and glow; only
+     * Luminous shades with its normal maps (bumps, parallax, relief shadows)
+     * and the gloss they carry in blue (uniforms.pack[3]: gloss intensity). */
+    if (pack < g->texture_count && g->pack_color &&
             !(d->flags & (LQ_SURFACE_SKY|LQ_SURFACE_WATER|LQ_SURFACE_MASKED))) {
         if (v->pack_textures && g->pack_color[pack]) {
             pack_color = g->pack_color[pack]; uniforms.pack[0] = 1;
             uniforms.pack[2] = v->pack_match && g->pack_gain[pack] > 0 ? g->pack_gain[pack] : 1;
         }
-        if (v->pack_bumps && g->pack_normal[pack]) {
-            pack_normal = g->pack_normal[pack]; uniforms.pack[1] = 1;
+        if (v->luminous_lighting && v->pack_bumps && g->pack_normal[pack]) {
+            pack_normal = g->pack_normal[pack]; uniforms.pack[1] = 1; uniforms.pack[3] = v->pack_gloss;
             uniforms.relief[0] = v->pack_parallax; uniforms.relief[1] = g->pack_height[pack];
             uniforms.relief[2] = v->pack_relief_shadows ? 1.0f : 0.0f;
             uniforms.relief[3] = v->pack_detail_cull ? 1.0f : 0.0f;
         }
-    } else if ((d->flags & LQ_SURFACE_MODEL) && d->material < 4096 && v->luminous_lighting &&
-            g->frame_pack_color[d->material]) {
+    } else if ((d->flags & LQ_SURFACE_MODEL) && d->material < 4096 && g->frame_pack_color[d->material]) {
         /* A pack model or skin: its colour (with glow) always, since its
          * mesh may have no palette skin; its normal map with Bump maps. */
         pack_color = g->frame_pack_color[d->material]; uniforms.pack[0] = 1;
         float gain = g->frame_pack_gain[d->material];
         uniforms.pack[2] = v->pack_match && gain > 0 ? gain : 1;
-        if (v->pack_bumps && g->frame_pack_normal[d->material]) { pack_normal = g->frame_pack_normal[d->material]; uniforms.pack[1] = 1; }
+        if (v->luminous_lighting && v->pack_bumps && g->frame_pack_normal[d->material]) {
+            pack_normal = g->frame_pack_normal[d->material]; uniforms.pack[1] = 1; uniforms.pack[3] = v->pack_gloss;
+        }
     }
     SDL_GPUTextureSamplerBinding samplers[] = {
         {texture, g->repeat}, {g->colormap, g->point}, {g->lightmap, g->linear},

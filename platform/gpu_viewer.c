@@ -928,7 +928,7 @@ int LQ_GPUViewer(int argc, char **argv)
         char pack_path[1024] = "";
         if (pack && (strchr(pack, '/') || !base)) snprintf(pack_path, sizeof(pack_path), "%s", pack);
         else if (pack) snprintf(pack_path, sizeof(pack_path), "%s/%s", base, pack);
-        uint32_t found[3], packed = LQ_QuakeSceneLoadPack(&scene, pack_path, LQ_JobsRunRange, found);
+        uint32_t found[4], packed = LQ_QuakeSceneLoadPack(&scene, pack_path, LQ_JobsRunRange, found);
         if (packed) printf("Texture pack: %u of %u textures replaced (%u colour, %u bump, %u glow)\n",
             packed, scene.material_count, found[0], found[1], found[2]);
     }
