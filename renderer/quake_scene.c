@@ -597,7 +597,7 @@ static int BuildSampleGrids(model_t *world, lq_scene *s, const uint16_t (*atlas)
         for (int c = 0; c < 3; ++c) albedo[m][c] = pixels ? (float)(sum[c] / pixels / 255.0) : 0;
     }
     for (uint32_t i = 0; i < s->draw_count && i < (uint32_t)world->numsurfaces; ++i)
-        if (!s->draws[i].flags) {
+        if (!(s->draws[i].flags & (LQ_SURFACE_SKY|LQ_SURFACE_WATER))) {  /* as the grids below: fences included */
             const msurface_t *f = world->surfaces + i;
             total += (uint64_t)((f->extents[0] >> 4) + 1) * ((f->extents[1] >> 4) + 1);
         }

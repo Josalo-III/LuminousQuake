@@ -453,6 +453,19 @@ them. Principles, decided October 17, 2026:
   pixels by more than 16 levels, on shadow edges. Still to scale: probe
   spacing (a map rebuild, and more load time) and bounce resolution. Larger
   cubes also cost GPU time when they are redrawn.
+  Lighting detail became four-way the same day (fixed, shadows, bounce,
+  both); "bounce" does nothing yet, waiting on the choice between more rays
+  and finer samples.
+- **Staged bounce loading. Built October 25, background pass not finishing.**
+  `lq_bounce_staged` (default on) computes bounce at load only for the faces
+  in the start's PVS plus brush models, then the rest on the background
+  queue, swapped in when done. On `ad_tfuma` (Release, battery) the start
+  covers 36,227 of 66,345 faces: bounce 19.5 s against 25.4 s, and the start
+  view matches the unstaged image exactly. The background pass never
+  finished in 150 s at 4 fps: its pacing times each fenced slice, and at low
+  frame rates the wait is the game's frames, so slices shrink to 1,024
+  samples. Next: one fixed 8,192-sample slice per drawn frame, keep its GPU
+  buffers between passes, and measure on mains power.
 - **Balance follows the hardware.** Measured October 17 at 1080p: the CPU does
   about 4 ms of work a frame, the GPU about 12 ms. Work that can run on either
   should move to whichever is idle, chosen at run time from measured load, not

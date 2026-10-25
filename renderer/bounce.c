@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define FACE_STYLES 4
 #define CANDIDATE_STYLES 16
@@ -39,6 +40,12 @@ typedef struct {
 
 static float Dot(const float a[3], const float b[3]) { return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
 static void Serial(size_t count, size_t grain, lq_range_fn function, void *context);
+static double Now(void)
+{
+    struct timespec t;
+    timespec_get(&t, TIME_UTC);
+    return (double)t.tv_sec + t.tv_nsec * 1e-9;
+}
 static uint8_t Contents(const lq_scene *s, int32_t node)
 {
     uint32_t leaf = (uint32_t)(-(node + 1));
@@ -299,6 +306,7 @@ static void SkyFaces(void *opaque, size_t begin, size_t end)
         float tangent[3], bitangent[3];
         Basis(normal, tangent, bitangent);
         float *visible = c->sky + grid->first_sample;
+        if (s->bounce_faces && !s->bounce_faces[f]) { memset(visible, 0, samples * sizeof(*visible)); continue; }
         for (uint32_t i = 0; i < samples; ++i) {
             const float *point = s->sample_positions[grid->first_sample + i];
             visible[i] = 0;
@@ -353,6 +361,11 @@ static void GatherFaces(void *opaque, size_t begin, size_t end)
         const lq_face_samples *grid = &s->face_samples[f];
         uint32_t samples = (uint32_t)grid->width * grid->height;
         if (!samples) continue;
+        if (s->bounce_faces && !s->bounce_faces[f]) {  /* staged: gathered later */
+            memset(c->gather_styles[f], 255, FACE_STYLES);
+            memset(c->gather + grid->first_sample, 0, samples * sizeof(*c->gather));
+            continue;
+        }
         if (samples > capacity) {
             free(accumulate); capacity = samples;
             accumulate = malloc(capacity * sizeof(*accumulate));
@@ -835,6 +848,9 @@ static void SkyLight(lq_scene *s)
 }
 int LQ_SceneComputeBounce(lq_scene *s, uint32_t rays, lq_range_runner run, char *error, size_t size)
 { return LQ_SceneComputeBounceTraced(s, rays, run, NULL, error, size); }
+/* A tracer's caller asked to stop (staged bounce in the background): every
+ * pass after that is skipped, never redone on the CPU. */
+#define CANCELLED (tracer && tracer->cancel && *tracer->cancel)
 int LQ_SceneComputeBounceTraced(lq_scene *s, uint32_t rays, lq_range_runner run,
     lq_bounce_tracer *tracer, char *error, size_t size)
 {
@@ -856,12 +872,15 @@ int LQ_SceneComputeBounceTraced(lq_scene *s, uint32_t rays, lq_range_runner run,
     }
     memset(c.emit_styles, 255, s->draw_count * sizeof(*c.emit_styles));
     memset(c.gather_styles, 255, s->draw_count * sizeof(*c.gather_styles));
+    memset(s->bounce_seconds, 0, sizeof(s->bounce_seconds));
+    double mark = Now(), then;
     SkyLight(s);
     if (s->sky_light[0] + s->sky_light[1] + s->sky_light[2] > 0) {
         if (tracer && tracer->sky && tracer->sky(tracer->context, s, rays, c.sky)) {
             ++tracer->passes; run(s->draw_count, 8, SkyBorrowFaces, &c);
-        } else run(s->draw_count, 8, SkyFaces, &c);
+        } else if (!CANCELLED) run(s->draw_count, 8, SkyFaces, &c);
     } else { free(c.sky); c.sky = NULL; }
+    then = Now(); s->bounce_seconds[0] = (float)(then - mark); mark = then;
     if (s->sun_light[0] + s->sun_light[1] + s->sun_light[2] > 0) {
         c.sun = calloc(samples, sizeof(*c.sun));
         if (!c.sun) {
@@ -869,12 +888,14 @@ int LQ_SceneComputeBounceTraced(lq_scene *s, uint32_t rays, lq_range_runner run,
             snprintf(error, size, "cannot allocate sun visibility"); return 0;
         }
         if (tracer && tracer->sun && tracer->sun(tracer->context, s, c.sun)) ++tracer->passes;
-        else run(s->draw_count, 8, SunFaces, &c);
+        else if (!CANCELLED) run(s->draw_count, 8, SunFaces, &c);
     }
+    then = Now(); s->bounce_seconds[1] = (float)(then - mark); mark = then;
     lq_bounce_entry *direct = tracer && tracer->direct ? malloc(samples * LQ_BOUNCE_ENTRIES * sizeof(*direct)) : NULL;
     if (direct && tracer->direct(tracer->context, s, direct)) { c.direct = direct; ++tracer->passes; }
-    run(s->draw_count, 16, EmitFaces, &c);
+    if (!CANCELLED) run(s->draw_count, 16, EmitFaces, &c);
     free(direct); c.direct = NULL;
+    then = Now(); s->bounce_seconds[2] = (float)(then - mark); mark = then;
     /* The first bounce gathers the direct exitance; each later one gathers the
      * last bounce reflected off the texture color. Probes still see the direct
      * exitance, and the summed bounce through the color. */
@@ -895,6 +916,7 @@ int LQ_SceneComputeBounceTraced(lq_scene *s, uint32_t rays, lq_range_runner run,
         c.entries = NULL;
         if (entries && tracer->gather(tracer->context, s, rays, (const float (*)[4][3])c.emit,
                 (const uint8_t (*)[4])c.emit_styles, entries)) { c.entries = entries; ++tracer->passes; }
+        if (CANCELLED) break;
         run(s->draw_count, 8, GatherFaces, &c);
         double energy = AddBounce(s, &c, total, total_styles);
         if (++s->bounces == 1) first = energy;
@@ -902,6 +924,12 @@ int LQ_SceneComputeBounceTraced(lq_scene *s, uint32_t rays, lq_range_runner run,
         ReflectBounce(s, &c);
     }
     free(entries); c.entries = NULL;
+    if (CANCELLED) {
+        free(direct_emit); free(total); free(total_styles);
+        free(c.emit); free(c.gather); free(c.sky); free(c.sun); free(c.emit_styles); free(c.gather_styles); free(pixels);
+        snprintf(error, size, "bounce cancelled"); return 0;
+    }
+    then = Now(); s->bounce_seconds[3] = (float)(then - mark); mark = then;
     free(c.emit); c.emit = direct_emit;
     free(c.gather); c.gather = total;
     free(c.gather_styles); c.gather_styles = total_styles;
@@ -929,10 +957,13 @@ int LQ_SceneComputeBounceTraced(lq_scene *s, uint32_t rays, lq_range_runner run,
     }
     free(s->bounce.pixels);
     s->bounce = (lq_image){width, 4 * layer, 4, pixels};
+    s->bounce_partial = s->bounce_faces != NULL;
+    then = Now(); s->bounce_seconds[4] = (float)(then - mark); mark = then;
     if (!BuildStaticProbes(s, &c, run)) {
         free(s->probe_static); free(s->probe_valid); s->probe_static = s->probe_valid = NULL;
         memset(s->probe_size, 0, sizeof(s->probe_size));
     }
+    s->bounce_seconds[5] = (float)(Now() - mark);
     free(c.emit); free(c.gather); free(c.sky); free(c.sun); free(c.emit_styles); free(c.gather_styles);
     return 1;
 }

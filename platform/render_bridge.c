@@ -66,6 +66,8 @@ static uint32_t TubeCamera(void) { return (uint32_t)Cvar_VariableValue("r_fluore
  * holds at most lq_scene_cache_mb; 0 means the agenda's default share, a
  * quarter of the RAM free when it is first needed (half of free RAM is
  * "available", split evenly with lighting), and -1 turns it off. */
+/* Staged bounce (see StartFaces): 0 gathers the whole map at load. */
+static cvar_t lq_bounce_staged = {"lq_bounce_staged", "1"};
 #define SCENE_CACHE_ENTRIES 2
 static cvar_t lq_scene_cache_mb = {"lq_scene_cache_mb", "0", true};
 /* The RAM slider (AGENDA item 6, decided October 17), on Luminous Options:
@@ -73,7 +75,9 @@ static cvar_t lq_scene_cache_mb = {"lq_scene_cache_mb", "0", true};
  * shows it, meaning half of free RAM), divided between scene caching and
  * lighting complexity, each its own switch, by lq_ram_split (percent to
  * caching), which applies only while both are on. */
-static cvar_t lq_ram_cache = {"lq_ram_cache", "1", true}, lq_ram_lighting = {"lq_ram_lighting", "1", true};
+/* lq_ram_lighting: what the lighting share scales: 0 nothing (the fixed
+ * sizes), 1 shadow cubes, 2 bounce, 3 both. */
+static cvar_t lq_ram_cache = {"lq_ram_cache", "1", true}, lq_ram_lighting = {"lq_ram_lighting", "3", true};
 static cvar_t lq_ram_available_mb = {"lq_ram_available_mb", "0", true}, lq_ram_split = {"lq_ram_split", "50", true};
 /* Diagnostics for measurements: 0 submits every PVS face (lq_cull), or
  * lights Luminous without shadow cubes or filtering (lq_shadows). */
@@ -265,7 +269,7 @@ static size_t SceneCacheBudget(void)
  * off, the fixed sizes. */
 static int ShadowShift(void)
 {
-    if (lq_ram_lighting.value == 0) return 0;
+    if (!((int)lq_ram_lighting.value & 1)) return 0;
     size_t share = RamShare(0), base = (size_t)362 << 20;
     return share >= base * 4 ? 1 : share >= base ? 0 : -1;
 }
@@ -281,7 +285,7 @@ static void SceneCacheFreeAll(void)
 static void SceneCacheStore(void)
 {
     size_t bytes = SceneBytes(&map_scene), budget = SceneCacheBudget(), held = 0;
-    if (!map_key || !map_scene.draw_count || bytes > budget) { LQ_SceneFree(&map_scene); map_key = 0; return; }
+    if (!map_key || !map_scene.draw_count || bytes > budget || map_scene.bounce_partial) { LQ_SceneFree(&map_scene); map_key = 0; return; }
     int slot = 0;
     for (int i = 0; i < SCENE_CACHE_ENTRIES; ++i) if (scene_cache[i].key == map_key) { LQ_SceneFree(&scene_cache[i].scene); scene_cache[i].key = 0; }
     for (int i = 0; i < SCENE_CACHE_ENTRIES; ++i) {
@@ -304,7 +308,7 @@ static void SceneCacheStore(void)
 }
 void LQ_RenderBridgeRegister(void)
 {
-    Cvar_RegisterVariable(&lq_scene_cache_mb);
+    Cvar_RegisterVariable(&lq_scene_cache_mb); Cvar_RegisterVariable(&lq_bounce_staged);
     Cvar_RegisterVariable(&lq_ram_cache); Cvar_RegisterVariable(&lq_ram_lighting);
     Cvar_RegisterVariable(&lq_ram_available_mb); Cvar_RegisterVariable(&lq_ram_split); Cvar_RegisterVariable(&lq_cull); Cvar_RegisterVariable(&lq_shadows);
     Cvar_RegisterVariable(&lq_panel_shadows); Cvar_RegisterVariable(&lq_shadow_free);
@@ -411,6 +415,98 @@ static void ShadowFreeFinish(void *context, int cancelled)
     free(task->bits); free(task);
 }
 
+/* Staged bounce: at load, bounce is gathered only for faces the player's
+ * start can see (its PVS), still from every surface's direct light; the rest
+ * of the map follows here, on the background thread, paced so play keeps
+ * most of the GPU, and replaces the start-area bounce when it is done
+ * (lq_bounce_staged). */
+/* The faces in the PVS of the player's leaf, and every brush model's faces
+ * (doors, lifts: no leaf lists them); NULL when that is nearly every face,
+ * or the player's leaf is unknown, so staging would not save time. */
+static uint8_t *StartFaces(void)
+{
+    model_t *world = cl.worldmodel;
+    if (!world || cl.viewentity <= 0 || cl.viewentity >= cl.num_entities) return NULL;
+    mleaf_t *leaf = Mod_PointInLeaf(cl_entities[cl.viewentity].origin, world);
+    if (!leaf || leaf->contents == CONTENTS_SOLID) return NULL;
+    uint8_t *faces = calloc(map_scene.draw_count, 1);
+    if (!faces) return NULL;
+    byte *vis = Mod_LeafPVS(leaf, world);
+    uint32_t marked = 0, own = world->nummodelsurfaces;
+    for (int l = 0; l <= world->numleafs; ++l) {
+        mleaf_t *at = world->leafs + l;
+        if (at != leaf && (l == 0 || !(vis[(l - 1) >> 3] & (1 << ((l - 1) & 7))))) continue;
+        for (int m = 0; m < at->nummarksurfaces; ++m) {
+            ptrdiff_t face = at->firstmarksurface[m] - world->surfaces;
+            if (face >= 0 && (uint32_t)face < map_scene.draw_count && !faces[face]) { faces[face] = 1; ++marked; }
+        }
+    }
+    for (uint32_t f = own; f < map_scene.draw_count; ++f) if (!faces[f]) { faces[f] = 1; ++marked; }
+    if (marked > map_scene.draw_count * 9 / 10) { free(faces); return NULL; }
+    return faces;
+}
+typedef struct {
+    lq_scene scene;      /* a shallow copy of map_scene with its own draws and bounce outputs */
+    lq_bounce_pace pace; /* paced GPU tracing */
+    uint64_t key;        /* the map it belongs to */
+    double seconds;
+    int done;
+    char error[128];
+} bounce_task;
+static void FullBounceRun(void *context, const volatile int *cancel)
+{
+    bounce_task *task = context;
+    Uint64 started = SDL_GetTicksNS();
+    task->pace.cancel = cancel;
+    lq_bounce_tracer tracer = LQ_GPUBounceTracerPaced(&task->pace);
+    /* Serial: background tasks may not use the frame's worker threads. */
+    task->done = LQ_SceneComputeBounceTraced(&task->scene, 64, NULL, &tracer, task->error, sizeof(task->error));
+    task->seconds = (double)(SDL_GetTicksNS() - started) / 1e9;
+}
+static void FullBounceFinish(void *context, int cancelled)
+{
+    bounce_task *task = context;
+    lq_scene *full = &task->scene;
+    lq_gpu *gpu = LQ_PlayableGPU();
+    if (!cancelled && task->done && task->key == map_key && loaded && gpu) {
+        free(map_scene.bounce.pixels); map_scene.bounce = full->bounce; full->bounce.pixels = NULL;
+        free(map_scene.probe_static); free(map_scene.probe_valid);
+        map_scene.probe_static = full->probe_static; map_scene.probe_valid = full->probe_valid;
+        full->probe_static = NULL; full->probe_valid = NULL;
+        memcpy(map_scene.probe_origin, full->probe_origin, sizeof(map_scene.probe_origin));
+        memcpy(map_scene.probe_size, full->probe_size, sizeof(map_scene.probe_size));
+        memcpy(map_scene.probe_styles, full->probe_styles, sizeof(map_scene.probe_styles));
+        map_scene.probe_spacing = full->probe_spacing;
+        memcpy(map_scene.sky_light, full->sky_light, sizeof(map_scene.sky_light));
+        map_scene.bounces = full->bounces;
+        for (uint32_t f = 0; f < map_scene.draw_count; ++f)
+            memcpy(map_scene.draws[f].bounce_styles, full->draws[f].bounce_styles, sizeof(map_scene.draws[f].bounce_styles));
+        map_scene.bounce_partial = 0;
+        int refreshed = LQ_GPURefreshBounce(gpu, &map_scene);
+        Con_DPrintf("Luminous bounce: the rest of the map in %.1f s in the background (%u bounces)%s.\n",
+            task->seconds, full->bounces, refreshed ? "" : "; GPU refresh failed");
+    } else if (!cancelled && !task->done)
+        Con_DPrintf("Luminous bounce in the background failed: %s\n", task->error);
+    free(full->bounce.pixels); free(full->probe_static); free(full->probe_valid); free(full->draws);
+    free(task);
+}
+static void StartFullBounce(void)
+{
+    bounce_task *task = calloc(1, sizeof(*task));
+    if (!task) return;
+    task->scene = map_scene;
+    task->scene.draws = malloc(map_scene.draw_count * sizeof(*map_scene.draws));
+    if (!task->scene.draws) { free(task); return; }
+    memcpy(task->scene.draws, map_scene.draws, map_scene.draw_count * sizeof(*map_scene.draws));
+    task->scene.bounce = (lq_image){0};
+    task->scene.probe_static = NULL; task->scene.probe_valid = NULL;
+    task->scene.bounce_faces = NULL; task->scene.bounce_partial = 0;
+    task->pace = (lq_bounce_pace){LQ_PlayableGPU(), 8192, 1, NULL};
+    if (!task->pace.gpu) { free(task->scene.draws); free(task); return; }
+    task->key = map_key;
+    LQ_BackgroundSubmit(scene_tasks, FullBounceRun, FullBounceFinish, task);  /* the load's tag (see below) */
+}
+
 void LQ_RenderBridgeShutdown(void)
 {
     CancelSceneTasks();
@@ -486,15 +582,25 @@ void LQ_RenderBegin(void)
             if (tubes) Con_DPrintf("Luminous fluorescents: %u failing tubes on private styles, %s.\n", tubes,
                 tube_track.count ? "sputtering with " TUBE_SOUND : "on their own timelines");
         }
+        uint32_t start_faces = 0;
         if (luminous && !cached) {
             double started = Sys_FloatTime();
             lq_bounce_tracer tracer = LQ_GPUBounceTracer(gpu);
-            if (LQ_SceneComputeBounceTraced(&map_scene, 64, LQ_JobsRunRange, &tracer, error, sizeof(error)))
-                Con_DPrintf("Luminous bounce: %u samples, %u bounces, sky light %.0f %.0f %.0f, in %.2f s (%s rays).\n",
+            uint8_t *start = lq_bounce_staged.value ? StartFaces() : NULL;
+            for (uint32_t f = 0; start && f < map_scene.draw_count; ++f) start_faces += start[f];
+            map_scene.bounce_faces = start;
+            int bounced = LQ_SceneComputeBounceTraced(&map_scene, 64, LQ_JobsRunRange, &tracer, error, sizeof(error));
+            map_scene.bounce_faces = NULL; free(start);
+            if (bounced) {
+                Con_DPrintf("Luminous bounce: %u samples, %u bounces, sky light %.0f %.0f %.0f, in %.2f s (%s rays)%s.\n",
                     map_scene.sample_count, map_scene.bounces,
                     map_scene.sky_light[0], map_scene.sky_light[1], map_scene.sky_light[2], Sys_FloatTime() - started,
-                    tracer.passes ? "GPU" : "CPU");
-            else Con_Printf("Luminous bounce unavailable: %s\n", error);
+                    tracer.passes ? "GPU" : "CPU", start_faces ? va("; staged: %u of %u faces near the start, the rest after spawn",
+                        start_faces, map_scene.draw_count) : "");
+                Con_DPrintf("Luminous bounce phases: sky %.2f s, sun %.2f s, direct %.2f s, gathers %.2f s, texture %.2f s, probes %.2f s.\n",
+                    map_scene.bounce_seconds[0], map_scene.bounce_seconds[1], map_scene.bounce_seconds[2],
+                    map_scene.bounce_seconds[3], map_scene.bounce_seconds[4], map_scene.bounce_seconds[5]);
+            } else Con_Printf("Luminous bounce unavailable: %s\n", error);
         }
         if (!cached) {
             /* A community texture pack in any game folder: its images are kept
@@ -536,9 +642,12 @@ void LQ_RenderBegin(void)
         free(dynamic_probes); dynamic_probes = NULL;
         if (luminous && LQ_GPUDynamicProbeBytes(gpu)) dynamic_probes = malloc(LQ_GPUDynamicProbeBytes(gpu));
         loaded = true; palette_valid = false;
+        /* One tag for all of this map's background tasks, so cancelling the
+         * map's tasks (map change, video restart, quit) reaches every one. */
+        if (luminous && (map_scene.bounce_partial || !map_scene.shadow_free) && !++scene_tasks) scene_tasks = 1;
+        if (luminous && map_scene.bounce_partial) StartFullBounce();
         if (luminous && !map_scene.shadow_free) {
             shadow_free_task *task = calloc(1, sizeof(*task));
-            if (!++scene_tasks) scene_tasks = 1;
             if (task) { task->scene = map_scene; LQ_BackgroundSubmit(scene_tasks, ShadowFreeRun, ShadowFreeFinish, task); }
         }
         if (!cached) Con_DPrintf("%s: copied live BSP world; map resources replaced.\n", luminous ? "Luminous (experimental)" : "Classic GPU");

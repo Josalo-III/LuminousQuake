@@ -168,6 +168,16 @@ typedef struct {
      * adds less than LQ_BOUNCE_CONVERGED of the first one's light. */
     uint32_t bounce_limit;
     uint32_t bounces; /* set by LQ_SceneComputeBounce: bounces gathered */
+    /* Seconds LQ_SceneComputeBounce spent: sky, sun, direct light and emit,
+     * all gathers, the bounce texture, static probes (load-time diagnosis). */
+    float bounce_seconds[6];
+    /* Staged bounce (LuminousQuake): when set, sky visibility and the gathers
+     * run only for faces whose byte is nonzero (those near the start); direct
+     * light, sun and probes cover every face. bounce_partial marks a scene
+     * whose bounce covers only those faces, until the full bounce replaces
+     * it; such a scene is not cached. */
+    const uint8_t *bounce_faces;
+    uint32_t bounce_partial;
     /* Optional Luminous bounce: four stacked RGBA layers of atlas_height rows,
      * brightness units, selected per draw by bounce_styles. Layer 0 alpha is
      * the sample's sky visibility (cosine-weighted fraction of rays reaching
@@ -341,6 +351,7 @@ typedef struct {
     int (*gather)(void *context, const lq_scene *scene, uint32_t rays, const float (*emit)[4][3],
         const uint8_t (*emit_styles)[4], lq_bounce_entry *entries);
     uint32_t passes; /* set by LQ_SceneComputeBounceTraced: passes the tracer completed */
+    const volatile int *cancel; /* nonzero stops the computation, which then fails (background use) */
 } lq_bounce_tracer;
 int LQ_SceneComputeBounceTraced(lq_scene *scene, uint32_t rays, lq_range_runner run,
     lq_bounce_tracer *tracer, char *error, size_t size);

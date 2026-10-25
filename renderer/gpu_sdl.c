@@ -92,6 +92,7 @@ struct lq_gpu {
     SDL_GPUGraphicsPipeline *shadow_pipeline;
     SDL_GPUTexture *shadow_maps[LQ_SHADOW_ARRAYS], *shadow_dummy;
     int shadow_shift; /* cube face size: LQ_SHADOW_ARRAY_SIZES doubled (1), halved (-1) or as is (0) */
+    lq_bounce_pace load_pace; /* the unpaced tracer used at load: whole passes, 65536 samples a submission */
     /* The same cubes with static casters only: a face that only moving casters
      * change is copied from here and the movers drawn over it. */
     SDL_GPUTexture *shadow_static[LQ_SHADOW_ARRAYS];
@@ -1905,7 +1906,10 @@ enum { BOUNCE_NODE_WORDS = 8, BOUNCE_FACE_WORDS = 24, BOUNCE_LIGHT_WORDS = 20, B
 typedef struct { uint32_t job[4], tree[4], tables[4], lights[4]; float sun[4]; } lq_bounce_uniforms;
 static void PutFloat(uint32_t *word, float value) { memcpy(word, &value, sizeof(value)); }
 /* The scene words the shader walks; tables[] receives the section offsets. */
-static uint32_t *BounceWords(const lq_scene *s, const uint8_t (*emit_styles)[4], lq_bounce_uniforms *u, size_t *bytes)
+/* `face_mask`, when set, limits the samples traced to those faces' (staged
+ * bounce): the others are marked as having no face, which the shader skips. */
+static uint32_t *BounceWords(const lq_scene *s, const uint8_t (*emit_styles)[4], lq_bounce_uniforms *u, size_t *bytes,
+    const uint8_t *face_mask)
 {
     size_t nodes = 0, leaves = nodes + (size_t)s->bsp_node_count * BOUNCE_NODE_WORDS;
     size_t faces = leaves + s->leaf_count, vertices = faces + (size_t)s->draw_count * BOUNCE_FACE_WORDS;
@@ -1944,6 +1948,7 @@ static uint32_t *BounceWords(const lq_scene *s, const uint8_t (*emit_styles)[4],
     for (size_t i = 0; i < s->sample_count; ++i) w[samples + i * 4 + 3] = 0xffffffffu;
     for (uint32_t f = 0; f < s->draw_count; ++f) {
         const lq_face_samples *grid = &s->face_samples[f];
+        if (face_mask && !face_mask[f]) continue;
         for (uint32_t i = 0; grid->width && i < (uint32_t)grid->width * grid->height; ++i) {
             size_t sample = grid->first_sample + i;
             const float *p = s->sample_positions[sample];
@@ -1981,9 +1986,11 @@ static SDL_GPUBuffer *StorageBuffer(lq_gpu *g, SDL_GPUBufferUsageFlags usage, ui
  * 3: direct light) and reads back
  * `output_bytes`. Work is split across command buffers so no single
  * submission runs long enough to trip a GPU watchdog. */
-static int BounceRun(lq_gpu *g, const lq_scene *s, uint32_t mode, uint32_t rays,
+static int BounceRun(lq_bounce_pace *pace, const lq_scene *s, uint32_t mode, uint32_t rays,
     const float (*emit)[4][3], const uint8_t (*emit_styles)[4], void *output, size_t output_bytes)
 {
+    lq_gpu *g = pace->gpu;
+    uint32_t chunk = pace->chunk ? pace->chunk : BOUNCE_CHUNK;
     if (!s->bsp_nodes || !s->face_samples || !s->sample_count || output_bytes > UINT32_MAX) return 0;
     if (!g->bounce_pipeline) {
         int metal = (SDL_GetGPUShaderFormats(g->device) & SDL_GPU_SHADERFORMAT_MSL) != 0;
@@ -1999,7 +2006,8 @@ static int BounceRun(lq_gpu *g, const lq_scene *s, uint32_t mode, uint32_t rays,
     }
     lq_bounce_uniforms u = {{mode, 0, 0, rays}, {0}, {0}, {0}, {0}};
     size_t scene_bytes, emit_bytes = emit ? (size_t)s->sample_count * sizeof(*emit) : 16;
-    uint32_t *words = BounceWords(s, emit_styles, &u, &scene_bytes);
+    /* Sky and gathers follow the staged face mask; sun and direct light cover every face. */
+    uint32_t *words = BounceWords(s, emit_styles, &u, &scene_bytes, mode == 0 || mode == 1 ? s->bounce_faces : NULL);
     if (!words || emit_bytes > UINT32_MAX || scene_bytes + emit_bytes > UINT32_MAX) { free(words); return 0; }
     static const float empty[4];
     SDL_GPUBuffer *scene = StorageBuffer(g, SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ, (uint32_t)scene_bytes);
@@ -2023,9 +2031,11 @@ static int BounceRun(lq_gpu *g, const lq_scene *s, uint32_t mode, uint32_t rays,
     from.offset = (uint32_t)scene_bytes; to = (SDL_GPUBufferRegion){values, 0, (uint32_t)emit_bytes};
     SDL_UploadToGPUBuffer(copy, &from, &to, false);
     SDL_EndGPUCopyPass(copy);
-    for (uint32_t first = 0; first < s->sample_count; first += BOUNCE_CHUNK) {
+    for (uint32_t first = 0; first < s->sample_count; first += chunk) {
+        if (pace->cancel && *pace->cancel) { if (command) SDL_CancelGPUCommandBuffer(command); goto done; }
+        if (pace->paced) chunk = pace->chunk ? pace->chunk : 8192;  /* adapted below, kept across passes */
         if (!command && !(command = SDL_AcquireGPUCommandBuffer(g->device))) goto done;
-        u.job[1] = first; u.job[2] = s->sample_count - first < BOUNCE_CHUNK ? s->sample_count - first : BOUNCE_CHUNK;
+        u.job[1] = first; u.job[2] = s->sample_count - first < chunk ? s->sample_count - first : chunk;
         SDL_GPUStorageBufferReadWriteBinding writes = {results, false};
         SDL_GPUComputePass *pass = SDL_BeginGPUComputePass(command, NULL, 0, &writes, 1);
         if (!pass) { SDL_CancelGPUCommandBuffer(command); goto done; }
@@ -2035,7 +2045,26 @@ static int BounceRun(lq_gpu *g, const lq_scene *s, uint32_t mode, uint32_t rays,
         SDL_PushGPUComputeUniformData(command, 0, &u, sizeof(u));
         SDL_DispatchGPUCompute(pass, (u.job[2] + 63) / 64, 1, 1);
         SDL_EndGPUComputePass(pass);
-        if (first + BOUNCE_CHUNK >= s->sample_count) break;
+        if (first + chunk >= s->sample_count) break;
+        if (pace->paced) {
+            /* One submission at a time, then as long again for the frames. */
+            Uint64 started = SDL_GetTicksNS();
+            SDL_GPUFence *step = SDL_SubmitGPUCommandBufferAndAcquireFence(command);
+            command = NULL;
+            if (!step) goto done;
+            int waited = SDL_WaitForGPUFences(g->device, true, &step, 1);
+            SDL_ReleaseGPUFence(g->device, step);
+            if (!waited) goto done;
+            /* Aim at about 8 ms a submission: the wait includes frames queued
+             * ahead of it, so it is an upper bound on the slice's own time. */
+            Uint64 took = SDL_GetTicksNS() - started;
+            uint64_t next = took ? (uint64_t)chunk * 8000000ull / took : (uint64_t)chunk * 2;
+            if (next > (uint64_t)chunk * 2) next = (uint64_t)chunk * 2;
+            if (next < (uint64_t)chunk / 2) next = chunk / 2;
+            pace->chunk = next < 1024 ? 1024 : next > BOUNCE_CHUNK ? BOUNCE_CHUNK : (uint32_t)next;
+            SDL_DelayNS(took);
+            continue;
+        }
         if (!SDL_SubmitGPUCommandBuffer(command)) { command = NULL; goto done; }
         command = NULL;
     }
@@ -2075,8 +2104,37 @@ static int BounceGather(void *context, const lq_scene *s, uint32_t rays, const f
 }
 lq_bounce_tracer LQ_GPUBounceTracer(lq_gpu *g)
 {
-    lq_bounce_tracer tracer = {g, BounceSky, BounceSun, BounceDirect, BounceGather, 0};
+    g->load_pace = (lq_bounce_pace){g, BOUNCE_CHUNK, 0, NULL};
+    lq_bounce_tracer tracer = {&g->load_pace, BounceSky, BounceSun, BounceDirect, BounceGather, 0, NULL};
     return tracer;
+}
+lq_bounce_tracer LQ_GPUBounceTracerPaced(lq_bounce_pace *pace)
+{
+    lq_bounce_tracer tracer = {pace, BounceSky, BounceSun, BounceDirect, BounceGather, 0, pace->cancel};
+    return tracer;
+}
+int LQ_GPURefreshBounce(lq_gpu *g, const lq_scene *s)
+{
+    if (!g || !s->bounce.pixels) return 0;
+    SDL_WaitForGPUIdle(g->device);
+    SDL_GPUTexture *bounce = UploadImage(g, &s->bounce);
+    if (!bounce) return 0;
+    if (g->bounce) SDL_ReleaseGPUTexture(g->device, g->bounce);
+    g->bounce = bounce;
+    g->bounce_ratio = (float)s->lightmap.height / s->atlas_height;
+    memcpy(g->sky_light, s->sky_light, sizeof(g->sky_light));
+    memcpy(g->sun_light, s->sun_light, sizeof(s->sun_light));
+    if (s->probe_static && g->probe_static && g->probe_size[0] == (float)s->probe_size[0] &&
+            g->probe_size[1] == (float)s->probe_size[1] && g->probe_size[2] == (float)s->probe_size[2]) {
+        const uint32_t *n = s->probe_size;
+        SDL_GPUTexture *probes = Upload3D(g, n[0], n[1], n[2] * 24, s->probe_static, 0);
+        if (probes) {
+            SDL_ReleaseGPUTexture(g->device, g->probe_static);
+            g->probe_static = probes;
+            memcpy(g->probe_styles, s->probe_styles, 4);
+        }
+    }
+    return 1;
 }
 
 /* ---- Luminous dynamic probes (bounce.comp built with LQ_PROBES) ----------- */
@@ -2087,7 +2145,7 @@ static int UploadProbeScene(lq_gpu *g, const lq_scene *s)
     if (!s->bsp_nodes || !s->face_samples || !s->probe_valid) return 0;
     lq_bounce_uniforms u = {{0}, {0}, {0}, {0}, {0}};
     size_t bytes, probes = (size_t)s->probe_size[0] * s->probe_size[1] * s->probe_size[2];
-    uint32_t *words = BounceWords(s, NULL, &u, &bytes);
+    uint32_t *words = BounceWords(s, NULL, &u, &bytes, NULL);
     size_t valid = bytes / 4, total = valid + (probes + 3) / 4;
     uint32_t *grown = words && total * 4 <= UINT32_MAX ? realloc(words, total * 4) : NULL;
     if (!grown) { free(words); return 0; }

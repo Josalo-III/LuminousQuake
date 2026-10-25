@@ -2085,7 +2085,7 @@ static const luminous_option_t luminous_options[] =
 	// The RAM slider (AGENDA item 6): an amount of available RAM divided between
 	// keeping built maps and lighting detail. Step -1 marks the amount.
 	{"         Scene caching", "lq_ram_cache", "Keep built maps: restarts skip bounce.", 0, 1, 0, 1, "off", "on"},
-	{"       Lighting detail", "lq_ram_lighting", "Shadow cube size from its share.", 0, 1, 0, 1, "fixed", "by RAM"},
+	{"       Lighting detail", "lq_ram_lighting", "What its share scales.", 0, 3, 0, 3, NULL, NULL},
 	{"         Available RAM", "lq_ram_available_mb", "Shared by caching and lighting.", 0, 0, -1, 0, NULL, NULL},
 	{"    Caching / lighting", "lq_ram_split", "Percent of it to caching.", 0, 100, 10, 50, NULL, NULL},
 };
@@ -2146,6 +2146,12 @@ static void M_LuminousSetting (const luminous_option_t *o, int y)
 	if (o->step < 0)
 	{
 		M_Print (220, y, va("%.1f GB", M_RamAvailable () / 1024));
+		return;
+	}
+	if (!Q_strcmp ((char *)o->cvar, "lq_ram_lighting"))
+	{
+		static const char *choices[] = {"fixed", "shadows", "bounce", "both"};
+		M_Print (220, y, (char *)choices[(int)M_LuminousValue (o) & 3]);
 		return;
 	}
 	if (!Q_strcmp ((char *)o->cvar, "lq_ram_split") &&
@@ -2249,6 +2255,11 @@ void M_Luminous_Key (int key)
 	if (!Q_strcmp ((char *)o->cvar, "lq_ram_split") &&
 		(!Cvar_VariableValue ("lq_ram_cache") || !Cvar_VariableValue ("lq_ram_lighting")))
 		return;
+	if (!Q_strcmp ((char *)o->cvar, "lq_ram_lighting"))	// fixed, shadows, bounce, both
+	{
+		Cvar_SetValue ((char *)o->cvar, (float)(((int)M_LuminousValue (o) + (dir < 0 ? 3 : 1)) & 3));
+		return;
+	}
 	luminous_tuning = o->step > 0;	// sliders shrink to their line; switches keep the page
 	v = M_LuminousValue (o);
 	if (!o->step)

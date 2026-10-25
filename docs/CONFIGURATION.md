@@ -190,7 +190,8 @@ frame, without asking. Leaving Video Options saves the profile's config.
 | `lq_emission` | 3 | Luminous: how many times their palette colour fullbright texels emit, for the world and models (1–16) |
 | `lq_sprite_emission` | 3 | As `lq_emission`, for sprites such as explosions (1–16) |
 | `lq_scene_cache_mb` | 0 | Memory for keeping the last two maps' built scenes, so a restart skips rebuilding; 0 takes the RAM slider's caching share, -1 turns it off |
-| `lq_ram_cache`, `lq_ram_lighting` | 1, 1 | Luminous Options → **Scene caching** and **Lighting detail**: whether the available RAM goes to keeping built maps, and to lighting detail (shadow cube size: twice, as is or half, by what the share holds; off is the fixed sizes) (saved) |
+| `lq_ram_cache`, `lq_ram_lighting` | 1, 3 | Luminous Options → **Scene caching** and **Lighting detail**: whether the available RAM goes to keeping built maps, and what lighting detail it scales: 0 fixed, 1 shadows, 2 bounce, 3 both. Shadows sets shadow cube size (twice, as is or half, by what the share holds); bounce does nothing yet (saved) |
+| `lq_bounce_staged` | 1 | Luminous: at load, compute bounce light only for the faces visible from the start, and the rest of the map in the background after spawn. Off computes it all before spawn. The background pass is still too slow to finish on large maps (October 25) |
 | `lq_ram_available_mb` | 0 | Luminous Options → **Available RAM**: the amount the two share, up to free RAM; 0 until the page first shows it, which saves half of free RAM (saved) |
 | `lq_ram_split` | 50 | Luminous Options → **Caching / lighting**: percent of the amount to caching, while both are on (saved) |
 | `lq_workers` | −1 | Worker threads; −1 picks from the CPU |
