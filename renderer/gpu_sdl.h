@@ -46,7 +46,9 @@ void LQ_GPUDisplay(lq_gpu *gpu, float gamma, int hdr, float peak);
 /* lq_hdr_test: replace the 3D view with bands at known light levels (0.5-10x SDR white). */
 void LQ_GPUTestPattern(lq_gpu *gpu, int on);
 void LQ_GPUToneRamp(lq_gpu *gpu, int on);
-int LQ_GPUSupportsBC7(lq_gpu *gpu); /* texture packs below full size are stored as BC7 */ /* known light levels through the tone curve, with markers */
+int LQ_GPUSupportsBC7(lq_gpu *gpu); /* texture packs below full size are stored as BC7 */
+/* Shadow cube size: 1 doubles LQ_SHADOW_ARRAY_SIZES, -1 halves them, 0 as is (the lighting memory share). */
+void LQ_GPUShadowScale(lq_gpu *gpu, int shift); /* known light levels through the tone curve, with markers */
 /* Luminous tone mapping and emission: the shoulder below which linear light is
  * left alone (0.8), the white point that reaches the display's ceiling (6 on
  * SDR; on HDR the larger of it and twice the headroom), and the gains at which

@@ -189,7 +189,10 @@ frame, without asking. Leaving Video Options saves the profile's config.
 | `lq_tone_ramp` | 0 | Luminous: 1 draws a band of known light levels (1/32 to 16× the ceiling, log scale; grey above, lava orange below) through the tone curve near the top of the frame, marked green at the shoulder, blue at the ceiling (SDR white or the HDR headroom) and red at the white point. Shown by itself while Tone: shoulder or Tone: white point is adjusted |
 | `lq_emission` | 3 | Luminous: how many times their palette colour fullbright texels emit, for the world and models (1–16) |
 | `lq_sprite_emission` | 3 | As `lq_emission`, for sprites such as explosions (1–16) |
-| `lq_scene_cache_mb` | 0 | Memory for keeping the last two maps' built scenes, so a restart skips rebuilding; 0 is a quarter of free RAM, -1 turns it off |
+| `lq_scene_cache_mb` | 0 | Memory for keeping the last two maps' built scenes, so a restart skips rebuilding; 0 takes the RAM slider's caching share, -1 turns it off |
+| `lq_ram_cache`, `lq_ram_lighting` | 1, 1 | Luminous Options → **Scene caching** and **Lighting detail**: whether the available RAM goes to keeping built maps, and to lighting detail (shadow cube size: twice, as is or half, by what the share holds; off is the fixed sizes) (saved) |
+| `lq_ram_available_mb` | 0 | Luminous Options → **Available RAM**: the amount the two share, up to free RAM; 0 until the page first shows it, which saves half of free RAM (saved) |
+| `lq_ram_split` | 50 | Luminous Options → **Caching / lighting**: percent of the amount to caching, while both are on (saved) |
 | `lq_workers` | −1 | Worker threads; −1 picks from the CPU |
 | `lq_clock_mode` | 0 | Tick-clock timing policy ([frame timing](FRAME_TIMING.md)) |
 | `in_nograb` | 0 | Replaces `_windowed_mouse`; 1 never captures the mouse |
@@ -204,7 +207,8 @@ noclip), `fog density [r g b [time]]` (GPU renderers), `game [folder]`
 another, as main menu → **Add-ons** does), `lq_after <seconds> "<commands>"`
 (runs commands that many seconds later, for timed test scripts),
 `lq_console_log 1` (keeps the console in `qconsole.log` in the profile, as
-`-condebug` does, which now also writes there), `vid_restart`,
+`-condebug` does, which now also writes there), `menu_luminous` (opens
+Luminous Options), `vid_restart`,
 `vid_togglefullscreen`, `lq_clock_report`, `lq_performance_report`.
 
 ### Classic settings that no longer exist

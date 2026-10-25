@@ -2082,6 +2082,12 @@ static const luminous_option_t luminous_options[] =
 	{"     Tone: white point", "lq_tone_white", "Times the peak: light that reaches it.", 1, 12, 0.5f, 6, NULL, NULL},
 	{"     Fullbright glow x", "lq_emission", "Lava, flames, lit panels.", 1, 8, 0.5f, 3, NULL, NULL},
 	{"      Explosion glow x", "lq_sprite_emission", "Explosions and other sprites.", 1, 8, 0.5f, 3, NULL, NULL},
+	// The RAM slider (AGENDA item 6): an amount of available RAM divided between
+	// keeping built maps and lighting detail. Step -1 marks the amount.
+	{"         Scene caching", "lq_ram_cache", "Keep built maps: restarts skip bounce.", 0, 1, 0, 1, "off", "on"},
+	{"       Lighting detail", "lq_ram_lighting", "Shadow cube size from its share.", 0, 1, 0, 1, "fixed", "by RAM"},
+	{"         Available RAM", "lq_ram_available_mb", "Shared by caching and lighting.", 0, 0, -1, 0, NULL, NULL},
+	{"    Caching / lighting", "lq_ram_split", "Percent of it to caching.", 0, 100, 10, 50, NULL, NULL},
 };
 // The table's settings, then Reset sliders as the last row.
 #define	LUMINOUS_TABLE	((int)(sizeof(luminous_options) / sizeof(luminous_options[0])))
@@ -2097,6 +2103,8 @@ static int M_LuminousRow (const char *cvar)
 	return -1;
 }
 
+static float M_RamAvailable (void);
+
 void M_Menu_Luminous_f (void)
 {
 	key_dest = key_menu;
@@ -2105,6 +2113,8 @@ void M_Menu_Luminous_f (void)
 	luminous_tuning = false;
 	if (luminous_cursor >= LUMINOUS_ITEMS)
 		luminous_cursor = 0;
+	if (Cvar_VariableValue ("lq_ram_available_mb") <= 0)	// prefilled the first time it is shown
+		Cvar_SetValue ("lq_ram_available_mb", M_RamAvailable ());
 }
 
 static float M_LuminousValue (const luminous_option_t *o)
@@ -2116,9 +2126,34 @@ static float M_LuminousValue (const luminous_option_t *o)
 	return v;
 }
 
+// The RAM slider's amount, in MB: as set, or half of free RAM when unset
+// (the menu's prefill, saved the first time the page shows it).
+static float M_RamAvailable (void)
+{
+	float	mb = Cvar_VariableValue ("lq_ram_available_mb");
+	float	free_mb = (float)(LQ_FreeRAM () >> 20);
+
+	if (mb <= 0)
+		mb = free_mb > 0 ? (float)((int)(free_mb / 2 / 1024 + 0.5f) * 1024) : 1024;
+	if (free_mb > 0 && mb > free_mb)
+		mb = free_mb;
+	return mb < 1024 ? 1024 : mb;
+}
+
 static void M_LuminousSetting (const luminous_option_t *o, int y)
 {
 	M_Print (16, y, (char *)o->label);
+	if (o->step < 0)
+	{
+		M_Print (220, y, va("%.1f GB", M_RamAvailable () / 1024));
+		return;
+	}
+	if (!Q_strcmp ((char *)o->cvar, "lq_ram_split") &&
+		(!Cvar_VariableValue ("lq_ram_cache") || !Cvar_VariableValue ("lq_ram_lighting")))
+	{
+		M_Print (220, y, "-");	// the split applies only while both are on
+		return;
+	}
 	if (!o->step)
 		M_Print (220, y, (char *)(M_LuminousValue (o) != 0 ? o->on : o->off));
 	else
@@ -2150,7 +2185,16 @@ void M_Luminous_Draw (void)
 		M_Print (16, 176, (char *)luminous_options[luminous_cursor].help);
 	else
 		M_Print (16, 176, "Sliders back to their defaults.");
-	M_Print (16, 184, "Changes apply at once. Packs: Video.");
+	if (luminous_cursor < LUMINOUS_TABLE && !Q_strncmp ((char *)luminous_options[luminous_cursor].cvar, "lq_ram_", 7))
+	{
+		size_t	caching, lighting;
+		int		shift;
+		LQ_RamShares (&caching, &lighting, &shift);
+		M_Print (16, 184, va("Cache %.1f GB, light %.1f GB: %s", caching / 1073741824.0, lighting / 1073741824.0,
+			shift > 0 ? "2x" : shift < 0 ? "1/2" : "1x"));
+	}
+	else
+		M_Print (16, 184, "Changes apply at once. Packs: Video.");
 }
 
 void M_Luminous_Key (int key)
@@ -2191,12 +2235,21 @@ void M_Luminous_Key (int key)
 	{
 		if (key == K_ENTER)
 			for (i = 0 ; i < LUMINOUS_TABLE ; i++)
-				if (luminous_options[i].step)
+				if (luminous_options[i].step > 0)
 					Cvar_SetValue ((char *)luminous_options[i].cvar, luminous_options[i].base);
 		return;
 	}
 	o = &luminous_options[luminous_cursor];
-	luminous_tuning = o->step != 0;	// sliders shrink to their line; switches keep the page
+	if (o->step < 0)	// the RAM amount: 1 GB steps, up to free RAM
+	{
+		Cvar_SetValue ((char *)o->cvar, M_RamAvailable () + dir * 1024);
+		Cvar_SetValue ((char *)o->cvar, M_RamAvailable ());	// held to 1 GB .. free RAM
+		return;
+	}
+	if (!Q_strcmp ((char *)o->cvar, "lq_ram_split") &&
+		(!Cvar_VariableValue ("lq_ram_cache") || !Cvar_VariableValue ("lq_ram_lighting")))
+		return;
+	luminous_tuning = o->step > 0;	// sliders shrink to their line; switches keep the page
 	v = M_LuminousValue (o);
 	if (!o->step)
 		v = v != 0 ? 0 : 1;
@@ -3772,6 +3825,7 @@ void M_Init (void)
 	Cmd_AddCommand ("menu_multiplayer", M_Menu_MultiPlayer_f);
 	Cmd_AddCommand ("menu_setup", M_Menu_Setup_f);
 	Cmd_AddCommand ("menu_options", M_Menu_Options_f);
+	Cmd_AddCommand ("menu_luminous", M_Menu_Luminous_f);	// LuminousQuake
 	Cmd_AddCommand ("menu_keys", M_Menu_Keys_f);
 	Cmd_AddCommand ("menu_video", M_Menu_Video_f);
 	Cmd_AddCommand ("help", M_Menu_Help_f);

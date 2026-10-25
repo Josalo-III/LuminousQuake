@@ -18,3 +18,5 @@ int LQ_UIScale(void) { return 1; }
 int LQ_UIActive(void) { return 0; }
 void LQ_UIShutdown(void) {}
 int LQ_TexturePacks(char names[][64], const char *places[], int capacity) { (void)names; (void)places; (void)capacity; return 0; }
+size_t LQ_FreeRAM(void) { return 0; }
+void LQ_RamShares(size_t *caching, size_t *lighting, int *shadow_shift) { *caching = *lighting = 0; *shadow_shift = 0; }

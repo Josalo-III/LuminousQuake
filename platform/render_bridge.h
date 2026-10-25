@@ -1,6 +1,7 @@
 /* Classic GPU frame adaptation and scaled UI coverage. GPL-2.0-or-later. */
 #ifndef LQ_RENDER_BRIDGE_H
 #define LQ_RENDER_BRIDGE_H
+#include <stddef.h>
 void LQ_RenderBegin(void);
 void LQ_RenderAfterCommands(void);
 int LQ_RenderBridgeActive(void);
@@ -13,6 +14,9 @@ void LQ_RenderBridgeRegister(void);
  * offers, and "auto" takes the first. `places` (optional) gets where each is,
  * as a sentence. Returns how many were written. */
 int LQ_TexturePacks(char names[][64], const char *places[], int capacity);
+size_t LQ_FreeRAM(void); /* free RAM, counting what macOS reclaims on demand; 0 if unknown */
+/* The RAM slider's shares now, and the shadow cube scale the lighting share gives (-1, 0, 1). */
+void LQ_RamShares(size_t *caching, size_t *lighting, int *shadow_shift);
 int LQ_RenderGPUView(void);
 /* Particle kinds for LQ_RenderGPUParticle. For smoke, scale is the puff's
  * growth (1 when emitted) and erode the fraction its surface has worn away.

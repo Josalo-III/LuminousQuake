@@ -68,6 +68,13 @@ static uint32_t TubeCamera(void) { return (uint32_t)Cvar_VariableValue("r_fluore
  * "available", split evenly with lighting), and -1 turns it off. */
 #define SCENE_CACHE_ENTRIES 2
 static cvar_t lq_scene_cache_mb = {"lq_scene_cache_mb", "0", true};
+/* The RAM slider (AGENDA item 6, decided October 17), on Luminous Options:
+ * an amount of available RAM (lq_ram_available_mb; 0 until the menu first
+ * shows it, meaning half of free RAM), divided between scene caching and
+ * lighting complexity, each its own switch, by lq_ram_split (percent to
+ * caching), which applies only while both are on. */
+static cvar_t lq_ram_cache = {"lq_ram_cache", "1", true}, lq_ram_lighting = {"lq_ram_lighting", "1", true};
+static cvar_t lq_ram_available_mb = {"lq_ram_available_mb", "0", true}, lq_ram_split = {"lq_ram_split", "50", true};
 /* Diagnostics for measurements: 0 submits every PVS face (lq_cull), or
  * lights Luminous without shadow cubes or filtering (lq_shadows). */
 static cvar_t lq_cull = {"lq_cull", "1"}, lq_shadows = {"lq_shadows", "1"};
@@ -223,13 +230,48 @@ static size_t FreeRAM(void)
     return pages > 0 && page > 0 ? (size_t)pages * (size_t)page : 0;
 #endif
 }
-static size_t SceneCacheBudget(void)
+size_t LQ_FreeRAM(void) { return FreeRAM(); }
+/* The RAM slider's amount: what the menu set, or half of free RAM (the
+ * menu's prefill), held at 100% of free RAM. */
+static size_t RamAvailable(void)
 {
     static size_t automatic;
+    size_t free_ram = FreeRAM();
+    if (lq_ram_available_mb.value > 0) {
+        size_t chosen = (size_t)lq_ram_available_mb.value << 20;
+        return free_ram && chosen > free_ram ? free_ram : chosen;
+    }
+    if (!automatic) { automatic = free_ram / 2; if (!automatic) automatic = (size_t)1024 << 20; }
+    return automatic;
+}
+/* Each share: all of the amount with one switch on, the split with both. */
+static size_t RamShare(int caching)
+{
+    int cache = lq_ram_cache.value != 0, light = lq_ram_lighting.value != 0;
+    if (caching ? !cache : !light) return 0;
+    if (!cache || !light) return RamAvailable();
+    float split = lq_ram_split.value >= 0 && lq_ram_split.value <= 100 ? lq_ram_split.value : 50;
+    return (size_t)((double)RamAvailable() * (caching ? split : 100 - split) / 100);
+}
+static size_t SceneCacheBudget(void)
+{
     if (lq_scene_cache_mb.value < 0) return 0;
     if (lq_scene_cache_mb.value > 0) return (size_t)lq_scene_cache_mb.value << 20;
-    if (!automatic) { automatic = FreeRAM() / 4; if (!automatic) automatic = (size_t)512 << 20; }
-    return automatic;
+    return RamShare(1);
+}
+/* Lighting complexity from its share: shadow cubes at twice their size (two
+ * arrays of each, 1.45 GB of depth) where the share holds them, as they are
+ * (362 MB) where it holds those, otherwise at half (90 MB). With lighting
+ * off, the fixed sizes. */
+static int ShadowShift(void)
+{
+    if (lq_ram_lighting.value == 0) return 0;
+    size_t share = RamShare(0), base = (size_t)362 << 20;
+    return share >= base * 4 ? 1 : share >= base ? 0 : -1;
+}
+void LQ_RamShares(size_t *caching, size_t *lighting, int *shadow_shift)
+{
+    *caching = RamShare(1); *lighting = RamShare(0); *shadow_shift = ShadowShift();
 }
 static void SceneCacheFreeAll(void)
 {
@@ -262,7 +304,9 @@ static void SceneCacheStore(void)
 }
 void LQ_RenderBridgeRegister(void)
 {
-    Cvar_RegisterVariable(&lq_scene_cache_mb); Cvar_RegisterVariable(&lq_cull); Cvar_RegisterVariable(&lq_shadows);
+    Cvar_RegisterVariable(&lq_scene_cache_mb);
+    Cvar_RegisterVariable(&lq_ram_cache); Cvar_RegisterVariable(&lq_ram_lighting);
+    Cvar_RegisterVariable(&lq_ram_available_mb); Cvar_RegisterVariable(&lq_ram_split); Cvar_RegisterVariable(&lq_cull); Cvar_RegisterVariable(&lq_shadows);
     Cvar_RegisterVariable(&lq_panel_shadows); Cvar_RegisterVariable(&lq_shadow_free);
     Cvar_RegisterVariable(&lq_pack_textures); Cvar_RegisterVariable(&lq_pack_bumps); Cvar_RegisterVariable(&lq_pack_parallax); Cvar_RegisterVariable(&lq_pack_relief_shadows); Cvar_RegisterVariable(&lq_pack_detail_cull); Cvar_RegisterVariable(&lq_pack_gloss); Cvar_RegisterVariable(&lq_texture_pack);
     Cvar_RegisterVariable(&lq_pack_brightness);
@@ -853,6 +897,7 @@ qboolean LQ_RenderBridgePresent(void)
     LQ_GPUTestPattern(gpu, Cvar_VariableValue("lq_hdr_test") != 0);
     LQ_GPUToneRamp(gpu, lq_tone_ramp.value != 0 || M_ShowToneRamp());
     LQ_GPUTone(gpu, lq_tone_shoulder.value, lq_tone_white.value, lq_emission.value, lq_sprite_emission.value);
+    LQ_GPUShadowScale(gpu, ShadowShift());
     {   /* Say in the console when output switches between SDR and HDR. */
         static int reported = -1; static float reported_headroom;
         float headroom; int hdr = LQ_GPUDisplayHDR(gpu, &headroom);

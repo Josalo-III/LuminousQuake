@@ -441,6 +441,18 @@ them. Principles, decided October 17, 2026:
   amount of memory, prefilled at 50% of the RAM free when it is first shown,
   and limited to 100% of free RAM. The slider divides that amount. "Free"
   includes inactive and purgeable pages, which macOS reclaims on demand.
+  **Built October 25** on Luminous Options (Scene caching, Lighting detail,
+  Available RAM in 1 GB steps, Caching / lighting): `lq_ram_cache`,
+  `lq_ram_lighting`, `lq_ram_available_mb` (saved when first shown; 21 GB on
+  this Mac), `lq_ram_split`. The caching share replaces the scene cache's
+  fixed quarter of free RAM (`lq_scene_cache_mb` still overrides it); the
+  defaults give the same amount. The lighting share sets shadow cube size:
+  twice the fixed sizes where it holds them (1.45 GB for the two sets of
+  cube arrays), the fixed sizes where it holds 362 MB, otherwise half; off
+  gives the fixed sizes. At E1M3's start, 2x against 1x changes 1.3% of
+  pixels by more than 16 levels, on shadow edges. Still to scale: probe
+  spacing (a map rebuild, and more load time) and bounce resolution. Larger
+  cubes also cost GPU time when they are redrawn.
 - **Balance follows the hardware.** Measured October 17 at 1080p: the CPU does
   about 4 ms of work a frame, the GPU about 12 ms. Work that can run on either
   should move to whichever is idle, chosen at run time from measured load, not

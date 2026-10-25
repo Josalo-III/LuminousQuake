@@ -91,6 +91,7 @@ struct lq_gpu {
      * light changes; static world casters persist. */
     SDL_GPUGraphicsPipeline *shadow_pipeline;
     SDL_GPUTexture *shadow_maps[LQ_SHADOW_ARRAYS], *shadow_dummy;
+    int shadow_shift; /* cube face size: LQ_SHADOW_ARRAY_SIZES doubled (1), halved (-1) or as is (0) */
     /* The same cubes with static casters only: a face that only moving casters
      * change is copied from here and the movers drawn over it. */
     SDL_GPUTexture *shadow_static[LQ_SHADOW_ARRAYS];
@@ -375,6 +376,29 @@ failed:
     if (vertex) SDL_ReleaseGPUShader(g->device, vertex);
     if (fragment) SDL_ReleaseGPUShader(g->device, fragment);
     LQ_GPUDestroy(g); return NULL;
+}
+/* A shadow array's cube face size, scaled by the lighting memory share
+ * (LQ_GPUShadowScale). */
+static uint32_t ShadowSize(const lq_gpu *g, int array)
+{
+    static const uint32_t sizes[] = LQ_SHADOW_ARRAY_SIZES;
+    return g->shadow_shift > 0 ? sizes[array] << 1 : g->shadow_shift < 0 ? sizes[array] >> 1 : sizes[array];
+}
+void LQ_GPUShadowScale(lq_gpu *g, int shift)
+{
+    shift = shift > 0 ? 1 : shift < 0 ? -1 : 0;
+    if (!g || shift == g->shadow_shift) return;
+    g->shadow_shift = shift;
+    if (!g->shadow_maps[0]) return;
+    /* Recreated at the new size on the next frame that draws shadows; every
+     * cube is redrawn then. */
+    SDL_WaitForGPUIdle(g->device);
+    for (int t = 0; t < LQ_SHADOW_ARRAYS; ++t) {
+        if (g->shadow_maps[t]) SDL_ReleaseGPUTexture(g->device, g->shadow_maps[t]);
+        if (g->shadow_static[t]) SDL_ReleaseGPUTexture(g->device, g->shadow_static[t]);
+        g->shadow_maps[t] = g->shadow_static[t] = NULL;
+    }
+    memset(g->shadow_valid, 0, sizeof(g->shadow_valid));
 }
 static SDL_GPUTexture *Texture(lq_gpu *g, uint32_t w, uint32_t h, SDL_GPUTextureFormat format, SDL_GPUTextureUsageFlags usage)
 {
@@ -1247,8 +1271,7 @@ static void LightUniforms(lq_light_uniforms *uniforms, const lq_gpu *g, const lq
     uniforms->parameters[1] = view->luminous_lighting != 0;
     uniforms->parameters[2] = LQ_SHADOW_ARRAYS;
     uniforms->parameters[3] = view->luminous_lighting && g->shadow_maps[0] && !view->disable_shadows;
-    static const uint32_t sizes[] = LQ_SHADOW_ARRAY_SIZES;
-    for (int t = 0; t < LQ_SHADOW_ARRAYS; ++t) uniforms->shadow_sizes[t] = (float)sizes[t];
+    for (int t = 0; t < LQ_SHADOW_ARRAYS; ++t) uniforms->shadow_sizes[t] = (float)ShadowSize(g, t);
     uniforms->tuning[0] = view->exposure > 0 ? view->exposure : 1;
     uniforms->color_space[0] = view->light_gamma > 0 ? view->light_gamma : LQ_LIGHT_GAMMA;
     uniforms->color_space[1] = view->shadow_faint < 0 ? 0 : view->shadow_faint > 0 ? view->shadow_faint : LQ_SHADOW_FAINT;
@@ -1301,11 +1324,11 @@ static void ShadowFace(int face, const float origin[3], float out[16])
 static int ShadowMaps(lq_gpu *g)
 {
     if (g->shadow_maps[0]) return 1;
-    static const uint32_t sizes[] = LQ_SHADOW_ARRAY_SIZES, cubes[] = LQ_SHADOW_ARRAY_CUBES;
+    static const uint32_t cubes[] = LQ_SHADOW_ARRAY_CUBES;
     for (int t = 0; t < LQ_SHADOW_ARRAYS; ++t) {
         if (cubes[t] * 6 > 255) { SDL_SetError("shadow array exceeds SDL's 8-bit depth layer"); return 0; }
-        g->shadow_maps[t] = CubeArray(g, sizes[t], cubes[t]);
-        g->shadow_static[t] = CubeArray(g, sizes[t], cubes[t]);
+        g->shadow_maps[t] = CubeArray(g, ShadowSize(g, t), cubes[t]);
+        g->shadow_static[t] = CubeArray(g, ShadowSize(g, t), cubes[t]);
         if (!g->shadow_maps[t] || !g->shadow_static[t]) {
             for (int u = 0; u <= t; ++u) {
                 if (g->shadow_maps[u]) SDL_ReleaseGPUTexture(g->device, g->shadow_maps[u]);
@@ -1399,7 +1422,6 @@ static void RenderShadows(lq_gpu *g, SDL_GPUCommandBuffer *command, const lq_vie
         uint8_t redraw = changed ? 0x3f : (uint8_t)(touched | g->shadow_dynamic_faces[slot] | g->shadow_stale[slot]);
         if (!redraw) continue;
         lq_shadow_uniforms uniforms = {{0}};
-        static const uint32_t sizes[] = LQ_SHADOW_ARRAY_SIZES;
         uint32_t ranges = brushes ? g->caster_range_count : g->caster_range_world_count;
         int classified = 0; /* static caster ranges' faces, found once per rebuild */
         uint32_t array, cube; LQ_ShadowSlot(slot, &array, &cube);
@@ -1415,7 +1437,7 @@ static void RenderShadows(lq_gpu *g, SDL_GPUCommandBuffer *command, const lq_vie
                 SDL_EndGPURenderPass(SDL_BeginGPURenderPass(command, NULL, 0, &depth));
                 continue;
             }
-            SDL_GPUViewport viewport = {0, 0, (float)sizes[array], (float)sizes[array], 0, 1};
+            SDL_GPUViewport viewport = {0, 0, (float)ShadowSize(g, (int)array), (float)ShadowSize(g, (int)array), 0, 1};
             if (changed) { /* the static casters, once per light change */
                 depth.texture = g->shadow_static[array]; depth.layer = layer; depth.load_op = SDL_GPU_LOADOP_CLEAR;
                 SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(command, NULL, 0, &depth);
@@ -1448,7 +1470,7 @@ static void RenderShadows(lq_gpu *g, SDL_GPUCommandBuffer *command, const lq_vie
             }
             SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(command);
             SDL_GPUTextureLocation from = {g->shadow_static[array], 0, layer, 0, 0, 0}, to = {g->shadow_maps[array], 0, layer, 0, 0, 0};
-            SDL_CopyGPUTextureToTexture(copy, &from, &to, sizes[array], sizes[array], 1, false);
+            SDL_CopyGPUTextureToTexture(copy, &from, &to, ShadowSize(g, (int)array), ShadowSize(g, (int)array), 1, false);
             SDL_EndGPUCopyPass(copy);
             if (present & (1 << face)) { /* moving and resting casters over the static face */
                 depth.texture = g->shadow_maps[array]; depth.layer = layer; depth.load_op = SDL_GPU_LOADOP_LOAD;
