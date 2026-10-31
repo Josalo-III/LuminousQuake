@@ -113,11 +113,30 @@ let outline: [CGFloat] = [
 ]
 let directory = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+// +1 EV doubles linear-light intensity, rather than doubling encoded RGB.
+let exposureGain = 2.0
+func exposed(_ value: CGFloat) -> CGFloat {
+    let encoded = Double(value)
+    let linear = encoded <= 0.04045 ? encoded / 12.92 : pow((encoded + 0.055) / 1.055, 2.4)
+    let lifted = min(linear * exposureGain, 1.0)
+    return CGFloat(lifted <= 0.0031308 ? lifted * 12.92 : 1.055 * pow(lifted, 1.0 / 2.4) - 0.055)
+}
+// AppKit renders premultiplied RGBA. Unpremultiply for exposure, then restore
+// alpha coverage so the rounded edge stays clean against any Dock background.
+var exposureTable = [UInt8](repeating: 0, count: 256 * 256)
+for alpha in 1...255 {
+    for channel in 0...255 {
+        let straight = min(CGFloat(channel) / CGFloat(alpha), 1)
+        let premultiplied = exposed(straight) * CGFloat(alpha)
+        exposureTable[alpha * 256 + channel] = UInt8(premultiplied.rounded())
+    }
+}
 for (name, size) in [("icon_16x16",16),("icon_16x16@2x",32),("icon_32x32",32),
                      ("icon_32x32@2x",64),("icon_128x128",128),("icon_128x128@2x",256),
                      ("icon_256x256",256),("icon_256x256@2x",512),("icon_512x512",512),("icon_512x512@2x",1024)] {
     let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size,
-        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+        bitmapFormat: [], bytesPerRow: 0, bitsPerPixel: 0)!
     NSGraphicsContext.saveGraphicsState()
     let graphics = NSGraphicsContext(bitmapImageRep: bitmap)!
     NSGraphicsContext.current = graphics
@@ -149,5 +168,15 @@ for (name, size) in [("icon_16x16",16),("icon_16x16@2x",32),("icon_32x32",32),
         cg.restoreGState()
     }
     NSGraphicsContext.restoreGraphicsState()
+    let pixels = bitmap.bitmapData!
+    for y in 0..<size {
+        for x in 0..<size {
+            let offset = y * bitmap.bytesPerRow + x * 4
+            let alpha = Int(pixels[offset + 3])
+            for channel in 0..<3 {
+                pixels[offset + channel] = exposureTable[alpha * 256 + Int(pixels[offset + channel])]
+            }
+        }
+    }
     try bitmap.representation(using:.png,properties:[:])!.write(to:directory.appendingPathComponent(name+".png"))
 }

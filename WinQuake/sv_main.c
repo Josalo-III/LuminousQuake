@@ -238,7 +238,7 @@ void SV_SendServerinfo (client_t *client)
 	else
 		MSG_WriteByte (&client->message, GAME_COOP);
 
-	snprintf (message, sizeof(message), "%s", pr_strings+sv.edicts->v.message);
+	snprintf (message, sizeof(message), "%s", PR_GetString(sv.edicts->v.message));
 
 	MSG_WriteString (&client->message,message);
 
@@ -486,7 +486,7 @@ void SV_WriteEntitiesToClient (edict_t	*clent, sizebuf_t *msg)
 		if (ent != clent)	// clent is ALLWAYS sent
 		{
 // ignore ents without visible models
-			if (!ent->v.modelindex || !pr_strings[ent->v.model])
+			if (!ent->v.modelindex || !*PR_GetString(ent->v.model))
 				continue;
 
 			for (i=0 ; i < ent->num_leafs ; i++)
@@ -736,7 +736,7 @@ void SV_WriteClientdataToMessage (edict_t *ent, sizebuf_t *msg)
 //	if (ent->v.weapon)
 		bits |= SU_WEAPON;
 
-	weaponmodel = SV_ModelIndex(pr_strings+ent->v.weaponmodel);
+	weaponmodel = SV_ModelIndex(PR_GetString(ent->v.weaponmodel));
 	if (sv.protocol != PROTOCOL_NETQUAKE)
 	{
 		if (weaponmodel & 0xFF00)
@@ -1210,7 +1210,7 @@ void SV_CreateBaseline (void)
 		{
 			svent->baseline.colormap = 0;
 			svent->baseline.modelindex =
-				SV_ModelIndex(pr_strings + svent->v.model);
+				SV_ModelIndex(PR_GetString(svent->v.model));
 		}
 		svent->baseline.alpha = SV_EntityAlpha (svent);
 		svent->baseline.scale = SV_EntityScale (svent);
@@ -1491,7 +1491,7 @@ void SV_SpawnServer (char *server)
 	ent = EDICT_NUM(0);
 	memset (&ent->v, 0, progs->entityfields * 4);
 	ent->free = false;
-	ent->v.model = sv.worldmodel->name - pr_strings;
+	ent->v.model = PR_SetString(sv.worldmodel->name);
 	ent->v.modelindex = 1;		// world model
 	ent->v.solid = SOLID_BSP;
 	ent->v.movetype = MOVETYPE_PUSH;
@@ -1501,9 +1501,9 @@ void SV_SpawnServer (char *server)
 	else
 		pr_global_struct->deathmatch = deathmatch.value;
 
-	pr_global_struct->mapname = sv.name - pr_strings;
+	pr_global_struct->mapname = PR_SetString(sv.name);
 #ifdef QUAKE2
-	pr_global_struct->startspot = sv.startspot - pr_strings;
+	pr_global_struct->startspot = PR_SetString(sv.startspot);
 #endif
 
 // serverflags are for cross level information (sigils)

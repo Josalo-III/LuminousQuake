@@ -40,7 +40,8 @@ with tempfile.TemporaryDirectory(prefix='lqr-') as directory:
             shutil.copyfile(pack, game / pack.name)
     classic = args.renderer == 'classic'
     duration = args.run_seconds or (20 if classic else 8)
-    commands = (f'vid_width {args.width}\nvid_height {args.height}\nfov {args.fov}\n' +
+    # Scene upload/cache messages checked below are developer diagnostics.
+    commands = ('developer 1\n' + f'vid_width {args.width}\nvid_height {args.height}\nfov {args.fov}\n' +
                 f'gpu_filter {int(args.smooth)}\ngpu_msaa {args.msaa}\n' +
                 f'gpu_mipmaps {args.mipmaps}\ngpu_anisotropy {args.anisotropy}\n' +
                 'lq_renderer ' + ('1' if classic else '0') + '\n' +

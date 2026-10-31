@@ -24,6 +24,46 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 dprograms_t		*progs;
 dfunction_t		*pr_functions;
 char			*pr_strings;
+/* QuakeC cells are 32-bit, but native strings can be anywhere in a 64-bit
+ * address space. Positive values index progs.dat; negative values are handles
+ * to borrowed native strings. Their owners keep them alive until the next map. */
+static const char **pr_native_strings;
+static size_t pr_native_count, pr_native_capacity;
+
+char *PR_GetString(string_t value)
+{
+	if (value >= 0) {
+		if (value >= progs->numstrings)
+			Sys_Error("PR_GetString: invalid program string %d", value);
+		return pr_strings + value;
+	}
+
+	size_t index = (size_t)(-(int64_t)value - 1);
+	if (index >= pr_native_count)
+		Sys_Error("PR_GetString: invalid native string %d", value);
+	return (char *)pr_native_strings[index];
+}
+
+string_t PR_SetString(const char *text)
+{
+	if (!text) return 0;
+	uintptr_t address = (uintptr_t)text, base = (uintptr_t)pr_strings;
+	if (address >= base && address - base < (uintptr_t)progs->numstrings)
+		return (string_t)(address - base);
+	for (size_t i = 0; i < pr_native_count; ++i)
+		if (pr_native_strings[i] == text) return -(string_t)i - 1;
+	if (pr_native_count == INT_MAX)
+		Sys_Error("PR_SetString: too many native strings");
+	if (pr_native_count == pr_native_capacity) {
+		size_t capacity = pr_native_capacity ? pr_native_capacity * 2 : 256;
+		const char **strings = realloc(pr_native_strings, capacity * sizeof(*strings));
+		if (!strings) Sys_Error("PR_SetString: out of memory");
+		pr_native_strings = strings;
+		pr_native_capacity = capacity;
+	}
+	pr_native_strings[pr_native_count++] = text;
+	return -(string_t)pr_native_count;
+}
 ddef_t			*pr_fielddefs;
 ddef_t			*pr_globaldefs;
 dstatement_t	*pr_statements;
@@ -288,7 +328,7 @@ char *PR_ValueString (etype_t type, eval_t *val)
 	switch (type)
 	{
 	case ev_string:
-		sprintf (line, "%s", pr_strings + val->string);
+		sprintf (line, "%s", PR_GetString(val->string));
 		break;
 	case ev_entity:	
 		sprintf (line, "entity %i", NUM_FOR_EDICT(PROG_TO_EDICT(val->edict)) );
@@ -340,7 +380,7 @@ char *PR_UglyValueString (etype_t type, eval_t *val)
 	switch (type)
 	{
 	case ev_string:
-		sprintf (line, "%s", pr_strings + val->string);
+		sprintf (line, "%s", PR_GetString(val->string));
 		break;
 	case ev_entity:	
 		sprintf (line, "%i", NUM_FOR_EDICT(PROG_TO_EDICT(val->edict)));
@@ -739,7 +779,7 @@ qboolean	ED_ParseEpair (void *base, ddef_t *key, char *s)
 	switch (key->type & ~DEF_SAVEGLOBAL)
 	{
 	case ev_string:
-		*(string_t *)d = ED_NewString (s) - pr_strings;
+		*(string_t *)d = PR_SetString(ED_NewString(s));
 		break;
 		
 	case ev_float:
@@ -964,7 +1004,7 @@ void ED_LoadFromFile (char *data)
 		}
 
 	// look for the spawn function
-		func = ED_FindFunction ( pr_strings + ent->v.classname );
+		func = ED_FindFunction ( PR_GetString(ent->v.classname) );
 
 		if (!func)
 		{
@@ -1047,6 +1087,7 @@ void PR_LoadProgs (void)
 
 	pr_functions = PR_Lump(progs->ofs_functions, progs->numfunctions, sizeof(dfunction_t), _Alignof(dfunction_t));
 	pr_strings = (char *)progs + progs->ofs_strings;
+	pr_native_count = 0;
 	pr_globaldefs = PR_Lump(progs->ofs_globaldefs, progs->numglobaldefs, sizeof(ddef_t), _Alignof(ddef_t));
 	pr_fielddefs = PR_Lump(progs->ofs_fielddefs, progs->numfielddefs, sizeof(ddef_t), _Alignof(ddef_t));
 	pr_statements = PR_Lump(progs->ofs_statements, progs->numstatements, sizeof(dstatement_t), _Alignof(dstatement_t));

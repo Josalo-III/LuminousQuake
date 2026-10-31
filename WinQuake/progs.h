@@ -55,6 +55,8 @@ typedef struct edict_s
 extern	dprograms_t		*progs;
 extern	dfunction_t		*pr_functions;
 extern	char			*pr_strings;
+char *PR_GetString(string_t value);
+string_t PR_SetString(const char *text);
 extern	ddef_t			*pr_globaldefs;
 extern	ddef_t			*pr_fielddefs;
 extern	dstatement_t	*pr_statements;
@@ -105,13 +107,13 @@ int NUM_FOR_EDICT(edict_t *e);
 #define	G_EDICT(o) ((edict_t *)((byte *)sv.edicts+ *(int *)&pr_globals[o]))
 #define G_EDICTNUM(o) NUM_FOR_EDICT(G_EDICT(o))
 #define	G_VECTOR(o) (&pr_globals[o])
-#define	G_STRING(o) (pr_strings + *(string_t *)&pr_globals[o])
+#define	G_STRING(o) PR_GetString(*(string_t *)&pr_globals[o])
 #define	G_FUNCTION(o) (*(func_t *)&pr_globals[o])
 
 #define	E_FLOAT(e,o) (((float*)&e->v)[o])
 #define	E_INT(e,o) (*(int *)&((float*)&e->v)[o])
 #define	E_VECTOR(e,o) (&((float*)&e->v)[o])
-#define	E_STRING(e,o) (pr_strings + *(string_t *)&((float*)&e->v)[o])
+#define	E_STRING(e,o) PR_GetString(*(string_t *)&((float*)&e->v)[o])
 
 extern	int		type_size[8];
 
