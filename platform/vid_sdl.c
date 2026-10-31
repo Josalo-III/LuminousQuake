@@ -442,7 +442,8 @@ static int video_filter, video_msaa, video_mipmaps, video_anisotropy, video_wate
 static int video_lerp, video_fog;
 static int video_hdr, video_peak; /* lq_hdr; index into peak_levels */
 static float video_peak_custom; /* a lq_hdr_peak set from the console that no preset matches; kept until changed here */
-static const float peak_levels[] = {0, 1.5f, 2, 3, 4, 6, 10};
+static const float peak_levels[] = {0, 1.5f, 2, 3, 4, 6, 8, 10}; /* 8: the replaced MacBook XDR panel (October 31) */
+#define PEAK_LEVELS ((int)(sizeof(peak_levels) / sizeof(peak_levels[0])))
 static const char *tube_cameras[] = {"eye", "film 24p", "NTSC 1/60", "NTSC 1/250", "PAL 25p"};
 static const float water_levels[] = {1, 0.8f, 0.6f, 0.4f};
 static const int anisotropy_levels[] = {1,2,4,8,16};
@@ -483,7 +484,7 @@ static void VideoMenuInit(void)
     video_fog = Cvar_VariableValue("lq_fog") != 0;
     video_hdr = lq_hdr.value != 0;
     video_peak = 0; video_peak_custom = 0;
-    for (int i = 1; i < 7; ++i) if (fabsf(lq_hdr_peak.value - peak_levels[i]) < 0.01f) video_peak = i;
+    for (int i = 1; i < PEAK_LEVELS; ++i) if (fabsf(lq_hdr_peak.value - peak_levels[i]) < 0.01f) video_peak = i;
     if (!video_peak && isfinite(lq_hdr_peak.value) && lq_hdr_peak.value >= 1) video_peak_custom = lq_hdr_peak.value;
     video_msaa = gpu_msaa.value == 4 ? 2 : gpu_msaa.value == 2 ? 1 : 0;
     video_fov = Cvar_VariableValue("fov");
@@ -666,6 +667,6 @@ static void VideoMenuKey(int key)
     else if (video_cursor == 11) video_lerp = !video_lerp;
     else if (video_cursor == 12) video_fog = !video_fog;
     else if (video_cursor == 13) video_hdr = !video_hdr;
-    else if (video_cursor == 14) { video_peak = (video_peak + (key == K_LEFTARROW ? 6 : 1)) % 7; video_peak_custom = 0; }
+    else if (video_cursor == 14) { video_peak = (video_peak + (key == K_LEFTARROW ? PEAK_LEVELS - 1 : 1)) % PEAK_LEVELS; video_peak_custom = 0; }
     VideoApply((video_cursor >= 3 && video_cursor <= 7) || video_cursor >= 13);
 }

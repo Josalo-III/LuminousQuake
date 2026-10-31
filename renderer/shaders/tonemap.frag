@@ -29,7 +29,9 @@ void main() {
         // lq_hdr_test: SDR white along the top; below, bands at fixed multiples
         // of it, in display values the final HDR pass turns back into exactly
         // these light levels. Where the display stops, the bands stop changing.
-        const float levels[10] = float[10](0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 6.0, 10.0);
+        // Up to 16, the most headroom the game uses: a MacBook XDR showed every band
+        // distinct when they stopped at 10 (October 31).
+        const float levels[10] = float[10](0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0);
         float level = uv.y < 0.15 ? 1.0 : (uv.y < 0.2 || fract(uv.x * 10.0) < 0.04) ? 0.0
             : levels[min(int(uv.x * 10.0), 9)];
         if (display.target.x < 0.5) level = min(level, 1.0);

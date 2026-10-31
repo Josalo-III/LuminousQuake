@@ -1,4 +1,4 @@
-# Bundle a relocatable SDL runtime and sign this development app ad hoc.
+# Bundle a relocatable SDL runtime and sign this development app.
 file(MAKE_DIRECTORY "${BUNDLE}/Contents/Frameworks" "${BUNDLE}/Contents/Resources")
 get_filename_component(SDL_NAME "${SDL_LIBRARY}" NAME)
 set(EMBEDDED "${BUNDLE}/Contents/Frameworks/${SDL_NAME}")
@@ -28,4 +28,19 @@ if(NOT SDL_LICENSE)
 endif()
 list(GET SDL_LICENSE 0 SDL_LICENSE)
 file(COPY_FILE "${SDL_LICENSE}" "${BUNDLE}/Contents/Resources/SDL3-LICENSE.txt")
-execute_process(COMMAND /usr/bin/codesign --force --deep --sign - "${BUNDLE}" COMMAND_ERROR_IS_FATAL ANY)
+# An ad hoc signature names the app by its binary's hash, so macOS asked again
+# for Documents access after every rebuild (October 31). A certificate keeps
+# one identity across builds: LQ_CODESIGN_IDENTITY, else the first Apple
+# Development identity in the keychain, else ad hoc.
+set(IDENTITY "$ENV{LQ_CODESIGN_IDENTITY}")
+if(NOT IDENTITY)
+    execute_process(COMMAND /usr/bin/security find-identity -v -p codesigning
+        OUTPUT_VARIABLE IDENTITIES ERROR_QUIET)
+    if(IDENTITIES MATCHES "\\) ([0-9A-F]+) \"Apple Development:")
+        set(IDENTITY "${CMAKE_MATCH_1}")
+    else()
+        set(IDENTITY "-")
+        message(STATUS "No Apple Development identity; signing ad hoc (macOS will re-ask for folder access after each build)")
+    endif()
+endif()
+execute_process(COMMAND /usr/bin/codesign --force --deep --sign "${IDENTITY}" "${BUNDLE}" COMMAND_ERROR_IS_FATAL ANY)

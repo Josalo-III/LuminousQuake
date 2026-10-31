@@ -193,6 +193,23 @@ Luminous only. Classic GPU stays palette-exact.
   panel is replaced** (ordered October 24, due within the week). Until then,
   the Acer must be mirrored to it, so macOS reports the XDR's 10× headroom
   and `lq_hdr_peak 2` stands in for the Acer's real peak.
+  **October 30: the XDR panel is replaced**, and HDR now shows a wider range
+  on it than on the Acer. Tuning by eye is unblocked, on the built-in panel
+  with `lq_hdr_peak 0` (as reported). **October 31: tone stays the
+  player's.** The user has tested peak and shoulder but doesn't want one
+  display's taste baked in: the sliders stay in Luminous Options and HDR
+  peak in Video Options, and the shipped defaults change only if one is
+  plainly wrong on common displays. On `lq_hdr_test` every band was distinct, the 10× band
+  included, so the panel reaches at least 10× SDR white at the brightness in
+  use (macOS gives more headroom at lower brightness). The pattern now runs
+  0.5–16×, 16 being the most headroom the game takes, to find where it
+  stops: at 8× (8, 12 and 16 alike). Video Options → HDR peak gained an 8×
+  choice, for when macOS reports more than that; the console's "Display:
+  HDR, highlights up to …" line shows what it reports.
+  **October 31, menus:** Options → Brightness and Gamma now adjust as the
+  Luminous sliders do: the page shrinks to that line, scene undimmed. Every
+  menu starts at least one line lower, more where fullscreen puts the top
+  under the MacBook camera housing (SDL's window safe area, `M_Top`). The undimmed menu (`M_SceneUndimmed`) is still to be confirmed.
   **Frame rate collapse found October 24: the Acer, not the code.** With
   the Acer connected, Luminous at E1M3's start (Release, the user's
   settings) ran about 150 fps for a few seconds after each map load, then
@@ -535,6 +552,17 @@ protocol for interoperability is decided when this starts.
   "window moving" state. The October 19 capture experiments (5c04a7c:
   re-capturing on window events, `LQ_MacSettleWindowMove`, `input.log`) were
   then removed.
+- **October 31: all input ignored after the macOS 27.2 update.** The game
+  ran its demos but took no keys or clicks and had to be force quit. Every
+  key and click is dropped until the window has focus, and SDL no longer
+  reported focus. Confirmed by the user with a build that takes focus from
+  the first key or click on its window. That stays, and `LQ_PumpEvents` now
+  also asks Cocoa (`LQ_MacWindowKey`: app active and window key), acting
+  only when Cocoa's answer changes. Not yet confirmed: focus loss on
+  switching apps (mouse released, sound focus) and regain on switching back.
+  Same day: the development build is signed with the Apple Development
+  certificate (`tools/package_mac.cmake`), since the ad hoc signature made
+  macOS ask for Documents access again after every rebuild.
 
 These were already recorded elsewhere. They are listed here so they appear in
 every Not-yet-done list.

@@ -43,7 +43,7 @@ int LQ_GPUReadPixels(lq_gpu *gpu, uint8_t **pixels, uint32_t *width, uint32_t *h
  * whether HDR output may be used where the display offers it (lq_hdr), and a
  * cap on HDR highlights in multiples of SDR white (lq_hdr_peak; 0 none). */
 void LQ_GPUDisplay(lq_gpu *gpu, float gamma, int hdr, float peak);
-/* lq_hdr_test: replace the 3D view with bands at known light levels (0.5-10x SDR white). */
+/* lq_hdr_test: replace the 3D view with bands at known light levels (0.5-16x SDR white). */
 void LQ_GPUTestPattern(lq_gpu *gpu, int on);
 void LQ_GPUToneRamp(lq_gpu *gpu, int on);
 int LQ_GPUSupportsBC7(lq_gpu *gpu); /* texture packs below full size are stored as BC7 */

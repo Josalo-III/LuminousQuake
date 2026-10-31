@@ -7,6 +7,13 @@
 #include "mac_launch.h"
 static BOOL interactive;
 int LQ_MacFinderLaunch(void) { return interactive; }
+int LQ_MacWindowKey(SDL_Window *window)
+{
+    NSWindow *native = (__bridge NSWindow *)SDL_GetPointerProperty(SDL_GetWindowProperties(window),
+        SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+    if (!native) return -1;
+    return [NSApp isActive] && [native isKeyWindow];
+}
 static NSString *Normalize(NSString *path)
 {
     if ([[path lastPathComponent] caseInsensitiveCompare:@"id1"] == NSOrderedSame)

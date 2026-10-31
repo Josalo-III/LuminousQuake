@@ -37,6 +37,7 @@ enum {m_none, m_main, m_singleplayer, m_load, m_save, m_multiplayer, m_setup, m_
 // behind it, so the change shows on the scene as it is.
 static int	m_restart_prevstate;	// the page under a yes/no question (M_Confirm)
 static qboolean	luminous_tuning;	// left/right adjusted a setting: show the strip only
+static qboolean	options_tuning;		// the same for Options' Brightness and Gamma
 static int M_LuminousRow (const char *cvar);
 
 static int	luminous_cursor;
@@ -52,7 +53,8 @@ qboolean M_ShowToneRamp (void)
 // and the Software UI composite dim everything behind any menu otherwise.
 qboolean M_SceneUndimmed (void)
 {
-	return key_dest == key_menu && m_state == m_luminous && luminous_tuning;
+	return key_dest == key_menu &&
+		((m_state == m_luminous && luminous_tuning) || (m_state == m_options && options_tuning));
 }
 
 void M_Menu_Main_f (void);
@@ -136,9 +138,24 @@ M_DrawCharacter
 Draws one solid graphics character
 ================
 */
+// LuminousQuake: every menu starts at least one line lower, more where the
+// window's top is under the MacBook camera housing (vid_top_inset: the
+// fraction of the window's height above its safe area, fullscreen only).
+float	vid_top_inset;
+
+static int M_Top (void)
+{
+	int		top = (int)(vid_top_inset * vid.height + 0.999f);
+
+	top = top < 8 ? 8 : (top + 7) & ~7;
+	if (top > (int)vid.height - 200)	// a 200-line canvas has no room to spare
+		top = (int)vid.height - 200 > 0 ? (int)vid.height - 200 : 0;
+	return top;
+}
+
 void M_DrawCharacter (int cx, int line, int num)
 {
-	Draw_Character ( cx + ((vid.width - 320)>>1), line, num);
+	Draw_Character ( cx + ((vid.width - 320)>>1), line + M_Top (), num);
 }
 
 void M_Print (int cx, int cy, char *str)
@@ -163,13 +180,13 @@ void M_PrintWhite (int cx, int cy, char *str)
 
 void M_DrawTransPic (int x, int y, qpic_t *pic)
 {
-	Draw_TransPic (x + ((vid.width - 320)>>1), y, pic);
+	Draw_TransPic (x + ((vid.width - 320)>>1), y + M_Top (), pic);
 }
 
 void M_DrawPic (int x, int y, qpic_t *pic)
 {	// LuminousQuake: index 255 is transparent in every menu picture, as in
 	// GLQuake; mods' titles rely on it (Arcane Dimensions' overlaps the plaque)
-	Draw_TransPic (x + ((vid.width - 320)>>1), y, pic);
+	Draw_TransPic (x + ((vid.width - 320)>>1), y + M_Top (), pic);
 }
 
 byte identityTable[256];
@@ -202,7 +219,7 @@ void M_BuildTranslationTable(int top, int bottom)
 
 void M_DrawTransPicTranslate (int x, int y, qpic_t *pic)
 {
-	Draw_TransPicTranslate (x + ((vid.width - 320)>>1), y, pic, translationTable);
+	Draw_TransPicTranslate (x + ((vid.width - 320)>>1), y + M_Top (), pic, translationTable);
 }
 
 
@@ -1512,6 +1529,7 @@ void M_Menu_Options_f (void)
 	key_dest = key_menu;
 	m_state = m_options;
 	m_entersound = true;
+	options_tuning = false;
 
 #ifdef _WIN32
 	if ((options_cursor == 17) && (modestate != MS_WINDOWED))
@@ -1676,10 +1694,36 @@ void M_DrawCheckbox (int x, int y, int on)
 		M_Print (x, y, "off");
 }
 
+// Brightness (row 4) or Gamma (row 5), at y.
+static void M_OptionsScreenSetting (int row, int y)
+{
+	if (row == 4)
+	{
+		M_Print (16, y, "            Brightness");
+		M_DrawSlider (220, y, (1.0 - v_gamma.value) / 0.5);
+	}
+	else
+	{
+		float g = Cvar_VariableValue ("lq_gamma");
+		if (g < 1)
+			g = 2.2f;
+		M_Print (16, y, "                 Gamma");
+		M_DrawSlider (220, y, (g - 1.6f) / 1.2f);
+		M_Print (320 - 8*4, y, va("%.1f", g));
+	}
+}
+
 void M_Options_Draw (void)
 {
 	float		r;
 	qpic_t	*p;
+
+	if (options_tuning)	// the setting being adjusted, alone, over the scene
+	{
+		M_OptionsScreenSetting (options_cursor, 176);
+		M_Print (16, 184, "Up, down or Esc: the whole page.");
+		return;
+	}
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.lmp") );
 	p = Draw_CachePic ("gfx/p_option.lmp");
@@ -1693,18 +1737,8 @@ void M_Options_Draw (void)
 	r = (scr_viewsize.value - 30) / (120 - 30);
 	M_DrawSlider (220, 56, r);
 
-	M_Print (16, 64, "            Brightness");
-	r = (1.0 - v_gamma.value) / 0.5;
-	M_DrawSlider (220, 64, r);
-
-	M_Print (16, 72, "                 Gamma");
-	{
-		float g = Cvar_VariableValue ("lq_gamma");
-		if (g < 1)
-			g = 2.2f;
-		M_DrawSlider (220, 72, (g - 1.6f) / 1.2f);
-		M_Print (320 - 8*4, 72, va("%.1f", g));
-	}
+	M_OptionsScreenSetting (4, 64);
+	M_OptionsScreenSetting (5, 72);
 
 	M_Print (16, 80, "           Mouse Speed");
 	r = (sensitivity.value - 1)/10;
@@ -1771,6 +1805,12 @@ void M_Options_Draw (void)
 
 void M_Options_Key (int k)
 {
+	if (options_tuning && k != K_LEFTARROW && k != K_RIGHTARROW && k != K_ENTER)
+	{
+		options_tuning = false;	// back to the whole page, on the same setting
+		S_LocalSound ("misc/menu1.wav");
+		return;
+	}
 	switch (k)
 	{
 	case K_ESCAPE:
@@ -1832,6 +1872,8 @@ void M_Options_Key (int k)
 		M_AdjustSliders (1);
 		break;
 	}
+	if ((k == K_LEFTARROW || k == K_RIGHTARROW || k == K_ENTER) && (options_cursor == 4 || options_cursor == 5))
+		options_tuning = true;	// Brightness and Gamma shrink to their line, as Luminous sliders do
 
 	if (options_cursor == 15 && vid_menudrawfn == NULL)
 	{
@@ -3875,7 +3917,7 @@ void M_Draw (void)
 			S_ExtraUpdate ();
 			VID_LockBuffer ();
 		}
-		else if (!(m_state == m_luminous && luminous_tuning))	// adjusting: the scene untouched
+		else if (!M_SceneUndimmed ())	// adjusting: the scene untouched
 			Draw_FadeScreen ();
 
 		scr_fullupdate = 0;

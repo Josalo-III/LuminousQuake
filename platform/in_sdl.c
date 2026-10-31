@@ -23,6 +23,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 /* SDL key translation/capture adapted for NetQuake. See SOURCE_PROVENANCE.md. */
 #include "quakedef.h"
 #include "sdl_backend.h"
+#ifdef __APPLE__
+#include "mac_launch.h"
+#endif
 
 static qboolean initialized, focused, quit_requested, demo_active, mouse_active, suppress_text;
 static int pressed[SDL_SCANCODE_COUNT], held[256];
@@ -107,6 +110,7 @@ void LQ_UpdateCapture(void)
 }
 void LQ_SetFocus(qboolean value)
 {
+    if (initialized && value != focused) Con_DPrintf("Input focus %s\n", value ? "gained" : "lost");
     focused = value;
     if (!focused) IN_ClearStates();
     LQ_AudioFocus(focused);
@@ -161,6 +165,16 @@ static void Button(int key, qboolean down)
 void LQ_HandleEvent(const SDL_Event *event)
 {
     int key;
+    /* macOS sends keys and clicks only to the key window, so one arriving for
+     * ours means we have focus even if no FOCUS_GAINED came. Since the macOS
+     * 27.2 update none comes (confirmed October 31), and the game ignored
+     * all input. LQ_PumpEvents also asks Cocoa directly. */
+    if (!focused && LQ_SDLWindow() &&
+        ((event->type == SDL_EVENT_KEY_DOWN && event->key.windowID == SDL_GetWindowID(LQ_SDLWindow())) ||
+         (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && event->button.windowID == SDL_GetWindowID(LQ_SDLWindow())))) {
+        Con_Printf("Input arrived without a focus report; taking focus\n");
+        LQ_SetFocus(true);
+    }
     switch (event->type) {
     case SDL_EVENT_QUIT: quit_requested = true; break;
     case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
@@ -234,6 +248,26 @@ void LQ_PumpEvents(void)
     if (!LQ_SDLWindow()) return;
     LQ_UpdateCapture();
     while (SDL_PollEvent(&event)) LQ_HandleEvent(&event);
+    {   /* The menus start below the camera housing (menu.c, M_Top). */
+        extern float vid_top_inset;
+        SDL_Rect safe; int w, h;
+        vid_top_inset = SDL_GetWindowSafeArea(LQ_SDLWindow(), &safe) &&
+            SDL_GetWindowSize(LQ_SDLWindow(), &w, &h) && h > 0 && safe.y > 0 ? (float)safe.y / h : 0;
+    }
+#ifdef __APPLE__
+    {
+        /* Since macOS 27.2 SDL reports no focus change (confirmed October
+         * 31), so ask Cocoa ourselves. Act only on a change in its answer,
+         * so a key press that took focus above isn't undone if Cocoa is
+         * wrong too. */
+        static int cocoa_key = -1;
+        int key = LQ_MacWindowKey(LQ_SDLWindow());
+        if (key >= 0 && key != cocoa_key) {
+            cocoa_key = key;
+            if ((qboolean)key != focused) LQ_SetFocus((qboolean)key);
+        }
+    }
+#endif
     LQ_UpdateCapture();
 }
 void IN_Move(usercmd_t *cmd)
