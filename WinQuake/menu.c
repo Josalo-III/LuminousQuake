@@ -23,7 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "user_paths.h"
 #endif
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(LQ_PORTABLE)
 #include "winquake.h"
 #endif
 
@@ -1383,7 +1383,7 @@ void M_Net_Draw (void)
 	}
 	else
 	{
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(LQ_PORTABLE)
 		p = NULL;
 #else
 		p = Draw_CachePic ("gfx/dim_modm.lmp");
@@ -1401,7 +1401,7 @@ void M_Net_Draw (void)
 	}
 	else
 	{
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(LQ_PORTABLE)
 		p = NULL;
 #else
 		p = Draw_CachePic ("gfx/dim_drct.lmp");
@@ -1506,7 +1506,7 @@ again:
 //=============================================================================
 /* OPTIONS MENU */
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(LQ_PORTABLE)
 #define	OPTIONS_ITEMS	18
 #else
 #define	OPTIONS_ITEMS	17
@@ -1531,7 +1531,7 @@ void M_Menu_Options_f (void)
 	m_entersound = true;
 	options_tuning = false;
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(LQ_PORTABLE)
 	if ((options_cursor == 17) && (modestate != MS_WINDOWED))
 	{
 		options_cursor = 0;
@@ -1599,7 +1599,7 @@ void M_AdjustSliders (int dir)
 		Cvar_SetValue ("sensitivity", sensitivity.value);
 		break;
 	case 7:	// music volume
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(LQ_PORTABLE)
 		bgmvolume.value += dir * 1.0;
 #else
 		bgmvolume.value += dir * 0.1;
@@ -1656,7 +1656,7 @@ void M_AdjustSliders (int dir)
 			m_renderer_pending = -1;
 		break;
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(LQ_PORTABLE)
 	case 17:	// _windowed_mouse
 		Cvar_SetValue ("_windowed_mouse", !_windowed_mouse.value);
 		break;
@@ -1790,7 +1790,7 @@ void M_Options_Draw (void)
 		M_Print (16, 152, "         Video Options");
 	M_Print (16, 160, "      Luminous Options");
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(LQ_PORTABLE)
 	if (modestate == MS_WINDOWED)
 	{
 		M_Print (16, 168, "             Use Mouse");
@@ -1883,7 +1883,7 @@ void M_Options_Key (int k)
 			options_cursor = OPTIONS_LUMINOUS;
 	}
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(LQ_PORTABLE)
 	if ((options_cursor == 17) && (modestate != MS_WINDOWED))
 	{
 		if (k == K_UPARROW)
@@ -2460,7 +2460,7 @@ int		msgNumber;
 int		m_quit_prevstate;
 qboolean	wasInMenus;
 
-#ifndef	_WIN32
+#if !defined(_WIN32) || defined(LQ_PORTABLE)
 char *quitMessage [] = 
 {
 /* .........1.........2.... */
@@ -2561,7 +2561,7 @@ void M_Quit_Draw (void)
 		m_state = m_quit;
 	}
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(LQ_PORTABLE)
 	M_DrawTextBox (0, 0, 38, 23);
 	M_PrintWhite (16, 12,  "  Quake version 1.09 by id Software\n\n");
 	M_PrintWhite (16, 28,  "Programming        Art \n");

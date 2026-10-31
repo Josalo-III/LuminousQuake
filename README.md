@@ -258,7 +258,8 @@ an in-between value a third of the way to the next pose's through the first half
 of the loop and two thirds through the second (1, 1.33, 2, 2.33, 3, 3.33, 4, 4.67,
 5, 5.67, 6, 6.67). The saw and fist view models stay stepped. Gameplay is unchanged, and Software keeps the original stepping.
 Unsupported GPU settings report a fallback. Apply activates the staged settings and saves them in
-the LuminousQuake profile. Resolution presets include 16:9 and 16:10 widescreen.
+the LuminousQuake profile. Resolution presets include 16:9 and 16:10 widescreen,
+21:9 ultrawide (2560×1080, 3440×1440, 3840×1600) and 32:9 (3840×1080).
 The view uses square pixels so widescreen geometry keeps its proportions.
 
 Menus, console, HUD and crosshair automatically scale in powers of two while

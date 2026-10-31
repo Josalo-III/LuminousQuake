@@ -8,7 +8,6 @@
 #include "jobs.h"
 #include "background.h"
 
-viddef_t vid;
 unsigned short d_8to16table[256];
 unsigned d_8to24table[256];
 static SDL_Window *window;
@@ -434,8 +433,8 @@ static const int resolutions[][2] = {
     {1280, 720}, {1280, 800}, {1280, 960}, {1280, 1024},
     {1440, 900}, {1600, 900}, {1600, 1200}, {1680, 1050},
     {1920, 1080}, {1920, 1200}, {1920, 1440},
-    {2048, 1152}, {2560, 1440}, {2560, 1600}, {2880, 1800},
-    {3200, 1800}, {3840, 2160}, {3840, 2400}
+    {2048, 1152}, {2560, 1080}, {2560, 1440}, {2560, 1600}, {2880, 1800},
+    {3200, 1800}, {3440, 1440}, {3840, 1080}, {3840, 1600}, {3840, 2160}, {3840, 2400}
 };
 static int video_cursor, video_choice, video_fullscreen, video_vsync;
 static int video_filter, video_msaa, video_mipmaps, video_anisotropy, video_water, video_tubes, video_particles;

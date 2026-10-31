@@ -1,4 +1,8 @@
 /* Read-only ZIP (.pk3) archives for community texture packs. GPL-2.0-or-later. */
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L  /* fseeko under -std=c11 */
+#define _FILE_OFFSET_BITS 64
+#endif
 #include "pack_archive.h"
 #include "pack_images.h"
 #include <ctype.h>
